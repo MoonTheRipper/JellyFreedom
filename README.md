@@ -1,5 +1,7 @@
 # JellyFreedom
 
+**🌐 Website: https://moontheripper.github.io/JellyFreedom/**
+
 Search and stream movies & TV from torrent sources **straight into Jellyfin** — watch on any
 device (Apple TV, phone, browser) through one clean UI, without filling your disk or leaking
 your IP. No Docker, no paid debrid.

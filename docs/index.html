@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JellyFreedom — stream torrents straight into Jellyfin</title>
+<meta name="description" content="Self-hosted: search & stream movies and TV from torrents straight into Jellyfin, on any device, behind a fail-closed WireGuard kill switch. No Docker, no debrid.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@500;600;700&family=Open+Sans:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#101010; --bg2:#16161c; --surface:#1b1b22; --border:#2a2a33;
+    --text:#f4f4f6; --muted:#a0a0ad;
+    --g1:#AA5CC3; --g2:#00A4DC;
+    --grad:linear-gradient(90deg,var(--g1),var(--g2));
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'Open Sans',system-ui,sans-serif;line-height:1.6;-webkit-font-smoothing:antialiased}
+  h1,h2,h3,.brand{font-family:'Quicksand',system-ui,sans-serif;font-weight:700}
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+  .grad-text{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+
+  /* nav */
+  nav{position:sticky;top:0;z-index:10;background:rgba(16,16,16,.82);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+  nav .wrap{display:flex;align-items:center;justify-content:space-between;height:62px}
+  .brand{display:flex;align-items:center;gap:10px;font-size:20px}
+  .brand .logo{width:26px;height:26px}
+  .nav-links{display:flex;gap:22px;align-items:center;font-size:14px}
+  .nav-links a{color:var(--muted)}.nav-links a:hover{color:var(--text)}
+  .btn{display:inline-block;padding:11px 22px;border-radius:8px;font-weight:600;font-size:14px;transition:transform .15s,box-shadow .15s}
+  .btn-primary{background:var(--grad);color:#fff;box-shadow:0 6px 22px rgba(120,80,200,.35)}
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(120,80,200,.5)}
+  .btn-ghost{border:1px solid var(--border);color:var(--text)}.btn-ghost:hover{border-color:var(--g2)}
+
+  /* hero */
+  header.hero{position:relative;text-align:center;padding:96px 0 84px;overflow:hidden}
+  header.hero::before{content:"";position:absolute;inset:-40% 0 auto 0;height:520px;
+    background:radial-gradient(60% 60% at 50% 0%,rgba(170,92,195,.22),transparent 70%),
+               radial-gradient(50% 50% at 75% 10%,rgba(0,164,220,.18),transparent 70%);z-index:0}
+  header.hero .wrap{position:relative;z-index:1}
+  .hero-logo{width:74px;height:74px;margin:0 auto 22px;display:block}
+  header.hero h1{font-size:clamp(38px,6vw,64px);line-height:1.05;letter-spacing:-1px}
+  header.hero p.sub{margin:18px auto 0;max-width:620px;font-size:clamp(16px,2vw,20px);color:var(--muted)}
+  .cta{display:flex;gap:14px;justify-content:center;margin-top:34px;flex-wrap:wrap}
+  .pill{display:inline-block;margin-bottom:22px;padding:5px 14px;border:1px solid var(--border);border-radius:999px;font-size:12.5px;color:var(--muted)}
+
+  /* install */
+  section{padding:72px 0}
+  .section-title{text-align:center;font-size:clamp(26px,4vw,36px);margin-bottom:8px}
+  .section-sub{text-align:center;color:var(--muted);margin-bottom:40px}
+  .code{position:relative;max-width:760px;margin:0 auto;background:#0c0c10;border:1px solid var(--border);border-radius:10px;padding:18px 20px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;overflow-x:auto}
+  .code .prompt{color:var(--g1)}
+  .copy{position:absolute;top:10px;right:10px;background:var(--surface);border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer}
+  .copy:hover{color:var(--text);border-color:var(--g2)}
+  .install-note{text-align:center;color:var(--muted);font-size:13.5px;margin-top:16px}
+
+  /* features */
+  .alt{background:var(--bg2)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;transition:transform .15s,border-color .15s}
+  .card:hover{transform:translateY(-3px);border-color:rgba(0,164,220,.5)}
+  .card .ico{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;background:rgba(170,92,195,.14);margin-bottom:14px;font-size:20px}
+  .card h3{font-size:18px;margin-bottom:6px}
+  .card p{color:var(--muted);font-size:14.5px}
+
+  /* steps */
+  .steps{counter-reset:s;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;max-width:920px;margin:0 auto}
+  .step{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px 22px}
+  .step::before{counter-increment:s;content:counter(s);display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:var(--grad);color:#fff;font-family:'Quicksand';font-weight:700;margin-bottom:12px}
+  .step h3{font-size:16px;margin-bottom:4px}.step p{color:var(--muted);font-size:14px}
+
+  footer{border-top:1px solid var(--border);padding:40px 0;text-align:center;color:var(--muted);font-size:13.5px}
+  footer a{color:var(--g2)}
+  .disclaimer{margin-top:14px;font-size:12px;opacity:.8;max-width:620px;margin-left:auto;margin-right:auto}
+</style>
+</head>
+<body>
+
+<!-- gradient stream icon (original, not the Jellyfin logo) -->
+<svg width="0" height="0" style="position:absolute"><defs>
+  <linearGradient id="jf" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#AA5CC3"/><stop offset="1" stop-color="#00A4DC"/>
+  </linearGradient></defs></svg>
+
+<nav><div class="wrap">
+  <span class="brand">
+    <svg class="logo" viewBox="0 0 24 24" fill="url(#jf)"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm-2 6.2l6.5 3.8L10 15.8V8.2z"/></svg>
+    Jelly<span class="grad-text">Freedom</span>
+  </span>
+  <span class="nav-links">
+    <a href="#install">Install</a>
+    <a href="#features">Features</a>
+    <a href="#how">How</a>
+    <a href="https://github.com/MoonTheRipper/JellyFreedom" target="_blank" rel="noopener">GitHub ↗</a>
+  </span>
+</div></nav>
+
+<header class="hero"><div class="wrap">
+  <svg class="hero-logo" viewBox="0 0 24 24" fill="url(#jf)"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm-2 6.2l6.5 3.8L10 15.8V8.2z"/></svg>
+  <span class="pill">Self-hosted · No Docker · No debrid</span>
+  <h1>Stream torrents straight into <span class="grad-text">Jellyfin</span></h1>
+  <p class="sub">JellyFreedom turns torrent-streamable movies &amp; TV into playable items in your
+  Jellyfin library — watch on any device, behind a fail-closed WireGuard kill switch, with a
+  cache that never bloats your disk.</p>
+  <div class="cta">
+    <a class="btn btn-primary" href="#install">Get started</a>
+    <a class="btn btn-ghost" href="https://github.com/MoonTheRipper/JellyFreedom" target="_blank" rel="noopener">View on GitHub</a>
+  </div>
+</div></header>
+
+<section id="install"><div class="wrap">
+  <h2 class="section-title">Up and running in one line</h2>
+  <p class="section-sub">Debian / Ubuntu. Installs the orchestrator, TorrServer, FlareSolverr, Jellyfin &amp; Prowlarr.</p>
+  <div class="code">
+    <button class="copy" onclick="cp(this)">Copy</button>
+    <span class="prompt">$</span> curl -fsSL https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/get.sh | sudo bash
+  </div>
+  <p class="install-note">Then open <code>http://&lt;host&gt;:1990/dashboard/</code>, add your keys, and upload a WireGuard config from any provider.</p>
+</div></section>
+
+<section id="features" class="alt"><div class="wrap">
+  <h2 class="section-title">Why JellyFreedom</h2>
+  <p class="section-sub">Built for the living room — and for staying private.</p>
+  <div class="grid">
+    <div class="card"><div class="ico">📺</div><h3>Every device</h3><p>Jellyfin is the frontend, so Apple TV, phone, and browser all work natively. No per-device app to build.</p></div>
+    <div class="card"><div class="ico">💾</div><h3>No disk bloat</h3><p>A bounded RAM ring-buffer streams the playhead window and evicts the rest. Disk usage stays flat.</p></div>
+    <div class="card"><div class="ico">🛡️</div><h3>Fail-closed VPN</h3><p>Torrent traffic is confined to a network namespace whose only route is WireGuard. If the VPN drops, it's blocked — not leaked.</p></div>
+    <div class="card"><div class="ico">🔁</div><h3>Self-healing</h3><p>Resolve-at-play: links point at a stable identity, not a frozen hash, so the library re-picks a live release when seeders decay.</p></div>
+    <div class="card"><div class="ico">🎛️</div><h3>One dashboard</h3><p>Search, a request queue, a release picker, VPN config upload/activate, health, and tasks — all in one admin UI.</p></div>
+    <div class="card"><div class="ico">🧩</div><h3>No Docker, any VPN</h3><p>Native single binaries and systemd units. Bring a WireGuard config from any provider or self-hosted.</p></div>
+  </div>
+</div></section>
+
+<section id="how"><div class="wrap">
+  <h2 class="section-title">How it works</h2>
+  <p class="section-sub">Search → pick a healthy release → stream on demand → it appears in Jellyfin.</p>
+  <div class="steps">
+    <div class="step"><h3>Search</h3><p>TMDB for metadata, Prowlarr for releases — seeder-aware picking, CAM rips rejected.</p></div>
+    <div class="step"><h3>Resolve</h3><p>The best currently-live release is handed to TorrServer behind the VPN kill switch.</p></div>
+    <div class="step"><h3>Point</h3><p>A tiny <code>.strm</code> file lands in your Jellyfin library — instant "availability."</p></div>
+    <div class="step"><h3>Play</h3><p>Press play on any device; it streams on demand and drops when you're done.</p></div>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  <strong class="brand" style="font-size:16px">Jelly<span class="grad-text">Freedom</span></strong>
+  &nbsp;·&nbsp; <a href="https://github.com/MoonTheRipper/JellyFreedom" target="_blank" rel="noopener">GitHub</a>
+  &nbsp;·&nbsp; <a href="https://github.com/MoonTheRipper/JellyFreedom/releases/latest" target="_blank" rel="noopener">Releases</a>
+  &nbsp;·&nbsp; MIT License &nbsp;·&nbsp; © moontheripper
+  <p class="disclaimer">An independent project. Not affiliated with, endorsed by, or part of the
+  Jellyfin project — it simply feeds a Jellyfin server you run. You are responsible for what you
+  stream and for complying with the laws that apply to you.</p>
+</div></footer>
+
+<script>
+function cp(btn){
+  var line="curl -fsSL https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/get.sh | sudo bash";
+  navigator.clipboard.writeText(line).then(function(){btn.textContent="Copied!";setTimeout(function(){btn.textContent="Copy"},1500)});
+}
+</script>
+</body>
+</html>
