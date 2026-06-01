@@ -1,0 +1,14 @@
+[Unit]
+Description=vpntorrent network namespace setup
+Before=torrserver.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/vpntorrent/setup-netns.sh
+ExecStop=ip netns del vpntorrent
+
+[Install]
+WantedBy=multi-user.target

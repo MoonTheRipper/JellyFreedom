@@ -1,0 +1,17 @@
+# Portable reference unit (FHS paths, dedicated service user). release/install.sh writes this
+# same unit on a target — no user-specific paths, so it works on any install.
+[Unit]
+Description=JellyFreedom Orchestrator
+After=network-online.target vpntorrent-netns.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jellyfreedom
+WorkingDirectory=/opt/jellyfreedom
+ExecStart=/opt/jellyfreedom/bin/orchestrator --config /etc/jellyfreedom/config.yaml --db /var/lib/jellyfreedom/jellyfreedom.db --assets /opt/jellyfreedom/web
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

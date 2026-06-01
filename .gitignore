@@ -1,0 +1,54 @@
+# NOTE: .gitignore does NOT support trailing inline comments — a '#' is only a comment at the
+# START of a line. So every pattern below is on its own clean line.
+
+# ── Claude Code: local tooling + the internal design/discussion docs it maintains ──
+# These are dev notes, decisions, and personal context — NOT part of the release.
+# (INSTALL.md is the user-facing install guide and intentionally STAYS tracked.)
+.claude/
+.claude.json
+CLAUDE.local.md
+**/CLAUDE.local.md
+.cursor/
+.aider*
+CLAUDE.md
+ARCHITECTURE.md
+DECISIONS.md
+BUILD_PLAN.md
+OPERATIONS.md
+
+# ── Secrets & local state — NEVER publish ──
+# config.yaml = live keys (ship release/config.sample.yaml); *.db = users/sessions;
+# *.conf = WireGuard configs (private keys); vpnconfigs/ = uploaded VPN configs.
+config.yaml
+*.db
+*.conf
+vpnconfigs/
+
+# ── Personal secrets / credentials (defensive patterns) ──
+.env
+.env.*
+*.env
+secrets/
+*.secret
+*credentials*
+*.pem
+*.key
+*.crt
+*.p12
+*.kdbx
+id_rsa*
+id_ed25519*
+*_rsa
+askpass*
+*.token
+
+# ── Build artifacts ──
+bin/
+dist/
+
+# ── Editor / OS noise ──
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/

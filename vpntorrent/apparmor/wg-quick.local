@@ -1,0 +1,4 @@
+# JellyFreedom: allow wg-quick to read VPN configs from the orchestrator-owned config dir
+# (so configs can be uploaded/activated via the dashboard without root-writing /etc/wireguard).
+/var/lib/jellyfreedom/vpnconfigs/ r,
+/var/lib/jellyfreedom/vpnconfigs/** r,

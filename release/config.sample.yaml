@@ -1,0 +1,49 @@
+server:
+  listen: "0.0.0.0:1990"
+  # Reachable URL of THIS box on your LAN — written into .strm files so Jellyfin clients can
+  # fetch streams. Use the host's LAN IP or hostname.
+  public_url: "http://CHANGE-ME-LAN-IP:1990"
+
+# Connection keys/URLs can be set here OR (preferred) entered in the dashboard → Settings,
+# which stores them in the DB and never returns them to the browser. Leave blank to use the UI.
+tmdb:
+  api_key: ""
+indexer:               # Prowlarr
+  base_url: "http://127.0.0.1:9696"
+  api_key: ""
+jellyfin:
+  base_url: "http://127.0.0.1:8096"
+  api_key: ""
+
+torrserver:
+  base_url: "http://10.42.0.2:8090"   # TorrServer inside the vpntorrent netns
+  cache:
+    mode: ram
+    size_mb: 2048
+    path: ""
+    disconnect_timeout_s: 90
+    connections_limit: 80
+    retrackers_mode: 1
+    upload_rate_limit_kb: 50
+
+libraries:
+  - name: "Movies"
+    type: movie
+    path: /srv/jellyfreedom/movies
+    default: true
+  - name: "TV Shows"
+    type: tv
+    path: /srv/jellyfreedom/tv
+    default: true
+
+picker:
+  min_seeders: 5
+  prefer_video_codecs: ["h264", "h265", "hevc"]
+  prefer_audio_codecs: ["aac", "ac3", "eac3"]
+  prefer_containers: ["mp4", "mkv"]
+  max_size_gb: 20
+  reject_cam: true
+
+vpn:
+  # Orchestrator-owned dir for dashboard-uploaded WireGuard configs (set up by install.sh).
+  config_dir: /var/lib/jellyfreedom/vpnconfigs

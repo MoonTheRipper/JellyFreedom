@@ -1,0 +1,16 @@
+[Unit]
+Description=TorrServer (inside vpntorrent netns)
+After=vpntorrent-netns.service network-online.target
+Requires=vpntorrent-netns.service
+
+[Service]
+Type=simple
+User=torrserver
+# systemd enters the named netns before dropping to User=torrserver
+NetworkNamespacePath=/var/run/netns/vpntorrent
+ExecStart=/usr/local/bin/torrserver --port 8090 --path /var/lib/torrserver
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
