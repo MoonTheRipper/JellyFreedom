@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# jellyfreedom — control + self-update CLI for an INSTALLED JellyFreedom instance.
+#
+# It operates ONLY on the deployed instance under /opt/jellyfreedom and the systemd service —
+# never on a source checkout. `--update` pulls the latest published release, swaps the binary
+# and web assets in place, and restarts the service.
+#
+#   jellyfreedom --update     download the latest release and update this instance
+#   jellyfreedom --version    show the installed version
+#   jellyfreedom status       service status
+#   jellyfreedom restart      restart the service
+#   jellyfreedom logs         follow the service log
+#
+# Override for testing/forks:  JELLYFREEDOM_URL=... jellyfreedom --update
+set -euo pipefail
+
+APP_DIR="${JELLYFREEDOM_APP_DIR:-/opt/jellyfreedom}"
+VPN_DIR="${JELLYFREEDOM_VPN_DIR:-/opt/vpntorrent}"
+SERVICE="jellyfreedom"
+RELEASE_URL="${JELLYFREEDOM_URL:-https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/jellyfreedom.tar.gz}"
+
+usage() {
+  sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+need_root() {
+  [ "$(id -u)" -eq 0 ] || { echo "this needs root:  sudo jellyfreedom $1" >&2; exit 1; }
+}
+
+# Refuse to act on a source checkout, regardless of where the CLI is invoked from.
+guard_not_repo() {
+  if [ -f "$APP_DIR/go.mod" ] || [ -d "$APP_DIR/.git" ] || [ -d "$APP_DIR/cmd" ]; then
+    echo "refusing: $APP_DIR looks like a source checkout, not an installed instance." >&2
+    echo "the CLI only updates a deployed instance — build & install from source instead." >&2
+    exit 1
+  fi
+}
+
+cmd="${1:---help}"
+case "$cmd" in
+  --update|update)
+    need_root --update
+    [ -x "$APP_DIR/bin/orchestrator" ] || { echo "no installed instance at $APP_DIR — run the installer first." >&2; exit 1; }
+    guard_not_repo
+
+    tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+    echo "==> downloading $RELEASE_URL"
+    curl -4 -fsSL "$RELEASE_URL" -o "$tmp/jf.tar.gz"
+    tar xzf "$tmp/jf.tar.gz" -C "$tmp"
+    src="$(find "$tmp" -maxdepth 1 -type d -name 'jellyfreedom-*' | head -1)"
+    [ -n "$src" ] && [ -x "$src/bin/orchestrator" ] || { echo "unexpected bundle layout" >&2; exit 1; }
+
+    new="$(cat "$src/VERSION" 2>/dev/null || echo '?')"
+    cur="$(cat "$APP_DIR/VERSION" 2>/dev/null || echo '?')"
+    if [ "$new" = "$cur" ] && [ "$new" != "?" ]; then
+      echo "==> already on $cur — nothing to do."
+      exit 0
+    fi
+    echo "==> updating ${cur} -> ${new}"
+
+    # Preserve the existing run-user ownership of binary + assets.
+    owner="$(stat -c '%U:%G' "$APP_DIR/bin/orchestrator")"
+
+    install -o "${owner%:*}" -g "${owner#*:}" -m 755 "$src/bin/orchestrator" "$APP_DIR/bin/.orchestrator.new"
+    rm -rf "$APP_DIR/.web.new"; cp -r "$src/web" "$APP_DIR/.web.new"; chown -R "$owner" "$APP_DIR/.web.new"
+
+    # Swap atomically-ish, then restart.
+    mv -f "$APP_DIR/bin/.orchestrator.new" "$APP_DIR/bin/orchestrator"
+    rm -rf "$APP_DIR/web"; mv "$APP_DIR/.web.new" "$APP_DIR/web"
+    [ -f "$src/VERSION" ] && cp -f "$src/VERSION" "$APP_DIR/VERSION"
+
+    # Refresh VPN-netns scripts in place if they're deployed (non-fatal).
+    if [ -d "$src/vpntorrent" ] && [ -d "$VPN_DIR" ]; then
+      for s in setup-netns.sh watchdog.sh portforward.sh; do
+        [ -f "$src/vpntorrent/$s" ] && install -m 755 "$src/vpntorrent/$s" "$VPN_DIR/$s"
+      done
+      echo "==> refreshed VPN-netns scripts (restart vpntorrent-* to apply if changed)"
+    fi
+
+    echo "==> restarting $SERVICE"
+    systemctl restart "$SERVICE"
+    sleep 1
+    if systemctl is-active --quiet "$SERVICE"; then
+      echo "==> updated to ${new} and running."
+    else
+      echo "service did not come back — check: journalctl -u $SERVICE -n 50" >&2
+      exit 1
+    fi
+    ;;
+
+  --version|version)
+    if [ -f "$APP_DIR/VERSION" ]; then cat "$APP_DIR/VERSION"
+    else curl -fsS http://127.0.0.1:1990/healthz 2>/dev/null || echo "unknown"; fi
+    ;;
+
+  status)  systemctl status "$SERVICE" --no-pager ;;
+  restart) need_root restart; systemctl restart "$SERVICE"; echo "restarted." ;;
+  logs)    journalctl -u "$SERVICE" -f ;;
+  -h|--help|help) usage ;;
+  *) echo "unknown command: $cmd" >&2; usage; exit 1 ;;
+esac

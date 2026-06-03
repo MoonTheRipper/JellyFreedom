@@ -22,9 +22,11 @@ cp vpntorrent/setup-netns.sh vpntorrent/watchdog.sh vpntorrent/portforward.sh "$
 cp -r vpntorrent/apparmor "$OUT/vpntorrent/" 2>/dev/null || true
 chmod +x "$OUT/vpntorrent/"*.sh
 
-echo "==> staging installer + sample config"
+echo "==> staging installer + sample config + control CLI"
 cp release/install.sh release/uninstall.sh "$OUT/"
 chmod +x "$OUT/install.sh" "$OUT/uninstall.sh"
+cp release/jellyfreedom "$OUT/jellyfreedom"
+chmod +x "$OUT/jellyfreedom"
 cp release/config.sample.yaml "$OUT/config.sample.yaml"
 echo "$VERSION" > "$OUT/VERSION"
 

@@ -23,6 +23,7 @@ rm -f /etc/systemd/system/jellyfreedom.service \
 systemctl daemon-reload
 command -v apparmor_parser >/dev/null && apparmor_parser -r /etc/apparmor.d/wg-quick 2>/dev/null || true
 rm -rf /opt/jellyfreedom /opt/vpntorrent
+rm -f /usr/local/bin/jellyfreedom
 
 echo "==> done."
 echo "    KEPT (delete manually if you want a clean slate):"
