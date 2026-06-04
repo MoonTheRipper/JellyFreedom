@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"sync"
 	"time"
 )
@@ -324,6 +325,163 @@ type SimilarItem struct {
 	Title     string `json:"title"`
 	Year      string `json:"year"`
 	PosterURL string `json:"poster_url,omitempty"`
+	Group     string `json:"group,omitempty"` // section label: franchise > "More Like This" > cast
+}
+
+// movieList / tvList decode TMDB result arrays (similar, recommendations, collection parts).
+type movieList struct {
+	Results []struct {
+		ID          int    `json:"id"`
+		Title       string `json:"title"`
+		PosterPath  string `json:"poster_path"`
+		ReleaseDate string `json:"release_date"`
+	} `json:"results"`
+}
+type tvList struct {
+	Results []struct {
+		ID           int    `json:"id"`
+		Name         string `json:"name"`
+		PosterPath   string `json:"poster_path"`
+		FirstAirDate string `json:"first_air_date"`
+	} `json:"results"`
+}
+
+func (l movieList) items(group string) []SimilarItem {
+	var out []SimilarItem
+	for _, s := range l.Results {
+		it := SimilarItem{TMDBID: s.ID, MediaType: "movie", Title: s.Title, Year: year(s.ReleaseDate), Group: group}
+		if s.PosterPath != "" {
+			it.PosterURL = "https://image.tmdb.org/t/p/w185" + s.PosterPath
+		}
+		out = append(out, it)
+	}
+	return out
+}
+func (l tvList) items(group string) []SimilarItem {
+	var out []SimilarItem
+	for _, s := range l.Results {
+		it := SimilarItem{TMDBID: s.ID, MediaType: "tv", Title: s.Name, Year: year(s.FirstAirDate), Group: group}
+		if s.PosterPath != "" {
+			it.PosterURL = "https://image.tmdb.org/t/p/w185" + s.PosterPath
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// mergeRelated concatenates related-item tiers in priority order, dropping the current title
+// and de-duplicating by (type,id) so a franchise entry never reappears under "More Like This".
+// The first occurrence wins, so earlier (higher-priority) tiers keep their items and their label.
+func mergeRelated(selfID int, capN int, tiers ...[]SimilarItem) []SimilarItem {
+	seen := map[string]bool{}
+	var out []SimilarItem
+	for _, tier := range tiers {
+		for _, it := range tier {
+			if it.TMDBID == selfID || it.Title == "" {
+				continue
+			}
+			key := it.MediaType + ":" + fmt.Sprint(it.TMDBID)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, it)
+			if len(out) >= capN {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+// collectionParts fetches the movies in a TMDB collection (the franchise: sequels/prequels).
+func (c *Client) collectionParts(collID int, label string) []SimilarItem {
+	resp, err := c.httpClient.Get(fmt.Sprintf("%s/collection/%d?api_key=%s", baseURL, collID, c.key()))
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var coll struct {
+		Parts []struct {
+			ID          int     `json:"id"`
+			Title       string  `json:"title"`
+			PosterPath  string  `json:"poster_path"`
+			ReleaseDate string  `json:"release_date"`
+		} `json:"parts"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&coll) != nil {
+		return nil
+	}
+	// Chronological order so "Vol. I, Vol. II, …" reads naturally.
+	sort.SliceStable(coll.Parts, func(i, j int) bool { return coll.Parts[i].ReleaseDate < coll.Parts[j].ReleaseDate })
+	var out []SimilarItem
+	for _, p := range coll.Parts {
+		it := SimilarItem{TMDBID: p.ID, MediaType: "movie", Title: p.Title, Year: year(p.ReleaseDate), Group: label}
+		if p.PosterPath != "" {
+			it.PosterURL = "https://image.tmdb.org/t/p/w185" + p.PosterPath
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// personTitles fetches a cast member's other notable titles (priority-3 "Starring …" tier),
+// most popular first, so the related list still surfaces the same faces when there's no franchise.
+func (c *Client) personTitles(personID int, label string) []SimilarItem {
+	resp, err := c.httpClient.Get(fmt.Sprintf("%s/person/%d/combined_credits?api_key=%s", baseURL, personID, c.key()))
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var cc struct {
+		Cast []struct {
+			ID           int     `json:"id"`
+			MediaType    string  `json:"media_type"`
+			Title        string  `json:"title"`
+			Name         string  `json:"name"`
+			PosterPath   string  `json:"poster_path"`
+			ReleaseDate  string  `json:"release_date"`
+			FirstAirDate string  `json:"first_air_date"`
+			Popularity   float64 `json:"popularity"`
+			VoteCount    int     `json:"vote_count"`
+		} `json:"cast"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&cc) != nil {
+		return nil
+	}
+	sort.SliceStable(cc.Cast, func(i, j int) bool { return cc.Cast[i].Popularity > cc.Cast[j].Popularity })
+	var out []SimilarItem
+	for _, p := range cc.Cast {
+		if p.MediaType != "movie" && p.MediaType != "tv" {
+			continue
+		}
+		// Require a real audience footprint — filters out talk-show / award-ceremony
+		// appearances (vote_count ~0) that otherwise pollute an actor's "other titles".
+		if p.VoteCount < 50 {
+			continue
+		}
+		title := p.Title
+		date := p.ReleaseDate
+		if p.MediaType == "tv" {
+			title = p.Name
+			date = p.FirstAirDate
+		}
+		if title == "" || p.PosterPath == "" { // require artwork so the strip looks clean
+			continue
+		}
+		out = append(out, SimilarItem{TMDBID: p.ID, MediaType: p.MediaType, Title: title,
+			Year: year(date), PosterURL: "https://image.tmdb.org/t/p/w185" + p.PosterPath, Group: label})
+		if len(out) >= 12 {
+			break
+		}
+	}
+	return out
 }
 
 // RichDetails fetches full movie/TV details including cast, similar titles,
@@ -332,11 +490,11 @@ func (c *Client) RichDetails(tmdbID int, mediaType string) (*RichDetails, error)
 	var endpoint string
 	if mediaType == "movie" {
 		endpoint = fmt.Sprintf(
-			"%s/movie/%d?api_key=%s&append_to_response=credits,similar,belongs_to_collection,release_dates",
+			"%s/movie/%d?api_key=%s&append_to_response=credits,similar,recommendations,belongs_to_collection,release_dates",
 			baseURL, tmdbID, c.key())
 	} else {
 		endpoint = fmt.Sprintf(
-			"%s/tv/%d?api_key=%s&append_to_response=credits,similar",
+			"%s/tv/%d?api_key=%s&append_to_response=credits,similar,recommendations",
 			baseURL, tmdbID, c.key())
 	}
 	resp, err := c.httpClient.Get(endpoint)
@@ -349,6 +507,14 @@ func (c *Client) RichDetails(tmdbID int, mediaType string) (*RichDetails, error)
 	}
 
 	out := &RichDetails{TMDBID: tmdbID, MediaType: mediaType}
+
+	// Related-items hierarchy, assembled after decoding: franchise (collection) → "More Like
+	// This" (recommendations+similar) → "Starring <lead>" (top cast member's other titles).
+	var related []SimilarItem // tier 2 (genre/recommendations)
+	var collID int
+	var collName string
+	var castID int
+	var castName string
 
 	if mediaType == "movie" {
 		var m struct {
@@ -363,19 +529,14 @@ func (c *Client) RichDetails(tmdbID int, mediaType string) (*RichDetails, error)
 			Genres       []struct{ Name string `json:"name"` } `json:"genres"`
 			Credits      struct {
 				Cast []struct {
+					ID          int    `json:"id"`
 					Name        string `json:"name"`
 					Character   string `json:"character"`
 					ProfilePath string `json:"profile_path"`
 				} `json:"cast"`
 			} `json:"credits"`
-			Similar struct {
-				Results []struct {
-					ID          int    `json:"id"`
-					Title       string `json:"title"`
-					PosterPath  string `json:"poster_path"`
-					ReleaseDate string `json:"release_date"`
-				} `json:"results"`
-			} `json:"similar"`
+			Similar         movieList `json:"similar"`
+			Recommendations movieList `json:"recommendations"`
 			BelongsToCollection *struct {
 				ID         int    `json:"id"`
 				Name       string `json:"name"`
@@ -419,23 +580,19 @@ func (c *Client) RichDetails(tmdbID int, mediaType string) (*RichDetails, error)
 			}
 			out.Cast = append(out.Cast, member)
 		}
+		if len(m.Credits.Cast) > 0 {
+			castID, castName = m.Credits.Cast[0].ID, m.Credits.Cast[0].Name
+		}
 		if m.BelongsToCollection != nil {
 			coll := &CollectionInfo{ID: m.BelongsToCollection.ID, Name: m.BelongsToCollection.Name}
 			if m.BelongsToCollection.PosterPath != "" {
 				coll.PosterURL = "https://image.tmdb.org/t/p/w342" + m.BelongsToCollection.PosterPath
 			}
 			out.Collection = coll
+			collID, collName = m.BelongsToCollection.ID, m.BelongsToCollection.Name
 		}
-		for i, s := range m.Similar.Results {
-			if i >= 8 {
-				break
-			}
-			item := SimilarItem{TMDBID: s.ID, MediaType: "movie", Title: s.Title, Year: year(s.ReleaseDate)}
-			if s.PosterPath != "" {
-				item.PosterURL = "https://image.tmdb.org/t/p/w185" + s.PosterPath
-			}
-			out.Similar = append(out.Similar, item)
-		}
+		// Tier 2: recommendations first (TMDB blends genre + cast + keywords), then plain similar.
+		related = append(m.Recommendations.items("More Like This"), m.Similar.items("More Like This")...)
 		// Find digital release (TMDB type 4) — US first, then any country
 		for _, priority := range []string{"US", ""} {
 			for _, country := range m.ReleaseDates.Results {
@@ -469,19 +626,14 @@ func (c *Client) RichDetails(tmdbID int, mediaType string) (*RichDetails, error)
 			Genres       []struct{ Name string `json:"name"` } `json:"genres"`
 			Credits      struct {
 				Cast []struct {
+					ID          int    `json:"id"`
 					Name        string `json:"name"`
 					Character   string `json:"character"`
 					ProfilePath string `json:"profile_path"`
 				} `json:"cast"`
 			} `json:"credits"`
-			Similar struct {
-				Results []struct {
-					ID           int    `json:"id"`
-					Name         string `json:"name"`
-					PosterPath   string `json:"poster_path"`
-					FirstAirDate string `json:"first_air_date"`
-				} `json:"results"`
-			} `json:"similar"`
+			Similar         tvList `json:"similar"`
+			Recommendations tvList `json:"recommendations"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&t); err != nil {
 			return nil, err
@@ -512,17 +664,36 @@ func (c *Client) RichDetails(tmdbID int, mediaType string) (*RichDetails, error)
 			}
 			out.Cast = append(out.Cast, member)
 		}
-		for i, s := range t.Similar.Results {
-			if i >= 8 {
-				break
-			}
-			item := SimilarItem{TMDBID: s.ID, MediaType: "tv", Title: s.Name, Year: year(s.FirstAirDate)}
-			if s.PosterPath != "" {
-				item.PosterURL = "https://image.tmdb.org/t/p/w185" + s.PosterPath
-			}
-			out.Similar = append(out.Similar, item)
+		if len(t.Credits.Cast) > 0 {
+			castID, castName = t.Credits.Cast[0].ID, t.Credits.Cast[0].Name
 		}
+		related = append(t.Recommendations.items("More Like This"), t.Similar.items("More Like This")...)
 	}
+
+	// Fetch the franchise (collection) and lead-actor tiers concurrently, then merge by priority:
+	// franchise first (so e.g. "Nymphomaniac Vol. II" always shows under Vol. I), then the
+	// recommendation/similar blend, then other titles starring the lead — deduped, capped.
+	var franchise, cast []SimilarItem
+	var wg sync.WaitGroup
+	if collID > 0 {
+		label := collName
+		if label == "" {
+			label = "Franchise"
+		}
+		wg.Add(1)
+		go func() { defer wg.Done(); franchise = c.collectionParts(collID, label) }()
+	}
+	if castID > 0 {
+		wg.Add(1)
+		go func() { defer wg.Done(); cast = c.personTitles(castID, "Starring "+castName) }()
+	}
+	wg.Wait()
+	// Reserve room so the lowest-priority cast tier still surfaces: franchise is small, cap the
+	// genre blend so a few "Starring <lead>" picks always make the final list (total capped too).
+	if len(related) > 12 {
+		related = related[:12]
+	}
+	out.Similar = mergeRelated(tmdbID, 18, franchise, related, cast)
 	return out, nil
 }
 

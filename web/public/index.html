@@ -2,73 +2,160 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0b0c11">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="JellyFreedom">
 <title>JellyFreedom</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="apple-touch-icon" href="/favicon.svg">
 <style>
 :root{
-  --bg:#0d0e13;--surface:#13151f;--surface2:#1a1d2a;--border:#252836;
-  --text:#e2e4f0;--muted:#5c6080;--muted2:#8890b0;
-  --green:#4ade80;--red:#f87171;--yellow:#fbbf24;--blue:#60a5fa;--purple:#a78bfa;--accent:#4f46e5;
-  --accent-h:#4338ca;--overlay:rgba(0,0,0,.7)
+  --bg:#0a0b10;--surface:#13151f;--surface2:#1a1d2a;--border:#252836;
+  --text:#e6e8f3;--muted:#5c6080;--muted2:#8a90b2;
+  --green:#4ade80;--red:#f87171;--yellow:#fbbf24;--blue:#60a5fa;--purple:#a78bfa;
+  /* brand — matches the purple→cyan favicon */
+  --brand-1:#aa5cc3;--brand-2:#00a4dc;
+  --grad:linear-gradient(135deg,#aa5cc3 0%,#7c5cff 45%,#00a4dc 100%);
+  --accent:#8b6cff;--accent-h:#7857ff;--accent-soft:rgba(139,108,255,.14);
+  --overlay:rgba(0,0,0,.7);
+  /* radius / depth / rhythm scale */
+  --r-sm:8px;--r-md:12px;--r-lg:16px;--r-xl:22px;
+  --sh-1:0 1px 2px rgba(0,0,0,.4);
+  --sh-2:0 6px 20px rgba(0,0,0,.45);
+  --sh-3:0 18px 50px rgba(0,0,0,.6);
+  --glow:0 0 0 1px rgba(139,108,255,.35),0 8px 30px rgba(124,92,255,.25);
+  /* notch / home-bar safe areas */
+  --sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);
+  --sal:env(safe-area-inset-left,0px);--sar:env(safe-area-inset-right,0px)
 }
 *{box-sizing:border-box;margin:0;padding:0}
-html{scroll-behavior:smooth}
-body{background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif;min-height:100vh;overflow-x:hidden}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Inter,Roboto,system-ui,sans-serif;
+  font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+  text-rendering:optimizeLegibility;font-feature-settings:"cv02","ss01";
+  background-image:radial-gradient(1200px 600px at 75% -10%,rgba(124,92,255,.10),transparent 60%),
+    radial-gradient(900px 500px at 0% 0%,rgba(0,164,220,.07),transparent 55%);
+  background-attachment:fixed}
 a{color:inherit;text-decoration:none}
 button{font-family:inherit;cursor:pointer}
 img{display:block}
 
-/* ── Header ─────────────────────────────────────────────────────────────── */
-header{position:sticky;top:0;z-index:50;background:rgba(13,14,19,.92);
-  backdrop-filter:blur(12px);border-bottom:1px solid var(--border);
-  display:flex;align-items:center;gap:0;padding:0 20px;height:56px}
-.logo{font-size:16px;font-weight:800;letter-spacing:-.03em;margin-right:28px;
+/* ── Header (floating glass; goes transparent over the home hero) ─────────── */
+header{position:sticky;top:0;z-index:50;background:rgba(10,11,16,.62);
+  backdrop-filter:blur(20px) saturate(150%);-webkit-backdrop-filter:blur(20px) saturate(150%);
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:0;padding:0 max(24px,var(--sal)) 0 max(24px,var(--sal));
+  height:calc(60px + var(--sat));padding-top:var(--sat);
+  transition:background .3s,border-color .3s,backdrop-filter .3s}
+header.transparent{background:linear-gradient(to bottom,rgba(5,6,10,.55),transparent);
+  border-bottom-color:transparent;backdrop-filter:none;-webkit-backdrop-filter:none}
+.logo{font-size:18px;font-weight:800;letter-spacing:-.03em;margin-right:32px;
   white-space:nowrap;display:flex;align-items:center;gap:8px}
-.logo span{color:var(--accent)}
+.logo span{background:var(--grad);-webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;color:transparent}
+/* nav icons — hidden on desktop, shown in the mobile bottom bar */
+.nav-ico{display:none}
 
-/* top nav */
-.main-nav{display:flex;gap:2px;align-items:center}
-.nav-link{padding:6px 14px;border-radius:7px;font-size:14px;font-weight:500;
+/* top nav — segmented pill group */
+.main-nav{display:flex;gap:2px;align-items:center;padding:4px;border-radius:999px;
+  background:rgba(255,255,255,.04);border:1px solid var(--border)}
+header.transparent .main-nav{background:rgba(10,12,18,.35);border-color:rgba(255,255,255,.08)}
+.nav-link{padding:8px 18px;border-radius:999px;font-size:14px;font-weight:600;
   color:var(--muted2);cursor:pointer;transition:color .15s,background .15s;border:none;
   background:none;white-space:nowrap}
-.nav-link:hover{color:var(--text);background:var(--surface2)}
-.nav-link.active{color:var(--text);background:var(--surface2)}
+.nav-link:hover{color:var(--text)}
+.nav-link.active{color:#fff;background:var(--grad);box-shadow:0 2px 12px rgba(124,92,255,.4)}
 
 .header-right{margin-left:auto;display:flex;align-items:center;gap:8px}
 .health-dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex-shrink:0}
 .health-dot.ok{background:var(--green);box-shadow:0 0 6px var(--green)}
 .health-dot.err{background:var(--red);box-shadow:0 0 6px var(--red)}
 
-.header-btn{background:none;border:1px solid var(--border);color:var(--muted2);
-  padding:6px 12px;border-radius:7px;font-size:13px;text-decoration:none;white-space:nowrap}
-.header-btn:hover{border-color:var(--text);color:var(--text)}
-.header-btn.signin{border-color:var(--accent);color:var(--accent)}
-.header-btn.signin:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
-.header-user{font-size:13px;color:var(--muted2)}
+.header-btn{background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--muted2);
+  padding:8px 15px;border-radius:999px;font-size:13px;font-weight:600;text-decoration:none;
+  white-space:nowrap;transition:all .15s}
+.header-btn:hover{border-color:var(--text);color:var(--text);background:rgba(255,255,255,.08)}
+.header-btn.signin{border-color:transparent;background:var(--grad);color:#fff;box-shadow:0 2px 12px rgba(124,92,255,.35)}
+.header-btn.signin:hover{filter:brightness(1.1)}
+.header-user{font-size:13px;color:var(--muted2);font-weight:600}
 
 /* ── Pages ──────────────────────────────────────────────────────────────── */
 .page{display:none}
 .page.active{display:block}
 
 /* ── Search bar ─────────────────────────────────────────────────────────── */
-.search-wrap{max-width:640px;margin:32px auto 28px;padding:0 20px}
+.search-wrap{max-width:660px;margin:clamp(24px,6vw,44px) auto 28px;padding:0 max(20px,var(--sal)) 0 max(20px,var(--sar))}
 .search-box{display:flex;gap:10px}
 input[type=search]{flex:1;background:var(--surface);border:1px solid var(--border);
-  color:var(--text);padding:11px 16px;border-radius:10px;font-size:15px;outline:none;
-  transition:border .15s}
-input[type=search]:focus{border-color:var(--accent)}
-.search-box button{background:var(--accent);border:none;color:#fff;padding:11px 20px;
-  border-radius:10px;font-size:14px;font-weight:600;white-space:nowrap;transition:background .15s}
-.search-box button:hover{background:var(--accent-h)}
+  color:var(--text);padding:13px 18px;border-radius:var(--r-md);font-size:16px;outline:none;
+  transition:border .18s,box-shadow .18s;box-shadow:var(--sh-1)}
+input[type=search]:focus{border-color:transparent;box-shadow:var(--glow)}
+.search-box button{background:var(--grad);border:none;color:#fff;padding:13px 22px;
+  border-radius:var(--r-md);font-size:14px;font-weight:700;white-space:nowrap;
+  transition:filter .15s,transform .12s,box-shadow .15s;box-shadow:var(--sh-2)}
+.search-box button:hover{filter:brightness(1.08)}
+.search-box button:active{transform:translateY(1px)}
 .hint{text-align:center;color:var(--muted);font-size:13px;margin-top:8px}
+
+/* ── Cinematic hero ─────────────────────────────────────────────────────── */
+.hero{position:relative;min-height:min(78vh,640px);margin-top:calc(-60px - var(--sat));
+  display:flex;align-items:flex-end;overflow:hidden;isolation:isolate}
+.hero:empty{display:none}
+.hero-bg{position:absolute;inset:0;z-index:-2}
+.hero-bg img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:50% 18%;
+  opacity:0;transition:opacity .5s ease;transform:scale(1.05)}
+.hero-bg img.show{opacity:1}
+/* layered scrims: bottom fade into the page + left fade for text legibility */
+.hero::after{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
+  background:linear-gradient(to top,var(--bg) 2%,rgba(10,11,16,.55) 32%,rgba(10,11,16,.1) 60%,rgba(10,11,16,.5) 100%),
+    linear-gradient(to right,rgba(10,11,16,.85) 0%,rgba(10,11,16,.35) 45%,transparent 75%)}
+.hero-inner{position:relative;width:100%;max-width:1400px;margin:0 auto;
+  padding:0 max(40px,var(--sal)) clamp(28px,5vw,56px) max(40px,var(--sar))}
+.hero-eyebrow{display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:800;
+  letter-spacing:.14em;text-transform:uppercase;color:#fff;margin-bottom:14px;
+  background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);
+  padding:5px 12px;border-radius:999px;backdrop-filter:blur(8px)}
+.hero-eyebrow b{background:var(--grad);-webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;color:transparent}
+.hero-title{font-size:clamp(34px,6.5vw,68px);font-weight:900;letter-spacing:-.03em;
+  line-height:1.02;max-width:16ch;text-shadow:0 4px 30px rgba(0,0,0,.6);margin-bottom:14px}
+.hero-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-bottom:16px;
+  font-size:14px;font-weight:600;color:#dfe3f5}
+.hero-meta .dotsep{width:4px;height:4px;border-radius:50%;background:var(--muted2)}
+.hero-rate{display:inline-flex;align-items:center;gap:5px;color:#fde68a}
+.hero-chip{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  padding:3px 9px;border-radius:999px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.16)}
+.hero-overview{max-width:60ch;font-size:15px;line-height:1.6;color:#c7cce0;margin-bottom:22px;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
+  text-shadow:0 2px 14px rgba(0,0,0,.5)}
+.hero-actions{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.hero-btn{display:inline-flex;align-items:center;gap:8px;border:none;cursor:pointer;
+  font-size:15px;font-weight:700;padding:13px 26px;border-radius:999px;transition:filter .15s,transform .12s,background .15s}
+.hero-btn.primary{background:#fff;color:#0a0b10;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+.hero-btn.primary:hover{filter:brightness(.92)}
+.hero-btn.ghost{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.2);
+  backdrop-filter:blur(8px)}
+.hero-btn.ghost:hover{background:rgba(255,255,255,.22)}
+.hero-btn:active{transform:translateY(1px)}
+/* rotator dots */
+.hero-dots{display:flex;gap:8px;margin-top:24px}
+.hero-dot{width:28px;height:4px;border-radius:999px;border:none;cursor:pointer;padding:0;
+  background:rgba(255,255,255,.25);transition:background .25s,width .25s}
+.hero-dot.active{width:40px;background:var(--grad)}
 
 /* ── Carousels ──────────────────────────────────────────────────────────── */
 #carousels{padding:0 0 40px}
-.carousel-section{margin-bottom:32px}
+.carousel-section{margin-bottom:38px}
 .carousel-header{display:flex;align-items:center;justify-content:space-between;
-  padding:0 24px;margin-bottom:14px}
-.carousel-title{font-size:17px;font-weight:700;letter-spacing:-.01em}
+  padding:0 max(24px,var(--sal));margin-bottom:16px}
+.carousel-title{font-size:clamp(18px,2.4vw,23px);font-weight:800;letter-spacing:-.02em;
+  display:flex;align-items:center;gap:11px}
+.carousel-title::before{content:"";width:4px;height:1.05em;border-radius:3px;background:var(--grad)}
 .carousel-more{font-size:13px;color:var(--accent);cursor:pointer}
 .carousel-more:hover{text-decoration:underline}
 .carousel-track{display:flex;gap:12px;overflow-x:auto;padding:4px 24px 8px;
@@ -78,43 +165,56 @@ input[type=search]:focus{border-color:var(--accent)}
 /* ── Media cards ────────────────────────────────────────────────────────── */
 .results{max-width:1400px;margin:0 auto;padding:0 20px 40px;
   display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
-.card,.carousel-card{position:relative;border-radius:10px;overflow:hidden;cursor:pointer;
-  aspect-ratio:2/3;border:2px solid transparent;background:var(--surface2);
-  transition:transform .18s,border-color .18s,box-shadow .18s;flex-shrink:0}
-.carousel-card{width:150px}
-.card:hover,.carousel-card:hover{transform:translateY(-5px);border-color:var(--accent);
-  box-shadow:0 12px 32px rgba(0,0,0,.6)}
-.card.in-library,.carousel-card.in-library{border-color:#166534}
-.card.in-library:hover,.carousel-card.in-library:hover{border-color:var(--green)}
-.card img,.carousel-card img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.card,.carousel-card{position:relative;border-radius:var(--r-lg);overflow:hidden;cursor:pointer;
+  aspect-ratio:2/3;border:1px solid var(--border);background:var(--surface2);box-shadow:var(--sh-1);
+  transition:transform .28s cubic-bezier(.2,.7,.2,1),border-color .2s,box-shadow .28s;flex-shrink:0}
+.carousel-card{width:160px}
+.card:hover,.carousel-card:hover{transform:translateY(-8px) scale(1.02);border-color:rgba(139,108,255,.55);
+  box-shadow:var(--sh-3),0 0 0 1px rgba(139,108,255,.3)}
+@media (hover:none){.card:hover,.carousel-card:hover{transform:none}
+  .card:active,.carousel-card:active{transform:scale(.97)}}
+.card.in-library,.carousel-card.in-library{border-color:rgba(74,222,128,.45)}
+.card.in-library:hover,.carousel-card.in-library:hover{border-color:var(--green);box-shadow:var(--sh-3),0 0 0 1px rgba(74,222,128,.4)}
+.card img,.carousel-card img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+  transition:transform .4s cubic-bezier(.2,.7,.2,1)}
+.card:hover img,.carousel-card:hover img{transform:scale(1.07)}
 .card-placeholder,.carousel-card-placeholder{position:absolute;inset:0;
   display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:40px}
 /* skeleton shimmer */
 .skeleton{background:linear-gradient(90deg,var(--surface) 25%,var(--surface2) 50%,var(--surface) 75%);
   background-size:200% 100%;animation:shimmer 1.5s infinite}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
-/* overlay gradient + title */
-.card-overlay,.carousel-card-overlay{position:absolute;bottom:0;left:0;right:0;
-  padding:32px 10px 10px;
-  background:linear-gradient(to bottom,transparent 0%,rgba(8,9,14,.95) 100%)}
-.card-title,.carousel-card-title{font-size:12px;font-weight:600;color:#fff;line-height:1.3;
+/* rating chip — always visible, glassy, top-right */
+.card-rating{position:absolute;top:8px;right:8px;z-index:3;font-size:11px;font-weight:800;
+  color:#ffe9a8;background:rgba(8,9,14,.6);border:1px solid rgba(255,255,255,.12);
+  padding:3px 8px;border-radius:999px;backdrop-filter:blur(6px)}
+/* scrim + title/meta reveal on hover (clean poster art by default) */
+.card-scrim{position:absolute;inset:0;z-index:1;opacity:0;transition:opacity .25s;pointer-events:none;
+  background:linear-gradient(to top,rgba(5,6,10,.96) 0%,rgba(5,6,10,.45) 38%,transparent 68%)}
+.card:hover .card-scrim,.carousel-card:hover .card-scrim{opacity:1}
+.card-overlay,.carousel-card-overlay{position:absolute;bottom:0;left:0;right:0;z-index:2;
+  padding:14px 12px 12px;opacity:0;transform:translateY(8px);
+  transition:opacity .25s,transform .25s}
+.card:hover .card-overlay,.carousel-card:hover .card-overlay,
+.card:hover .carousel-card-overlay,.carousel-card:hover .carousel-card-overlay{opacity:1;transform:none}
+.card-title,.carousel-card-title{font-size:13px;font-weight:700;color:#fff;line-height:1.3;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.card-meta,.carousel-card-meta{font-size:10px;color:rgba(255,255,255,.5);margin-top:2px;
-  display:flex;gap:5px;align-items:center}
+.card-meta,.carousel-card-meta{font-size:11px;color:rgba(255,255,255,.65);margin-top:4px;
+  display:flex;gap:6px;align-items:center}
 /* hover action */
-.card-action{position:absolute;top:50%;left:50%;
-  transform:translate(-50%,-54%) scale(.85);opacity:0;pointer-events:none;
-  background:rgba(79,70,229,.92);color:#fff;font-size:12px;font-weight:600;
-  padding:8px 18px;border-radius:7px;white-space:nowrap;backdrop-filter:blur(6px);
-  transition:opacity .15s,transform .15s}
-.card:hover .card-action,.carousel-card:hover .card-action{opacity:1;transform:translate(-50%,-54%) scale(1)}
-.card.in-library .card-action,.carousel-card.in-library .card-action{background:rgba(22,101,52,.92)}
+.card-action{position:absolute;top:42%;left:50%;z-index:3;
+  transform:translate(-50%,-50%) scale(.85);opacity:0;pointer-events:none;
+  background:var(--grad);color:#fff;font-size:12px;font-weight:700;
+  padding:9px 18px;border-radius:999px;white-space:nowrap;box-shadow:var(--sh-2);
+  transition:opacity .18s,transform .18s}
+.card:hover .card-action,.carousel-card:hover .card-action{opacity:1;transform:translate(-50%,-50%) scale(1)}
+.card.in-library .card-action,.carousel-card.in-library .card-action{background:rgba(22,101,52,.95)}
 /* status badges */
 .badge{font-size:10px;padding:2px 6px;border-radius:7px;font-weight:700;text-transform:uppercase}
 .badge.movie{background:rgba(30,58,95,.85);color:var(--blue)}
 .badge.tv{background:rgba(59,31,94,.85);color:var(--purple)}
-.status-badge{position:absolute;top:7px;left:7px;font-size:10px;font-weight:700;
-  padding:3px 8px;border-radius:9px;backdrop-filter:blur(6px)}
+.status-badge{position:absolute;top:8px;left:8px;z-index:3;font-size:10px;font-weight:700;
+  padding:3px 8px;border-radius:999px;backdrop-filter:blur(6px)}
 .status-badge.ready{background:rgba(20,83,45,.92);color:var(--green)}
 .status-badge.stale{background:rgba(120,53,15,.92);color:var(--yellow)}
 /* expired (stale) card: dim the poster + amber ring so it reads as "needs attention" */
@@ -252,7 +352,8 @@ input[type=search]:focus{border-color:var(--accent)}
   display:flex;align-items:center;justify-content:center;padding:20px;
   backdrop-filter:blur(6px)}
 .modal{position:relative;background:var(--surface);border:1px solid var(--border);
-  border-radius:16px;width:100%;max-width:900px;max-height:90vh;overflow-y:auto;padding:24px}
+  border-radius:var(--r-xl);width:100%;max-width:900px;max-height:90vh;overflow-y:auto;padding:24px;
+  box-shadow:var(--sh-3)}
 .modal.hidden,.modal-overlay.hidden{display:none}
 .modal-close{position:sticky;float:right;top:0;z-index:20;background:rgba(0,0,0,.55);
   border:none;border-radius:50%;color:#fff;font-size:15px;cursor:pointer;
@@ -326,7 +427,7 @@ input[type=search]:focus{border-color:var(--accent)}
 .season-sub-btn{background:var(--surface);border:1px solid var(--border);color:var(--muted);
   padding:4px;border-radius:7px;cursor:pointer;font-size:10px;width:100%;transition:all .15s}
 .season-sub-btn:hover{border-color:var(--accent);color:var(--text)}
-.season-sub-btn.on{background:rgba(79,70,229,.15);border-color:var(--accent);color:var(--purple);font-weight:600}
+.season-sub-btn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--purple);font-weight:600}
 .airing-banner{background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.3);
   border-radius:9px;padding:10px 13px;font-size:12px;color:var(--muted2);line-height:1.5;margin-bottom:14px}
 .airing-banner strong{color:var(--blue)}
@@ -387,9 +488,11 @@ select.lib-picker:focus{border-color:var(--accent)}
 .digital-warn{background:#78350f22;border:1px solid var(--yellow);border-radius:8px;
   padding:8px 12px;font-size:12px;color:var(--yellow);margin-bottom:10px}
 /* req button */
-.req-btn{width:100%;background:var(--accent);border:none;color:#fff;padding:13px;
-  border-radius:9px;font-size:15px;font-weight:600;cursor:pointer;transition:background .2s}
-.req-btn:hover:not(:disabled){background:var(--accent-h)}
+.req-btn{width:100%;background:var(--grad);border:none;color:#fff;padding:14px;
+  border-radius:var(--r-md);font-size:15px;font-weight:700;cursor:pointer;box-shadow:var(--sh-2);
+  transition:filter .2s,transform .12s}
+.req-btn:hover:not(:disabled){filter:brightness(1.08)}
+.req-btn:active:not(:disabled){transform:translateY(1px)}
 .req-btn:disabled{opacity:.45;cursor:default}
 .req-btn.success{background:#166534;cursor:default}
 .req-btn.fail{background:#7f1d1d}
@@ -512,26 +615,53 @@ select.lib-picker:focus{border-color:var(--accent)}
 .page.active{animation:pageIn .18s ease}
 @keyframes pageIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 
+/* ── Motion preferences ──────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;scroll-behavior:auto !important}
+}
+
 /* ── Responsive (phones / small tablets) ────────────────────────────────── */
 @media (max-width: 760px){
-  header{padding:0 12px;gap:0;height:52px}
-  .logo{margin-right:12px;font-size:15px}
-  .main-nav{gap:0}
-  .nav-link{padding:6px 9px;font-size:13px}
+  /* drop the header's backdrop-filter on mobile: as an ancestor it would otherwise become
+     the containing block for the fixed bottom nav (its child), pinning it to the header. */
+  header{padding:var(--sat) max(12px,var(--sar)) 0 max(12px,var(--sal));height:calc(52px + var(--sat));
+    backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(10,11,16,.96)}
+  .logo{margin-right:auto;font-size:15px}
   .header-right{gap:6px}
-  .header-btn{padding:5px 9px;font-size:12px}
+  .header-btn{padding:8px 11px;font-size:12px}
   .header-user{display:none !important}        /* save room; name still in menu via Sign out */
+
+  /* main nav becomes a fixed bottom tab bar (icon + label), thumb-reachable */
+  .main-nav{position:fixed;left:0;right:0;bottom:0;z-index:60;display:flex;gap:0;
+    padding:6px max(6px,var(--sal)) calc(6px + var(--sab)) max(6px,var(--sar));
+    background:rgba(10,11,16,.82);backdrop-filter:blur(18px) saturate(140%);
+    -webkit-backdrop-filter:blur(18px) saturate(140%);border-top:1px solid var(--border)}
+  .nav-link{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:3px;padding:6px 2px;min-height:50px;border-radius:var(--r-md);font-size:10px;font-weight:600;
+    position:relative;background:none}
+  .nav-link.active{background:none;box-shadow:none;color:var(--accent)}
+  .nav-link.active .nav-ico{background:var(--accent-soft);box-shadow:inset 0 0 0 1px rgba(139,108,255,.3)}
+  .nav-ico{display:flex;align-items:center;justify-content:center;width:46px;height:26px;
+    border-radius:999px;font-size:17px;line-height:1;transition:background .15s}
+  .nav-txt{font-size:10px;letter-spacing:.01em}
+  .nav-badge{position:absolute;top:2px;right:calc(50% - 24px);margin:0;
+    font-size:9px;padding:0 5px;min-width:15px;box-shadow:0 0 0 2px rgba(10,11,16,.9)}
+  /* clear the fixed bar so nothing hides behind it */
+  body{padding-bottom:calc(62px + var(--sab))}
+
   /* tighter media grids → more posters per row on small screens */
-  .results,.library-grid{grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:10px;padding-left:12px;padding-right:12px}
+  .results,.library-grid{grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:10px;padding-left:max(12px,var(--sal));padding-right:max(12px,var(--sar))}
   .carousel-card{width:116px}
-  .carousel-header,.carousel-track{padding-left:14px;padding-right:14px}
+  .carousel-header,.carousel-track{padding-left:max(14px,var(--sal));padding-right:max(14px,var(--sar))}
   /* queue: sidebar stacks on top as a horizontal scroller */
   .queue-page-layout{flex-direction:column;gap:14px;padding:16px 14px 32px}
   .queue-sidebar{width:100%;flex-direction:row;flex-wrap:wrap;gap:10px;align-items:center}
   .qs-search{flex:1 1 100%}
   .qs-group{flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px}
   .qs-group-title{width:100%;margin-bottom:2px}
-  .qs-filter{padding:5px 11px}
+  .qs-filter{padding:8px 13px}                  /* ≥40px tap target */
+  .queue-action-btn{padding:7px 13px}
   /* calendar: controls wrap, cells shrink */
   .calendar-wrap{padding:16px 12px 32px}
   .calendar-header{align-items:stretch}
@@ -539,19 +669,25 @@ select.lib-picker:focus{border-color:var(--accent)}
   .cal-cell{min-height:56px;padding:4px}
   .cal-pill{display:none}                       /* dots only on phones — tap day to expand */
   .cal-legend{flex-wrap:wrap;gap:10px}
+  .cal-nav-btn{width:34px;height:34px}
+  .cal-view-btn{padding:8px 14px}
+  .filter-tab{padding:8px 14px}
   .cal-list-section .cal-entry-poster{width:36px;height:54px}
-  /* modal: full-bleed feel on phones */
-  .modal-overlay{padding:0;align-items:stretch}
-  .modal{max-width:100%;max-height:100vh;border-radius:0}
-  .modal-backdrop-wrap{margin:-24px -24px 0;height:210px;border-radius:0}
+  /* modal becomes a bottom sheet that slides up */
+  .modal-overlay{padding:0;align-items:flex-end}
+  .modal{max-width:100%;max-height:92vh;border-radius:var(--r-xl) var(--r-xl) 0 0;
+    padding:20px 18px calc(20px + var(--sab));animation:sheetUp .26s cubic-bezier(.2,.7,.2,1)}
+  .modal-backdrop-wrap{margin:-20px -18px 0;height:210px;border-radius:var(--r-xl) var(--r-xl) 0 0}
   .modal-hero{margin-top:-56px}
   .modal-poster{width:88px;height:132px}
-  .search-wrap{margin-top:20px}
+  .search-wrap{margin-top:18px}
+  /* lift the toast above the bottom bar */
+  #toast{bottom:calc(74px + var(--sab));right:12px;left:12px;max-width:none}
 }
+@keyframes sheetUp{from{transform:translateY(100%)}to{transform:none}}
 @media (max-width: 420px){
   .results,.library-grid{grid-template-columns:repeat(2,1fr)}
-  .nav-link{padding:6px 7px;font-size:12px}
-  .logo span{display:inline}
+  .header-btn.signin{padding:8px 10px}
 }
 </style>
 </head>
@@ -560,12 +696,10 @@ select.lib-picker:focus{border-color:var(--accent)}
 <header>
   <div class="logo">🎬 <span>Jelly</span>Freedom</div>
   <nav class="main-nav">
-    <button class="nav-link active" data-page="home" onclick="showPage('home')">Home</button>
-    <button class="nav-link" data-page="library" onclick="showPage('library')">Library</button>
-    <button class="nav-link" data-page="queue" onclick="showPage('queue')">
-      Queue<span class="nav-badge" id="queue-badge" style="display:none">0</span>
-    </button>
-    <button class="nav-link" data-page="calendar" onclick="showPage('calendar')">Calendar</button>
+    <button class="nav-link active" data-page="home" onclick="showPage('home')"><span class="nav-ico">⌂</span><span class="nav-txt">Home</span></button>
+    <button class="nav-link" data-page="library" onclick="showPage('library')"><span class="nav-ico">▦</span><span class="nav-txt">Library</span></button>
+    <button class="nav-link" data-page="queue" onclick="showPage('queue')"><span class="nav-ico">≡</span><span class="nav-txt">Queue</span><span class="nav-badge" id="queue-badge" style="display:none">0</span></button>
+    <button class="nav-link" data-page="calendar" onclick="showPage('calendar')"><span class="nav-ico">▤</span><span class="nav-txt">Calendar</span></button>
   </nav>
   <div class="header-right">
     <span class="health-dot" id="health-dot" title="Stack health"></span>
@@ -577,6 +711,7 @@ select.lib-picker:focus{border-color:var(--accent)}
 
 <!-- ── Home page ─────────────────────────────────────────────────────────── -->
 <div id="page-home" class="page active">
+  <section id="hero" class="hero" aria-label="Featured"></section>
   <div class="search-wrap">
     <div class="search-box">
       <input type="search" id="q" placeholder="Search movies and TV shows…" autofocus
@@ -740,9 +875,12 @@ async function init() {
   loadMyLibrary();
   loadSubscriptions();
   setInterval(loadMyLibrary, 60000);
+  loadHero();
   renderCarousels();
   pollQueue();
   setInterval(pollQueue, 4000);
+  window.addEventListener('scroll', onScrollHeader, {passive:true});
+  onScrollHeader();
 
   // Routing + global keyboard shortcuts.
   window.addEventListener('hashchange', () => {
@@ -815,6 +953,7 @@ async function toggleSubscription(tmdbId, season, title, poster) {
 
 // ── Routing (hash-based: survives reload, enables back/forward + deep links) ────
 let currentPage = 'home';   // underlying page (stays put while a modal is open)
+let scrollBeforeModal = 0;  // page scroll captured when a modal opens, restored on close
 let nextItemOpts = null;    // opts (forcePicker…) consumed by the next item open
 let renderedRoute = ' '; // last hash we rendered, to ignore self-set changes
 
@@ -844,6 +983,7 @@ function renderPage(page) {
   if (page === 'library') renderLibraryPage();
   else if (page === 'queue') { pollQueue(); renderQueuePage(); }
   else if (page === 'calendar') loadCalendar();
+  onScrollHeader();
 }
 
 function handleRoute() {
@@ -851,16 +991,33 @@ function handleRoute() {
   renderedRoute = location.hash;
   const parts = raw.split('/');
   const head = parts[0] || 'home';
+  const modalOpen = !document.getElementById('overlay').classList.contains('hidden');
 
   if (head === 'movie' || head === 'tv') {
     const id = parseInt(parts[1], 10);
     if (!id) { location.hash = ''; return; }
+    if (!modalOpen) scrollBeforeModal = window.scrollY;  // remember the page scroll before we overlay
     setActiveNav(currentPage);             // keep the page visible behind the modal
     const opts = nextItemOpts; nextItemOpts = null;
     openItem({tmdb_id: id, media_type: head}, opts || {});
     return;
   }
-  closeModalDOM();                          // any page route closes an open modal
+
+  const page = head === 'search' ? 'home'
+    : (['home', 'library', 'queue', 'calendar'].includes(head) ? head : 'home');
+
+  // Closing a modal back onto the page already rendered beneath it: just hide the modal and
+  // restore the scroll — don't re-render the page or jump to the top (the annoying part).
+  if (modalOpen && head !== 'search' && page === currentPage) {
+    closeModalDOM();
+    setActiveNav(page);
+    if (page === 'home') { document.getElementById('q').value = ''; clearSearch(); }
+    window.scrollTo({top: scrollBeforeModal, behavior: 'auto'});
+    onScrollHeader();
+    return;
+  }
+
+  closeModalDOM();                          // any other page route closes an open modal
   if (head === 'search') {
     renderPage('home');
     const q = decodeURIComponent(parts.slice(1).join('/'));
@@ -868,7 +1025,6 @@ function handleRoute() {
     if (q) doSearch(); else clearSearch();
     return;
   }
-  const page = ['home', 'library', 'queue', 'calendar'].includes(head) ? head : 'home';
   if (page === 'home') { document.getElementById('q').value = ''; clearSearch(); }
   renderPage(page);
 }
@@ -1353,14 +1509,19 @@ function episodeStatus(tmdbId, season, episode) {
 }
 
 // Aggregate a season's overall ring status from whatever episodes we know about.
+// The library is the source of truth per episode: a queue row (failed/pending) is ignored
+// for any episode the library already has, so a stale failed row can't paint a resolved
+// season red.
 function seasonRingStatus(tmdbId, season) {
   let failed=false, pending=false, stale=false, ready=false;
+  const libEps = new Set();
   for (const i of myLibrary) {
     if (i.TMDBID!==tmdbId || i.MediaType!=='tv' || i.Season!==season) continue;
+    libEps.add(i.Episode);
     if (i.Status==='ready') ready=true; else if (i.Status==='stale') stale=true;
   }
   for (const q of queueItems) {
-    if (q.TMDBID!==tmdbId || q.Season!==season) continue;
+    if (q.TMDBID!==tmdbId || q.Season!==season || libEps.has(q.Episode)) continue;
     if (q.Status==='failed') failed=true;
     else if (q.Status==='pending'||q.Status==='processing') pending=true;
   }
@@ -1394,6 +1555,8 @@ async function doSearch() {
   if (!q) { clearSearch(); return; }
   document.getElementById('hint').textContent = 'Searching…';
   document.getElementById('carousels').style.display = 'none';
+  const heroEl = document.getElementById('hero'); if (heroEl) heroEl.style.display = 'none';
+  document.querySelector('header')?.classList.remove('transparent');
   document.getElementById('search-results').style.display = '';
   document.getElementById('results').innerHTML = '';
   try {
@@ -1413,6 +1576,9 @@ function clearSearch() {
   document.getElementById('hint').textContent = '';
   document.getElementById('search-results').style.display = 'none';
   document.getElementById('carousels').style.display = '';
+  const heroEl = document.getElementById('hero');
+  if (heroEl && heroItems.length) heroEl.style.display = '';
+  onScrollHeader();
 }
 
 // Search-as-you-type: debounced, and reflected in the URL via replaceState so it
@@ -1433,6 +1599,108 @@ document.getElementById('q').addEventListener('input', e => {
     history.replaceState(null, '', renderedRoute);
   }, 400);
 });
+
+// ── Cinematic hero ──────────────────────────────────────────────────────────────
+let heroItems = [], heroIdx = 0, heroTimer = null;
+
+async function loadHero() {
+  const el = document.getElementById('hero');
+  if (!el) return;
+  try {
+    const trending = await fetch('/api/browse/trending').then(r => r.json());
+    // Take the strongest few that have artwork; enrich each with a backdrop + overview.
+    const picks = (trending || []).filter(t => t.poster_url).slice(0, 5);
+    const full = await Promise.all(picks.map(t =>
+      fetch(`/api/tmdb/${t.tmdb_id}/full?type=${t.media_type}`).then(r => r.json()).catch(() => null)));
+    heroItems = full.filter(d => d && d.backdrop_url);
+    if (!heroItems.length) { el.style.display = 'none'; return; }
+    el.innerHTML = `
+      <div class="hero-bg" id="hero-bg"></div>
+      <div class="hero-inner">
+        <div class="hero-eyebrow">🔥 <b>Trending</b> Now</div>
+        <h1 class="hero-title" id="hero-title"></h1>
+        <div class="hero-meta" id="hero-meta"></div>
+        <p class="hero-overview" id="hero-overview"></p>
+        <div class="hero-actions" id="hero-actions"></div>
+        <div class="hero-dots" id="hero-dots"></div>
+      </div>`;
+    // Preload backdrops so transitions are instant.
+    heroItems.forEach(d => { const i = new Image(); i.src = d.backdrop_url; });
+    renderHero(0);
+    startHeroRotate();
+  } catch(_) { el.style.display = 'none'; }
+}
+
+function renderHero(i) {
+  if (!heroItems.length) return;
+  const idx = (i + heroItems.length) % heroItems.length;
+  const d = heroItems[idx];
+  const bg = document.getElementById('hero-bg');
+  // Swap the backdrop and the text TOGETHER, gated on the image being ready — otherwise the
+  // title flips instantly while the backdrop cross-fades, so they read as mismatched. The
+  // target item `d` is captured in this closure so a fast dot-click can't desync them.
+  const img = new Image();
+  img.alt = '';
+  img.src = d.backdrop_url;
+  // Only swap once the new backdrop is fully DECODED (paintable). Then reveal it and fade the
+  // OLD one out — never leave a previous backdrop sitting opaque underneath, which is what made
+  // the title and image read as mismatched during/after a transition.
+  const commit = () => {
+    if (heroIdx === idx && bg.querySelector('img.show')) return; // already current
+    bg.appendChild(img);
+    requestAnimationFrame(() => img.classList.add('show'));
+    bg.querySelectorAll('img').forEach(el => {
+      if (el !== img) { el.classList.remove('show'); setTimeout(() => el.remove(), 600); }
+    });
+    heroIdx = idx;
+    paintHeroText(d);
+    paintHeroDots();
+  };
+  const skip = () => { heroIdx = idx; }; // broken artwork: don't show it; let rotation move on
+  if (img.decode) img.decode().then(commit).catch(skip);
+  else { img.onload = commit; img.onerror = skip; }
+}
+
+function paintHeroText(d) {
+  document.getElementById('hero-title').textContent = d.title;
+  const genres = (d.genres || []).slice(0, 3).map(g => `<span class="hero-chip">${esc(g)}</span>`).join('');
+  const rating = d.vote_average ? `<span class="hero-rate">★ ${d.vote_average.toFixed(1)}</span>` : '';
+  const runtime = d.runtime_minutes ? `${Math.floor(d.runtime_minutes/60)}h ${d.runtime_minutes%60}m` : '';
+  const bits = [
+    rating,
+    d.year ? `<span>${esc(d.year)}</span>` : '',
+    `<span class="hero-chip">${d.media_type === 'tv' ? 'Series' : 'Movie'}</span>`,
+    runtime ? `<span>${runtime}</span>` : '',
+    genres,
+  ].filter(Boolean);
+  document.getElementById('hero-meta').innerHTML = bits.join('<span class="dotsep"></span>');
+  document.getElementById('hero-overview').textContent = d.overview || '';
+  const cta = d.media_type === 'tv' ? '▶ Browse Episodes' : '＋ Request';
+  document.getElementById('hero-actions').innerHTML =
+    `<button class="hero-btn primary" onclick="navItem('${d.media_type}',${d.tmdb_id})">${cta}</button>
+     <button class="hero-btn ghost" onclick="navItem('${d.media_type}',${d.tmdb_id})">Details</button>`;
+}
+
+function paintHeroDots() {
+  document.getElementById('hero-dots').innerHTML = heroItems.map((_, n) =>
+    `<button class="hero-dot${n === heroIdx ? ' active' : ''}" aria-label="Featured ${n+1}" onclick="goHero(${n})"></button>`).join('');
+}
+
+function goHero(n) { renderHero(n); startHeroRotate(); }
+function startHeroRotate() {
+  clearInterval(heroTimer);
+  heroTimer = setInterval(() => { if (!document.hidden) renderHero(heroIdx + 1); }, 7000);
+}
+
+// Header turns transparent while the home hero is under it, solid once you scroll past.
+function onScrollHeader() {
+  const header = document.querySelector('header');
+  if (!header) return;
+  const onHome = document.getElementById('page-home').classList.contains('active');
+  const hero = document.getElementById('hero');
+  const heroVisible = onHome && hero && hero.offsetParent !== null && hero.offsetHeight > 0;
+  header.classList.toggle('transparent', heroVisible && window.scrollY < (hero.offsetHeight - 120));
+}
 
 // ── Carousels ─────────────────────────────────────────────────────────────────
 function renderCarousels() {
@@ -1493,8 +1761,12 @@ function renderResultsGrid(container, results, isCarousel = false) {
     const overlayClass = isCarousel ? 'carousel-card-overlay' : 'card-overlay';
     const titleClass = isCarousel ? 'carousel-card-title' : 'card-title';
     const metaClass = isCarousel ? 'carousel-card-meta' : 'card-meta';
-    const actionLabel = mediaType === 'tv' ? '▶ Browse' : '▶ Request';
+    const actionLabel = mediaType === 'tv' ? '▶ Browse' : '＋ Request';
+    const rate = (r.vote_average || r.VoteAverage);
+    const rateBadge = rate ? `<span class="card-rating">★ ${Number(rate).toFixed(1)}</span>` : '';
     div.innerHTML = `${img}
+      <div class="card-scrim"></div>
+      ${rateBadge}
       <div class="${overlayClass}">
         <div class="${titleClass}">${esc(title)}</div>
         <div class="${metaClass}">
@@ -1911,12 +2183,23 @@ function castHTML(cast) {
 
 function similarHTML(similar, mediaType) {
   if (!similar||!similar.length) return '';
-  const items = similar.slice(0,10).map(s => {
+  const card = s => {
     const img = s.poster_url ? `<img src="${esc(s.poster_url)}" loading="lazy" alt="${esc(s.title)}">` : `<div class="mini-thumb"></div>`;
     return `<div class="mini-card" onclick="openSimilar('${s.media_type||mediaType}',${s.tmdb_id})">
       ${img}<div class="mini-card-title">${esc(s.title)}</div></div>`;
-  }).join('');
-  return `<div class="modal-section"><div class="modal-section-title">Similar</div><div class="mini-strip">${items}</div></div>`;
+  };
+  // The backend orders items by relevance tier (franchise → "More Like This" → cast) and tags
+  // each with a section label. Group consecutively so each tier renders as its own strip.
+  const groups = [];
+  for (const s of similar) {
+    const label = s.group || 'More Like This';
+    let g = groups.length && groups[groups.length-1].label === label ? groups[groups.length-1] : null;
+    if (!g) { g = {label, items: []}; groups.push(g); }
+    g.items.push(s);
+  }
+  return groups.map(g =>
+    `<div class="modal-section"><div class="modal-section-title">${esc(g.label)}</div>` +
+    `<div class="mini-strip">${g.items.map(card).join('')}</div></div>`).join('');
 }
 
 function renderRichModal(d) {
@@ -2198,9 +2481,17 @@ async function requestIt() {
     }
     const data = await r.json();
     if (!r.ok) { btn.className = 'req-btn fail'; btn.textContent = data.error||'Failed'; btn.disabled = false; return; }
-    btn.className = 'req-btn success'; btn.textContent = '✓ Added to queue';
-    toast(`"${data.title||'Item'}" added to queue`);
-    libraryStatus[currentItem.tmdb_id] = {status:'pending', title: data.title};
+    btn.className = 'req-btn success';
+    if (data.status === 'ready') {
+      // Already available — server didn't enqueue a duplicate. Reflect the real state.
+      btn.textContent = '✓ Already in library';
+      toast(`"${data.title||'Item'}" is already available`);
+      libraryStatus[currentItem.tmdb_id] = {status:'ready', title: data.title};
+    } else {
+      btn.textContent = data.already ? '✓ Already queued' : '✓ Added to queue';
+      toast(`"${data.title||'Item'}" ${data.already ? 'is already queued' : 'added to queue'}`);
+      libraryStatus[currentItem.tmdb_id] = {status: data.status || 'pending', title: data.title};
+    }
     await pollQueue();
     // Reflect the new "queued" state on the episode row, keeping the panel + success button.
     if (currentItem.media_type === 'tv' && currentEpisode) {
