@@ -535,6 +535,18 @@ func (s *Store) CountReadyByHash(hash string) (int, error) {
 	return n, err
 }
 
+// CountReadyByHashExcept counts ready items sharing an info hash, excluding one strm path.
+// Used on playback-stop to decide whether ANY OTHER live item (e.g. another episode from
+// the same season pack) still needs the torrent before we drop it from TorrServer. The
+// stopped item itself stays 'ready', so it must be excluded from this count.
+func (s *Store) CountReadyByHashExcept(hash, strmPath string) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM items WHERE info_hash=? AND status='ready' AND strm_path<>?`,
+		hash, strmPath).Scan(&n)
+	return n, err
+}
+
 func (s *Store) GetByHash(hash string) (*Item, error) {
 	row := s.db.QueryRow(`SELECT `+itemCols+` FROM items WHERE info_hash=?`, hash)
 	return scanItem(row)
@@ -782,6 +794,41 @@ func (s *Store) QueuePendingCount() int {
 	var n int
 	s.db.QueryRow(`SELECT COUNT(*) FROM queue WHERE status IN ('pending','processing')`).Scan(&n)
 	return n
+}
+
+// ActiveQueueItem returns the newest in-flight (pending|processing) queue row for an identity,
+// or nil if none. Used to make a repeat request idempotent — we hand back the existing row
+// instead of enqueuing a duplicate that would show up alongside the library entry.
+func (s *Store) ActiveQueueItem(tmdbID int, mediaType string, season, episode int) (*QueueItem, error) {
+	var item QueueItem
+	err := s.db.QueryRow(
+		`SELECT id,tmdb_id,media_type,title,year,poster_url,season,episode,library_name,
+                requested_by,magnet_override,status,progress,error_msg,info_hash,strm_path,created_at,updated_at
+         FROM queue
+         WHERE tmdb_id=? AND media_type=? AND season=? AND episode=? AND status IN ('pending','processing')
+         ORDER BY created_at DESC LIMIT 1`,
+		tmdbID, mediaType, season, episode).Scan(
+		&item.ID, &item.TMDBID, &item.MediaType, &item.Title, &item.Year, &item.PosterURL,
+		&item.Season, &item.Episode, &item.LibraryName, &item.RequestedBy, &item.MagnetOverride,
+		&item.Status, &item.Progress, &item.ErrorMsg, &item.InfoHash, &item.StrmPath,
+		&item.CreatedAt, &item.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return &item, err
+}
+
+// ClearTerminalQueue deletes finished (done|failed|cancelled) queue rows for an identity.
+// Called when a fresh request supersedes them, so the queue never shows a stale "Failed"
+// or duplicate "Completed" entry for a title the library has since resolved. In-flight rows
+// (pending|processing) are left untouched.
+func (s *Store) ClearTerminalQueue(tmdbID int, mediaType string, season, episode int) error {
+	_, err := s.db.Exec(
+		`DELETE FROM queue
+         WHERE tmdb_id=? AND media_type=? AND season=? AND episode=? AND status IN ('done','failed','cancelled')`,
+		tmdbID, mediaType, season, episode)
+	return err
 }
 
 // ── Subscriptions ─────────────────────────────────────────────────────────────

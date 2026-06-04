@@ -82,10 +82,10 @@ func main() {
 
 	registry.Register(
 		"library-health-check",
-		"Check seeder health for all ready items. Marks items stale when their torrent drops below the minimum seeder threshold.",
+		"Re-check resolvability of every library item via the indexer (no TorrServer load). Marks items stale when no release meets the minimum seeder threshold, and revives stale items the moment one is seeded again.",
 		"library", "30 min", 30*time.Minute,
 		func(ctx context.Context) error {
-			return taskLibraryHealthCheck(ctx, db, indexerClient, tsClient, livePicker(cfg))
+			return taskLibraryHealthCheck(ctx, db, indexerClient, livePicker(cfg))
 		},
 	)
 
@@ -184,7 +184,7 @@ func main() {
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok","version":"0.1.0"}`))
+		w.Write([]byte(`{"status":"ok","version":"0.2.1"}`))
 	})
 
 	// Lightweight "is anyone watching?" signal for the VPN watchdog / port-forward keeper so
@@ -562,6 +562,25 @@ func main() {
 		if title == "" {
 			title = fmt.Sprintf("TMDB #%d", req.TMDBID)
 		}
+		// Idempotency — keep the queue consistent with the library. A bare re-request (no
+		// explicit magnet override) for a title that's already available, or already in
+		// flight, must NOT spawn a duplicate queue row. An explicit magnet means the user is
+		// deliberately re-picking a release, so we always re-resolve in that case. Stale items
+		// fall through to a fresh enqueue (a re-request is how the user revives an expired one).
+		if req.Magnet == "" {
+			if existing, _ := db.GetByIdentity(req.TMDBID, req.MediaType, req.Season, req.Episode); existing != nil && existing.Status == "ready" {
+				db.ClearTerminalQueue(req.TMDBID, req.MediaType, req.Season, req.Episode)
+				jsonOK(w, map[string]any{"status": "ready", "already": true, "title": title, "year": req.Year})
+				return
+			}
+			if active, _ := db.ActiveQueueItem(req.TMDBID, req.MediaType, req.Season, req.Episode); active != nil {
+				jsonOK(w, map[string]any{"queue_id": active.ID, "status": active.Status, "already": true, "title": title, "year": req.Year})
+				return
+			}
+		}
+		// Supersede any finished (failed/cancelled/done) rows for this identity so the new
+		// request replaces them rather than piling up next to the library entry.
+		db.ClearTerminalQueue(req.TMDBID, req.MediaType, req.Season, req.Episode)
 		qItem := &store.QueueItem{
 			TMDBID: req.TMDBID, MediaType: req.MediaType,
 			Title: title, Year: req.Year, PosterURL: req.PosterURL,
@@ -622,6 +641,10 @@ func main() {
 			if title == "" {
 				title = fmt.Sprintf("TMDB #%d", req.TMDBID)
 			}
+			// Supersede a prior failed/cancelled attempt for this episode (EpisodeActive only
+			// skips ready/in-flight, so a failed episode re-enqueues here) — drop the stale row
+			// so it can't keep painting the season ring red after the retry succeeds.
+			db.ClearTerminalQueue(req.TMDBID, "tv", req.Season, ep.Number)
 			qItem := &store.QueueItem{
 				TMDBID: req.TMDBID, MediaType: "tv",
 				Title: title, Year: req.Year, PosterURL: req.PosterURL,
@@ -1281,9 +1304,11 @@ func main() {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		// Mark expired (revivable) — playback ended, free the TorrServer cache.
-		db.MarkStale(item.StrmPath)
-		if n, _ := db.CountReadyByHash(item.InfoHash); n == 0 {
+		// Playback ended: free the TorrServer cache, but the item STAYS 'ready'. It's still
+		// resolvable, and /play re-adds the torrent on demand next time. Staleness is decided
+		// solely by resolvability (the health check) — never by playback ending. Drop only when
+		// no OTHER live item (e.g. another episode from the same season pack) needs this hash.
+		if n, _ := db.CountReadyByHashExcept(item.InfoHash, item.StrmPath); n == 0 {
 			if err := tsClient.Drop(item.InfoHash); err == nil {
 				slog.Info("torrent dropped after playback stop", "title", item.Title)
 			}
@@ -1932,43 +1957,41 @@ func validateVideoFile(f *torrserver.FileInfo, mediaType string) error {
 
 // ── Background task functions ─────────────────────────────────────────────────
 
-// reviveWindow bounds how long after going stale we keep trying to auto-readd.
-const reviveWindow = 14 * 24 * time.Hour
-
-// tryRevive re-adds a dropped torrent to TorrServer and confirms it loads files.
-// Only attempts revival when we have the original full magnet (which carries
-// trackers, so metadata resolves quickly and faithfully reproduces the user's
-// chosen release). Items without a stored magnet are left Expired for the user
-// to Re-request and self-pick — a bare infohash magnet resolves too slowly/
-// unreliably via DHT to be worth attempting automatically.
-func tryRevive(ctx context.Context, tsClient *torrserver.Client, item *store.Item) bool {
-	if item.Magnet == "" {
-		return false
-	}
-	hash, err := tsClient.Add(item.Magnet, item.Title)
-	if err != nil || hash == "" {
-		return false
-	}
-	// Wait briefly for metadata/files to resolve.
-	for i := 0; i < 5; i++ {
-		select {
-		case <-ctx.Done():
-			return false
-		default:
+// resolvableSeeders inspects indexer results for an item and returns the seeder count to
+// record if the item is still resolvable, or -1 if nothing meets the picker's threshold.
+// It prefers the seeder count of the EXACT cached release (matching hash) when that release
+// is still listed; otherwise it falls back to the best-ranked eligible candidate. picker.Score
+// already drops anything below MinSeeders and is sorted best-first, so the first eligible
+// (non-CAM, when RejectCAM) entry is the strongest currently-available release.
+func resolvableSeeders(releases []indexer.Release, pc picker.Config, hash string) int {
+	best := -1
+	for _, sr := range picker.Score(releases, pc, "", "") {
+		if pc.RejectCAM && sr.IsCAM {
+			continue
 		}
-		info, err := tsClient.Stat(hash)
-		if err == nil && len(info.Files) > 0 {
-			return true
+		if hash != "" && sr.Release.InfoHash == hash {
+			return sr.Release.Seeders // the user's exact chosen release is still alive
 		}
-		time.Sleep(2 * time.Second)
+		if best < 0 {
+			best = sr.Release.Seeders // top-ranked fallback (Score is best-first)
+		}
 	}
-	// Revival failed — drop the dead torrent we just added so it doesn't
-	// occupy a TorrServer slot indefinitely.
-	tsClient.Drop(hash)
-	return false
+	return best
 }
 
-func taskLibraryHealthCheck(ctx context.Context, db *store.Store, idxClient *indexer.Client, tsClient *torrserver.Client, pickerCfg picker.Config) error {
+// taskLibraryHealthCheck refreshes the ready/stale state of every managed item.
+//
+// Post-M16 (Resolve-at-Play), "ready" means RESOLVABLE — a release with enough seeders still
+// exists — NOT "currently loaded in TorrServer". Between plays the torrent is deliberately
+// dropped, so liveness is an INDEXER question, never a TorrServer one. This check therefore
+// never touches TorrServer (re-adding torrents here would defeat the zero-background-load /
+// bounded-cache design); it only searches the indexer and flips state accordingly:
+//   - resolvable + was stale  → promote back to ready (clears stale_since)
+//   - resolvable              → refresh the informational seeder count
+//   - not resolvable + ready  → mark stale (records stale_since on first transition)
+// Revival back to ready happens lazily here, and the actual torrent is re-added on demand by
+// /play — so a stale item self-heals the moment its release is seeded again.
+func taskLibraryHealthCheck(ctx context.Context, db *store.Store, idxClient *indexer.Client, pickerCfg picker.Config) error {
 	items, err := db.ListReady() // ready + stale (managed)
 	if err != nil {
 		return err
@@ -1981,53 +2004,34 @@ func taskLibraryHealthCheck(ctx context.Context, db *store.Store, idxClient *ind
 		default:
 		}
 		checked++
-		info, err := tsClient.Stat(item.InfoHash)
-		alive := err == nil && info.Stat != 0 && len(info.Files) > 0
 
-		if !alive {
-			// Torrent is gone from TorrServer. Try to bring it back before giving up.
-			// Skip revival for items that have been stale beyond the revive window.
-			tooOld := item.StaleSince != nil && time.Since(*item.StaleSince) > reviveWindow
-			if !tooOld && tryRevive(ctx, tsClient, item) {
-				item.Status = "ready"
-				item.StaleSince = nil
-				item.Updated = time.Now()
-				db.Upsert(item)
-				revived++
-				continue
-			}
-			// Couldn't revive — mark stale (records stale_since on first transition).
-			if item.Status != "stale" {
-				db.MarkStale(item.StrmPath)
-				staleMark++
-			}
-			continue
-		}
-
-		// Torrent is alive. If it was stale, promote back to ready.
-		if item.Status == "stale" {
-			item.Status = "ready"
-			item.StaleSince = nil
-			item.Updated = time.Now()
-			db.Upsert(item)
-			revived++
-		}
-
-		// Refresh seeder count (informational; do not mark stale on low seeders
-		// while the stream is still actually live).
 		cats := []int{indexer.CatMovies}
 		if item.MediaType == "tv" {
 			cats = []int{indexer.CatTV}
 		}
-		if releases, err := idxClient.Search(item.Title, cats); err == nil {
-			for _, r := range releases {
-				if r.InfoHash == item.InfoHash {
-					item.Seeders = r.Seeders
-					item.Updated = time.Now()
-					db.Upsert(item)
-					break
-				}
+		releases, err := idxClient.Search(item.Title, cats)
+		if err != nil {
+			continue // transient indexer error — never flip state on a failed lookup
+		}
+		seeders := resolvableSeeders(releases, pickerCfg, item.InfoHash)
+
+		if seeders >= 0 {
+			// Still resolvable. Promote out of stale if needed, and refresh seeders.
+			if item.Status == "stale" {
+				item.Status = "ready"
+				item.StaleSince = nil
+				revived++
 			}
+			item.Seeders = seeders
+			item.Updated = time.Now()
+			db.Upsert(item)
+			continue
+		}
+
+		// Nothing resolvable right now — mark stale (records stale_since on first transition).
+		if item.Status != "stale" {
+			db.MarkStale(item.StrmPath)
+			staleMark++
 		}
 	}
 	slog.Info("library health check complete", "checked", checked, "revived", revived, "marked_stale", staleMark)
