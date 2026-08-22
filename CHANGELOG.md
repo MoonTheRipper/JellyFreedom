@@ -9,6 +9,24 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-22
+
+### Fixed
+- **`--only` and `--repair` aborted before verifying anything.** A path used while enabling
+  services was assigned inside a section those flags skip, so the run died on an unbound
+  variable partway through — a targeted repair did less than it reported. Now covered by a
+  test that exercises every component.
+- **The dashboard's log panel was empty.** It renders logs by running `journalctl` as the
+  orchestrator's account, and a plain system account can only read its own entries. A
+  regression from moving the service off a human login that happened to be in `adm`. The
+  installer now grants read-only `systemd-journal` membership and `doctor` checks for it.
+- **Playback was invisible in the logs.** `/play` logged only rejections and errors, so
+  watching the journal while pressing play showed nothing whether it worked or not. Every
+  request and its outcome is now logged with elapsed time.
+- CI readiness checks converge with a deadline instead of sampling the instant the installer
+  returns. Prowlarr — a .NET app that can take tens of seconds to boot — was found
+  `inactive` on a 22.04 runner and failed a build for healthy code.
+
 ## [0.4.1] - 2026-08-22
 
 ### Fixed
