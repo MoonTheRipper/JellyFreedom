@@ -278,6 +278,15 @@ ensure_user "$SVC_USER"
 ensure_user "$TS_USER"
 ensure_user "$FS_USER"
 
+# The dashboard shows service logs by shelling out to journalctl. A plain system account can
+# only read ITS OWN journal entries, so without this the Logs section is silently empty —
+# which is exactly what happened when this deployment moved off a human account that
+# happened to be in 'adm'. systemd-journal is read-only access to the journal; 'adm' would
+# also grant it but is a much broader group.
+if [ -z "$D" ] && getent group systemd-journal >/dev/null 2>&1; then
+  usermod -aG systemd-journal "$SVC_USER" 2>/dev/null && ok "$SVC_USER can read the journal (dashboard logs)"
+fi
+
 # FlareSolverr drives a real Chrome. Running it as root used to give it incidental access to
 # the GPU render nodes; a dedicated service account has none, and Chrome's GPU process then
 # dies taking the renderer with it — surfacing as the notoriously unhelpful

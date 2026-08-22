@@ -153,6 +153,16 @@ if section privs "Privileges"; then
     fail "privileged helper missing at $H" "sudo jellyfreedom repair — VPN status and activation cannot work without it"
   fi
 
+  # The dashboard's Logs section shells out to journalctl as the service account. Without
+  # membership of systemd-journal (or adm) it can only see its own entries, so the panel is
+  # silently empty and looks broken.
+  if id -nG "$SVC_USER" 2>/dev/null | grep -qwE 'systemd-journal|adm'; then
+    pass "$SVC_USER can read the journal (dashboard logs work)"
+  else
+    fail "$SVC_USER cannot read the system journal" \
+         "the dashboard's Logs section will be empty. Fix: sudo usermod -aG systemd-journal $SVC_USER && sudo systemctl restart jellyfreedom"
+  fi
+
   S=/etc/sudoers.d/jellyfreedom
   if [ -r "$S" ] || is_root; then
     if [ -f "$S" ]; then

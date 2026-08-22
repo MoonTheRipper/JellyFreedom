@@ -94,6 +94,14 @@ assert_file "$DEST/etc/apparmor.d/local/wg-quick"
 assert_contains "$DEST/etc/apparmor.d/local/wg-quick" '/run/vpntorrent/** r,'
 assert_contains "$DEST/etc/apparmor.d/local/wg-quick" 'vpnconfigs/** r,'
 
+describe "REGRESSION: the service account can read the journal"
+# The dashboard renders logs by running journalctl as the service account. A plain system
+# account sees only its own entries, so the Logs section goes silently empty — observed
+# after moving this deployment off a human account that happened to be in 'adm'.
+_check; grep -q 'usermod -aG systemd-journal' "$REPO_ROOT/release/install.sh" \
+  && _pass "installer grants journal read access" \
+  || _fail "installer grants journal read access" "the dashboard Logs section will be empty"
+
 describe "REGRESSION: the privileged helper is installed root-owned"
 # The helper is the only path to root. If the service user can write it, it is worthless.
 assert_exec "$DEST/opt/vpntorrent/jf-netns-helper"
