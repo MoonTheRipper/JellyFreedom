@@ -177,6 +177,21 @@ assert_mode()      { _check; local m; m=$(stat -c '%a' "$1" 2>/dev/null); [ "$m"
 assert_output()    { _check; grep -qiF -- "$1" "$OUTPUT" && _pass "output mentions: $1" || _fail "output mentions: $1" "not printed"; }
 assert_unchanged() { _check; [ "$(cat "$1" 2>/dev/null)" = "$2" ] && _pass "preserved: ${1#$DEST}" || _fail "preserved: ${1#$DEST}" "content changed"; }
 
+# A full run must not emit shell errors. This catches the class of defect where a script is
+# syntactically valid — so `bash -n` passes — but a mangled line executes as a bogus command.
+# A stray "x" glued to a comment once shipped this way: every install printed
+# "x#: command not found" and every functional assertion still passed.
+assert_no_shell_errors() {
+  _check
+  local hits
+  hits=$(grep -aiE 'command not found|syntax error|unexpected token|: not found$' "$OUTPUT" 2>/dev/null | head -3)
+  if [ -n "$hits" ]; then
+    _fail "installer emitted no shell errors" "$(printf '%s' "$hits" | tr '\n' '|')"
+  else
+    _pass "installer emitted no shell errors"
+  fi
+}
+
 describe() { printf '\n%s▸ %s%s\n' "$c_ylw" "$1" "$c_off"; }
 
 summary() {

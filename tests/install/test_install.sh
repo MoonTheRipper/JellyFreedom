@@ -34,6 +34,8 @@ assert_file "$DEST/etc/systemd/system/torrserver-netns.service"
 assert_ran 'systemctl daemon-reload'
 assert_ran_re 'systemctl enable .*jellyfreedom'
 
+assert_no_shell_errors
+
 describe "REGRESSION: sudoers must use the path sudo actually matches"
 # sudo matches the resolved command path and does not follow the merged-usr
 # /bin -> /usr/bin symlink. A rule written as /bin/systemctl never matches, so every
@@ -111,6 +113,7 @@ printf 'MY-EDITED-CONFIG\n' > "$CONFIG"
 run_installer
 assert_exit 0
 assert_unchanged "$CONFIG" 'MY-EDITED-CONFIG'
+assert_no_shell_errors
 assert_not_ran 'useradd --system --no-create-home --shell /usr/sbin/nologin jellyfreedom'
 
 # ---------------------------------------------------------------- arch handling
