@@ -585,9 +585,19 @@ Environment=HOME=${FS_HOME#"$D"}
 Environment=HOST=127.0.0.1
 Environment=LOG_LEVEL=info
 WorkingDirectory=${FS_HOME#"$D"}
+# Prune profile directories left behind by a previous life before starting. Scoped by owner
+# and age so it can only ever touch this service's own leftovers. Observed on a live box:
+# eight orphaned Chrome processes reparented to init, holding 1.19GB of RAM, plus six stale
+# profile dirs — the residue of earlier crashes.
+ExecStartPre=-/usr/bin/find /tmp -maxdepth 1 -name 'tmp*' -user ${FS_USER} -mmin +60 -exec rm -rf {} +
 ExecStart=${FS_DIR#"$D"}/flaresolverr
 Restart=on-failure
 RestartSec=3
+# FlareSolverr spawns Chrome, which spawns renderers. Killing the whole control group is the
+# default, but state it explicitly: without it a crash can leave browsers running as orphans
+# that accumulate across restarts and quietly consume gigabytes.
+KillMode=control-group
+TimeoutStopSec=20
 # DO NOT add LimitAS= — Chrome reserves a very large allocator region and aborts.
 # DO NOT add PrivateTmp=yes — it breaks the system-chromium fallback.
 

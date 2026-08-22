@@ -29,6 +29,9 @@
   <span class="header-tag">Dashboard</span>
 
   <div class="header-right">
+    <!-- Running version. Filled in by dashboard/modules/version.js from
+         /healthz; hidden until it is known so it can never show a wrong one. -->
+    <button type="button" class="header-btn ver-chip" id="header-version" hidden></button>
     <div class="health-wrap">
       <button type="button" class="health-dot" id="health-dot"
         aria-label="Stack health" aria-expanded="false" aria-haspopup="dialog"></button>
@@ -199,6 +202,17 @@
       <div class="section-header">
         <h2>Settings</h2>
         <button class="btn" type="button" data-settings-reload="1">Reload</button>
+      </div>
+
+      <!-- Version & updates. Markup is injected by dashboard/modules/version.js.
+           Unlike the banner above, this card is ALWAYS rendered — it states the
+           running version, the check result (including failures) and when the
+           last check ran, and its Check now button is always available. -->
+      <div class="set-card" id="version-card">
+        <h3 class="set-card-title">Version &amp; updates</h3>
+        <p class="set-hint">What this instance is running, and whether a newer release
+          exists. <b>Check now</b> asks GitHub directly, bypassing the six-hour cache.</p>
+        <div id="version-body"></div>
       </div>
 
       <div class="set-card">

@@ -216,6 +216,9 @@ assert_not_active "$FSU" 'LimitAS='
 assert_not_active "$FSU" 'PrivateTmp=yes'
 # CAPTCHA_SOLVER is read nowhere in FlareSolverr 3.5.0 — dead config.
 assert_not_active "$FSU" 'CAPTCHA_SOLVER'
+# A crash used to leave Chrome running as an orphan; they accumulated to 1.19GB on a live box.
+assert_contains "$FSU" 'KillMode=control-group'
+assert_contains "$FSU" "ExecStartPre="
 
 # ---------------------------------------------------------------- torrserver pin
 describe "REGRESSION: TorrServer version is resolved, not pinned to a dead tag"

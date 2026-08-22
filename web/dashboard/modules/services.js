@@ -68,11 +68,64 @@ function renderServices(services) {
 }
 
 async function restart(svc) {
+  // Restarting the orchestrator is not like restarting the other five. It cannot be done
+  // through sudo — the policy deliberately withholds `restart jellyfreedom`, because a
+  // service that can bounce itself through root is a persistence primitive. Instead the
+  // server shuts itself down and systemd starts it again, which means:
+  //   * the reply is 202 "accepted", NOT "done";
+  //   * this page then loses its server for a few seconds, which is the success path;
+  //   * a 409 means a restart is already running, which is benign, not an error.
+  // Reported by the owner as "jellyfreedom is non-restartable".
+  if (svc === SELF_UNIT) return restartSelf();
   try {
     await apiFetch(`/api/services/${encodeURIComponent(svc)}/restart`, {method: 'POST'});
   } catch (e) { toast(e.message, {ok: false}); return; }
   toast(`Restarted ${svc}`);
   setTimeout(fetchStatus, 2000);
+}
+
+async function restartSelf() {
+  if (!confirm('Restart JellyFreedom?\n\nThis page will lose its connection for a few '
+             + 'seconds and reconnect on its own.\n\nAny in-flight torrent stream will be '
+             + 'interrupted.')) return;
+
+  const banner = document.getElementById('restart-banner');
+  banner.hidden = false;
+  banner.innerHTML = `<div class="callout info">${icon('refresh')}<div class="callout-body">
+    <div class="callout-title">Restarting JellyFreedom…</div>
+    <p id="restart-progress">Asking the service to restart.</p></div></div>`;
+  const progress = document.getElementById('restart-progress');
+
+  try {
+    await apiFetch(`/api/services/${encodeURIComponent(SELF_UNIT)}/restart`, {method: 'POST'});
+  } catch (e) {
+    // status 0 == the connection dropped, which is exactly what we asked for.
+    // 409 == a restart is already in flight; join it rather than reporting a failure.
+    if (e.status && e.status !== 409) {
+      // 412 (the unit would not come back) and 501 are real, actionable refusals: nothing
+      // happened and the service is still up, so surface the server's own wording.
+      banner.innerHTML = `<div class="callout err">${icon('alert')}<div class="callout-body">
+        <div class="callout-title">JellyFreedom was not restarted</div>
+        <p>${esc(e.message)}</p></div></div>`;
+      return;
+    }
+  }
+
+  const back = await waitForServer(progress);
+  if (back) {
+    banner.hidden = true;
+    toast('JellyFreedom restarted');
+    fetchStatus();
+    return;
+  }
+  banner.innerHTML = `<div class="callout err">${icon('alert')}<div class="callout-body">
+    <div class="callout-title">JellyFreedom did not come back</div>
+    <p>It has not answered for 40 seconds. Check it on the host with
+    <code>systemctl status jellyfreedom</code> and
+    <code>journalctl -u jellyfreedom -n 100</code>.</p>
+    <div class="callout-actions"><button class="btn sm" type="button"
+      data-reload="1">${icon('refresh')} Reload page</button></div>
+  </div></div>`;
 }
 
 /**

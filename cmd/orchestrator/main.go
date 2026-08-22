@@ -86,6 +86,11 @@ func main() {
 	api.SetStore(db)
 	api.SetSecureCookies(cfg.Server.SecureCookies)
 
+	// The dashboard can restart the orchestrator itself. It needs no sudo rule: the
+	// trigger cancels this very context, and main then exits non-zero so systemd's
+	// Restart=on-failure starts us again. See selfrestart.go.
+	wireSelfRestart(stop)
+
 	// The play capability key must exist before any .strm URL is minted or verified.
 	if err := loadPlayKey(db); err != nil {
 		slog.Error("failed to initialise play capability key", "err", err)
@@ -2069,6 +2074,21 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("stopped cleanly", "version", version)
+
+	// A self-restart is a clean shutdown that must NOT look like a clean exit to
+	// systemd. Everything above has already run — workers cancelled, HTTP drained —
+	// so all that is left is to close the store and exit non-zero.
+	if selfRestartRequested.Load() {
+		stop()
+		if err := db.Close(); err != nil {
+			slog.Error("self-restart: closing the store", "err", err)
+		}
+		slog.Warn("self-restart: exiting non-zero so systemd starts this service again",
+			"exit_code", selfRestartExitCode)
+		// LOAD-BEARING, not an error path: Restart=on-failure only fires for a non-zero
+		// exit. Exiting 0 here would leave JellyFreedom stopped. See selfrestart.go.
+		os.Exit(selfRestartExitCode)
+	}
 }
 
 func buildProtectedMux(db *store.Store, assets fs.FS, indexerClient *indexer.Client,

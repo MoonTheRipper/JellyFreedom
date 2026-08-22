@@ -9,6 +9,38 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-22
+
+### Fixed
+- **The dashboard's "restart" button for JellyFreedom itself could never work.** The service
+  was listed as restartable, but the hardened sudoers policy deliberately withholds
+  `restart jellyfreedom` — a service able to bounce itself through root is a persistence
+  primitive. It now restarts itself with no privilege at all: it shuts down by exactly the
+  same path as SIGTERM (workers cancelled, WAL checkpointed, database closed) and exits
+  non-zero so systemd's `Restart=` brings it back. It first confirms the unit's restart
+  policy is `always` or `on-failure` — the only two that revive on a non-zero exit — and
+  refuses with a clear message otherwise, rather than shutting down permanently.
+- **FlareSolverr leaked Chrome processes.** A live instance had accumulated eight orphaned
+  browsers reparented to init, holding 1.19GB of RAM, plus stale profile directories. The
+  unit now states `KillMode=control-group` explicitly and prunes leftover profile
+  directories before starting, scoped by owner and age so it can only touch its own.
+
+### Added
+- The dashboard shows the running version, the update state, when it last checked, and a
+  **Check now** button that forces a fresh check. Previously the only signal was a banner
+  that appeared when an update happened to exist, so "no banner" was ambiguous between
+  "up to date" and "the check silently failed". A source build reports `dev` and is
+  correctly described as not updatable rather than as an error.
+
+### Known issues
+- On Ubuntu 24.04 and later, FlareSolverr cannot start a browser session under its dedicated
+  service account and the installer falls back to running it as root, reporting this
+  plainly. It works unprivileged on 22.04. Chrome itself is healthy under that account —
+  it launches with its own profile and answers on the DevTools port — so the fault is inside
+  `undetected_chromedriver`'s session negotiation, which hides the browser's stderr.
+  AppArmor's unprivileged-userns restriction, a missing `--no-sandbox`, GPU device group
+  membership and the profile directory have all been ruled out by direct test.
+
 ## [0.4.0] - 2026-08-22
 
 ### Added

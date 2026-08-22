@@ -19,6 +19,7 @@ import {initUsers, fetchUsers} from './modules/users.js';
 import {initTasks, fetchTasks, stopTaskPolling} from './modules/tasks.js';
 import {initSettings, fetchSettings} from './modules/settings.js';
 import {initUpdate, checkUpdate} from './modules/update.js';
+import {initVersion} from './modules/version.js';
 
 let popoverOpen = false;
 let health = {known: false, ok: true, degraded: []};
@@ -36,6 +37,9 @@ async function init() {
   initTasks();
   initSettings();
   initUpdate();
+  // Registered BEFORE the load-time check below, so the version panel receives
+  // that check's state transitions rather than missing them.
+  initVersion();
   initHealthDot();
 
   nav.onEnter('setup', renderChecklist);

@@ -118,6 +118,13 @@ func ServiceRestartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	svc := parts[len(parts)-2]
+	// Restarting ourselves needs no privilege at all: shut down gracefully and exit
+	// non-zero, and systemd's Restart=on-failure brings us back. See selfrestart.go.
+	// This is why jellyfreedom is absent from the sudo allowlist below.
+	if svc == selfServiceName {
+		handleSelfRestart(w)
+		return
+	}
 	// The unit name comes from a HARDCODED allowlist, never from the request path.
 	if RestartableUnit(svc) == "" {
 		jsonErr(w, "unknown or non-restartable service", http.StatusBadRequest)
