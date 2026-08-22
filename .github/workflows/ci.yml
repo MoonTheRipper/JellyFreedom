@@ -283,19 +283,18 @@ jobs:
 
       - name: ASSERT — core units are active
         run: |
+          . .github/scripts/wait-for.sh
+          # Check BOTH before failing, so one dead unit does not hide the state of the other.
           fail=0
-          for u in jellyfreedom vpntorrent-netns; do
-            state="$(systemctl is-active "$u" 2>&1 || true)"
-            if [ "$state" != "active" ]; then
-              echo "::error::$u is '$state', expected active"; fail=1
-            else
-              echo "ok: $u active"
-            fi
-          done
+          wait_unit_active jellyfreedom 90    || fail=1
+          wait_unit_active vpntorrent-netns 60 || fail=1
           exit "$fail"
 
       - name: ASSERT — orchestrator answers /healthz
         run: |
+          . .github/scripts/wait-for.sh
+          wait_http "$ORCHESTRATOR/healthz" 90 '.status == "ok"'
+          # Re-fetch for the content assertions so a failure prints the body it judged.
           body="$(curl -fsS -m 10 "$ORCHESTRATOR/healthz")"
           echo "healthz: $body"
           echo "$body" | jq -e '.status == "ok"' > /dev/null
@@ -383,23 +382,26 @@ jobs:
 
       - name: ASSERT — Prowlarr answers
         run: |
-          state="$(systemctl is-active prowlarr 2>&1 || true)"
-          [ "$state" = "active" ] || { echo "::error::prowlarr is '$state', expected active"; exit 1; }
-          curl -fsS -m 15 "$PROWLARR/ping" | tee /dev/stderr | jq -e '.status' > /dev/null
+          # Prowlarr is a .NET app and can take tens of seconds to boot. Sampling once, right
+          # after the installer returned, found it 'inactive' on a 22.04 runner and failed a
+          # build for healthy code. We are testing that the installer produces a working
+          # system, not how fast this runner starts .NET — so converge, with a deadline.
+          . .github/scripts/wait-for.sh
+          wait_unit_active prowlarr 120
+          wait_http "$PROWLARR/ping" 120 '.status'
 
       - name: ASSERT — TorrServer answers from inside the netns
         run: |
-          state="$(systemctl is-active torrserver-netns 2>&1 || true)"
-          [ "$state" = "active" ] || { echo "::error::torrserver-netns is '$state', expected active"; exit 1; }
-          code="$(curl -s -o /tmp/ts.out -m 10 -w '%{http_code}' "$TORRSERVER/echo" || true)"
-          echo "torrserver /echo -> $code : $(head -c 200 /tmp/ts.out || true)"
-          if [ -z "$code" ] || [ "$code" = "000" ]; then
-            echo "::error::TorrServer did not answer on $TORRSERVER"; exit 1
-          fi
+          . .github/scripts/wait-for.sh
+          wait_unit_active torrserver-netns 90
+          # TorrServer lives inside the network namespace, so reachability here also proves
+          # the veth plumbing. Any 2xx is enough; we are not asserting its response shape.
+          wait_http "$TORRSERVER/echo" 90
 
       - name: ASSERT — Jellyfin answers
         run: |
-          curl -fsS -m 15 "$JELLYFIN/System/Info/Public" | tee /dev/stderr | jq -e '.Version' > /dev/null
+          . .github/scripts/wait-for.sh
+          wait_http "$JELLYFIN/System/Info/Public" 150 '.Version'
 
       - name: "ASSERT [REGRESSION R2] — netns up and FAIL-CLOSED with no VPN config"
         run: |

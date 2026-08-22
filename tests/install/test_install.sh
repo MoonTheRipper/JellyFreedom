@@ -274,6 +274,34 @@ _check; grep -q 'RUN_USER' "$REPO_ROOT/release/install.sh" \
   && _pass "installer preserves an existing unit User=" \
   || _fail "installer preserves an existing unit User=" "no RUN_USER handling found"
 
+# ---------------------------------------------------------------- --only / --repair
+describe "REGRESSION: --only runs to completion for a single component"
+# --only skips whole sections, and a path defined inside a skipped section then blew up under
+# `set -u` while enabling services: "TS_BIN: unbound variable". The installer aborted before
+# it could verify anything, so a targeted repair silently did less than it claimed.
+for comp in flaresolverr torrserver jellyfin prowlarr; do
+  sandbox_new "only-$comp"
+  mock_standard
+  run_installer --only "$comp"
+  _check
+  if grep -aqiE 'unbound variable|command not found|syntax error' "$OUTPUT"; then
+    _fail "--only $comp runs clean" "$(grep -aiE 'unbound variable|command not found' "$OUTPUT" | head -1)"
+  else
+    _pass "--only $comp runs clean"
+  fi
+  assert_exit 0
+done
+
+describe "REGRESSION: --repair runs to completion"
+sandbox_new repair-one
+mock_standard
+run_installer --repair flaresolverr
+_check
+grep -aqiE 'unbound variable|command not found|syntax error' "$OUTPUT" \
+  && _fail "--repair runs clean" "$(grep -aiE 'unbound variable|command not found' "$OUTPUT" | head -1)" \
+  || _pass "--repair runs clean"
+assert_exit 0
+
 # ---------------------------------------------------------------- logging
 describe "the installer writes a transcript the user can be pointed at"
 sandbox_new logging

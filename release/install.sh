@@ -51,6 +51,11 @@ TS_VERSION_FALLBACK="MatriX.143"
 
 LOGFILE="$D/var/log/jellyfreedom-install.log"
 
+# Paths referenced from sections that --only may skip must be defined unconditionally, or
+# `set -u` aborts the run partway. `--only flaresolverr` skipped the TorrServer section and
+# then died on an unbound TS_BIN while enabling services — before verification could run.
+TS_BIN="$D/usr/local/bin/torrserver"
+
 
 # Ownership requires root. Under JF_DESTDIR the installer runs unprivileged against a fake
 # root, so ownership flags are dropped there — the tests assert placement and mode, which is
@@ -384,7 +389,6 @@ fi
 # ==========================================================================================
 if want torrserver; then
 say "TorrServer"
-TS_BIN="$D/usr/local/bin/torrserver"
 if [ -x "$TS_BIN" ] && ! repairing torrserver; then
   ok "present at ${TS_BIN#"$D"} — left alone"
   mark torrserver ok

@@ -33,13 +33,28 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
   correctly described as not updatable rather than as an error.
 
 ### Known issues
-- On Ubuntu 24.04 and later, FlareSolverr cannot start a browser session under its dedicated
-  service account and the installer falls back to running it as root, reporting this
-  plainly. It works unprivileged on 22.04. Chrome itself is healthy under that account —
-  it launches with its own profile and answers on the DevTools port — so the fault is inside
-  `undetected_chromedriver`'s session negotiation, which hides the browser's stderr.
-  AppArmor's unprivileged-userns restriction, a missing `--no-sandbox`, GPU device group
-  membership and the profile directory have all been ruled out by direct test.
+- **FlareSolverr becomes unreliable after its first solve.** Measured on a clean 22.04
+  runner: two solves succeeded and eight failed in a single run, the successes being the
+  installer's own gating probe and every later attempt returning *"invalid session id:
+  session deleted as the browser has closed the connection"* — including three deliberate
+  retries fifteen seconds apart. The same shape appears on a long-running host. It also
+  leaks a browser per session: one live machine had eight orphaned Chrome processes holding
+  1.19GB. Behaviour differs by host and is not yet fully characterised: on a clean 22.04
+  runner the first solve after a start succeeds and later ones fail, whereas on a
+  long-running 26.04 host with the dedicated service account and the bundled browser every
+  solve fails, including the first after a restart. The unit changes in this release stop
+  orphans accumulating across restarts but do not fix the per-session leak, which is
+  upstream. The installer's probe chain is what finds a working combination on a given
+  host, and it reports which one it settled on.
+  Ruled out by direct test as causes: AppArmor's unprivileged-userns restriction (the
+  service account can create namespaces), a missing `--no-sandbox` (Chrome runs fine
+  without it as that user), GPU device-group membership, and the profile directory. Chrome
+  itself is healthy — it launches under the service account with its own profile and
+  answers on the DevTools port — so the fault is inside `undetected_chromedriver`'s session
+  handling, which hides the browser's stderr.
+- On Ubuntu 24.04 and later the installer's probe chain often ends up running FlareSolverr
+  as root, and says so plainly in its component table rather than hiding it. It runs
+  unprivileged on 22.04.
 
 ## [0.4.0] - 2026-08-22
 
