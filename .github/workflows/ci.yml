@@ -114,6 +114,8 @@ jobs:
             vpntorrent/jf-netns-helper*
             tests/install/*.sh
             tests/doctor/*.sh
+            .github/scripts/*.sh
+            release/jf-update
           )
           # de-duplicate, keep only real files
           : > /tmp/shellfiles.txt
@@ -325,7 +327,14 @@ jobs:
           log=/var/log/jellyfreedom-install.log
           sudo test -r "$log" || { echo "::error::no installer log at $log"; exit 1; }
 
-          verdict="$(sudo grep -aoE 'flaresolverr +(ready|installed but NOT working|working, but running as root|skipped)' "$log" | tail -1 || true)"
+          # Parse the table STRUCTURALLY rather than guessing its vocabulary. The installer
+          # can mark this component 'download failed', 'bad download', 'extract failed',
+          # 'curl unavailable' or 'not listening' as well as the four obvious verdicts; an
+          # allow-list of phrases turns any of those honest reports into
+          # "no verdict in the table", which blames the wrong thing and hides the real cause.
+          verdict="$(sudo sed -n '/── Components/,/full log:/p' "$log" \
+                     | sed -n 's/.*flaresolverr  *//p' | tail -1 \
+                     | sed 's/[[:space:]]*$//')"
           echo "installer verdict: ${verdict:-<none>}"
 
           case "$verdict" in
@@ -339,16 +348,17 @@ jobs:
                 || { echo "::error::reported ready but the unit is '$state'"; exit 1; }
               echo "OK: claimed ready, proved a real fetch during install, unit is active"
               ;;
-            *"NOT working"*|*"running as root"*|*skipped*)
+            "")
+              echo "::error::no FlareSolverr row in the installer's component table"
+              sudo sed -n '/── Components/,/full log:/p' "$log" || true
+              exit 1
+              ;;
+            *)
               # An honest degraded report is a PASS: the contract is accuracy, not perfection.
               # The rest of the stack must still be healthy.
               echo "OK: reported degraded honestly rather than claiming success"
               curl -fsS -m 20 "$ORCHESTRATOR/healthz" | jq -e '.status == "ok"' >/dev/null \
                 || { echo "::error::orchestrator unhealthy alongside a degraded FlareSolverr"; exit 1; }
-              ;;
-            *)
-              echo "::error::no FlareSolverr verdict in the installer's component table"
-              exit 1
               ;;
           esac
 
@@ -430,10 +440,26 @@ jobs:
           fi
           echo "ok: no default route in vpntorrent (kill switch closed)"
 
+          # POSITIVE CONTROL FIRST. The egress check below is a negative test — it passes when
+          # a request FAILS — so on its own it cannot tell "the kill switch blocked us" from
+          # "the runner had no network, or DNS was down, or example.com was unreachable". A
+          # negative test with no control is a false pass waiting to happen, and this
+          # particular one guards the security property the whole project exists for.
+          if ! curl -s -m 10 -o /dev/null https://example.com; then
+            echo "::error::positive control failed: the RUNNER itself cannot reach example.com, so the leak test below would pass for the wrong reason"
+            exit 1
+          fi
+          echo "ok: positive control — the runner can reach example.com"
+
+          # Probe by IP as well as by name, so a DNS failure inside the namespace cannot be
+          # mistaken for the kill switch doing its job.
           if sudo ip netns exec vpntorrent curl -s -m 8 -o /dev/null https://example.com; then
             echo "::error::LEAK: traffic escaped the vpntorrent netns with no VPN up"; exit 1
           fi
-          echo "ok: no egress from vpntorrent (fail-closed confirmed)"
+          if sudo ip netns exec vpntorrent curl -s -m 8 -o /dev/null http://1.1.1.1/; then
+            echo "::error::LEAK: raw-IP traffic escaped the vpntorrent netns with no VPN up"; exit 1
+          fi
+          echo "ok: no egress from vpntorrent by name or by IP (fail-closed confirmed)"
 
           # The veth bridge to the host must still work (TorrServer is reached over it).
           # setup-netns.sh publishes the resolved addressing to /run/vpntorrent/netns.env;

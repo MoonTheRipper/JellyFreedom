@@ -25,8 +25,20 @@ wait_unit_active() {
     state="$(systemctl is-active "$unit" 2>/dev/null || true)"
     sub="$(systemctl show -p SubState --value "$unit" 2>/dev/null || true)"
     if [ "$state" = "active" ]; then
-      printf 'ok: %s is active after %ss (sub=%s)\n::endgroup::\n' "$unit" "$waited" "$sub"
-      return 0
+      # 'active' alone is not health: a crash-looping unit under Restart=on-failure reads
+      # 'active' during every restart, so a single sample cannot tell a working service from
+      # one dying every few seconds. Require it to STAY active and not accumulate restarts.
+      local r0 r1
+      r0="$(systemctl show -p NRestarts --value "$unit" 2>/dev/null || echo 0)"
+      sleep 5
+      state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+      r1="$(systemctl show -p NRestarts --value "$unit" 2>/dev/null || echo 0)"
+      if [ "$state" = "active" ] && [ "$(( ${r1:-0} - ${r0:-0} ))" -eq 0 ]; then
+        printf 'ok: %s is active and stable after %ss (sub=%s, restarts=%s)\n::endgroup::\n' \
+          "$unit" "$waited" "$sub" "${r1:-0}"
+        return 0
+      fi
+      printf '  %ss: %s is flapping (state=%s restarts %s->%s)\n' "$waited" "$unit" "$state" "${r0:-0}" "${r1:-0}"
     fi
     # A unit that failed outright is not going to recover by waiting. Distinguish it from
     # "still starting" so the log says which one happened.

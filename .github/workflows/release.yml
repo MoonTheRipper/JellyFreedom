@@ -28,8 +28,61 @@ permissions:
 
 jobs:
   # ------------------------------------------------------------------ build
+  # ------------------------------------------------------------------ gate
+  # Nothing gets built, attested or published until the fast checks pass on the tagged
+  # commit. Without this a `v*` tag ships regardless of whether the tests are green — the
+  # workflow's own attestation would then vouch for a build nobody verified.
+  #
+  # This deliberately mirrors the FAST half of ci.yml (build, vet, test, gofmt, shellcheck,
+  # hermetic harness) and NOT the installer smoke: smoke needs ~15 minutes and a real VM per
+  # architecture, and it exercises third-party downloads that can be down. Gating a release
+  # on that would make publishing hostage to someone else's uptime. Smoke still runs on the
+  # commit via ci.yml.
+  gate:
+    name: Gate — tests must pass before we publish
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l ./cmd ./internal)"
+          [ -z "$unformatted" ] || { echo "::error::gofmt: $unformatted"; exit 1; }
+
+      - name: build / vet / test
+        run: |
+          go build ./...
+          go vet ./...
+          go test -race ./...
+
+      - name: shellcheck
+        run: |
+          shopt -s nullglob
+          files=(release/*.sh release/jellyfreedom release/jf-update
+                 vpntorrent/*.sh vpntorrent/jf-netns-helper*
+                 tests/install/*.sh tests/doctor/*.sh .github/scripts/*.sh)
+          real=(); for f in "${files[@]}"; do [ -f "$f" ] && real+=("$f"); done
+          shellcheck --severity=warning --exclude=SC2097,SC2098 --format=gcc "${real[@]}"
+
+      - name: hermetic installer harness
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          rc=0
+          for t in tests/install/*.sh tests/doctor/*.sh; do
+            case "$(basename "$t")" in harness.sh) continue ;; esac
+            bash "$t" || rc=1
+          done
+          exit "$rc"
+
   build:
     name: Build linux/${{ matrix.goarch }}
+    needs: gate
     runs-on: ubuntu-24.04
     permissions:
       contents: read
