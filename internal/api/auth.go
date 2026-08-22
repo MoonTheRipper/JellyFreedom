@@ -1,13 +1,21 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	_ "embed"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
+	"fmt"
 	"html/template"
+	"io/fs"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -25,7 +33,7 @@ const userKey ctxKey = "user"
 var db *store.Store
 var jfClient *jellyfin.Client
 
-func SetStore(s *store.Store)           { db = s }
+func SetStore(s *store.Store)              { db = s }
 func SetJellyfinClient(c *jellyfin.Client) { jfClient = c }
 
 // UserFromContext returns the authenticated User from the request context,
@@ -88,11 +96,19 @@ func OptionalAuth(next http.Handler) http.Handler {
 }
 
 // NeedsSetup returns true if no users have been created yet.
+//
+// FAILS CLOSED. A DB error used to yield an empty slice and therefore "setup needed",
+// which would have offered the unauthenticated setup page — and the ability to create a
+// fresh admin account — on an install that already has users.
 func NeedsSetup() bool {
 	if db == nil {
 		return false
 	}
-	users, _ := db.ListUsers()
+	users, err := db.ListUsers()
+	if err != nil {
+		slog.Error("could not check whether setup is needed; assuming it is NOT", "err", err)
+		return false
+	}
 	return len(users) == 0
 }
 
@@ -152,11 +168,20 @@ func SetupHandler(w http.ResponseWriter, r *http.Request) {
 			renderAuthPage(w, "setup", "Error creating user: "+err.Error(), "")
 			return
 		}
-		created, _ := db.GetUserByUsername(username)
-		if created != nil {
-			startSession(w, created.ID)
+		created, err := db.GetUserByUsername(username)
+		if err != nil || created == nil {
+			renderAuthPage(w, "setup", "Account created but could not be read back. Check the server log.", "")
+			return
 		}
-		http.Redirect(w, r, "/dashboard/", http.StatusFound)
+		if err := startSession(w, created.ID); err != nil {
+			slog.Error("setup: could not create session", "err", err)
+			renderAuthPage(w, "setup", "Account created, but starting a session failed. Try logging in.", "")
+			return
+		}
+		// Land the brand-new admin on the setup checklist, not the Health page — on a
+		// fresh install nothing is configured yet and the checklist is what tells them
+		// what to do next.
+		http.Redirect(w, r, "/dashboard/#setup", http.StatusFound)
 		return
 	}
 	renderAuthPage(w, "setup", "", "")
@@ -175,12 +200,24 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		username := strings.TrimSpace(r.FormValue("username"))
 		pw := r.FormValue("password")
-		user, _ := db.GetUserByUsername(username)
-		if user == nil || !authenticateUser(user, pw) {
+		ip := clientIP(r)
+		if ok, wait := limiter.Allow(ip, username); !ok {
+			renderAuthPage(w, "login",
+				fmt.Sprintf("Too many failed attempts. Try again in %s.", wait), "")
+			return
+		}
+		user, ok := checkCredentials(username, pw)
+		if !ok {
+			limiter.Fail(ip, username)
 			renderAuthPage(w, "login", "Incorrect username or password.", "")
 			return
 		}
-		startSession(w, user.ID)
+		limiter.Succeed(ip, username)
+		if err := startSession(w, user.ID); err != nil {
+			slog.Error("login: could not create session", "user", user.Username, "err", err)
+			renderAuthPage(w, "login", "Could not start a session. Check the server log.", "")
+			return
+		}
 		http.Redirect(w, r, "/dashboard/", http.StatusFound)
 		return
 	}
@@ -217,16 +254,29 @@ func APILoginHandler(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		jsonErr(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	user, _ := db.GetUserByUsername(strings.TrimSpace(req.Username))
-	if user == nil || !authenticateUser(user, req.Password) {
+	username := strings.TrimSpace(req.Username)
+	ip := clientIP(r)
+	if ok, wait := limiter.Allow(ip, username); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())))
+		jsonErr(w, fmt.Sprintf("too many failed attempts — try again in %s", wait), http.StatusTooManyRequests)
+		return
+	}
+	user, ok := checkCredentials(username, req.Password)
+	if !ok {
+		limiter.Fail(ip, username)
 		jsonErr(w, "incorrect username or password", http.StatusUnauthorized)
 		return
 	}
-	startSession(w, user.ID)
+	limiter.Succeed(ip, username)
+	if err := startSession(w, user.ID); err != nil {
+		slog.Error("login: could not create session", "user", user.Username, "err", err)
+		jsonErr(w, "could not start a session", http.StatusInternalServerError)
+		return
+	}
 	jsonOK(w, map[string]any{
 		"id":       user.ID,
 		"username": user.Username,
@@ -238,7 +288,11 @@ func APILoginHandler(w http.ResponseWriter, r *http.Request) {
 func APILogoutHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(sessionCookie)
 	if err == nil && db != nil {
-		db.DeleteSession(cookie.Value)
+		if err := db.DeleteSession(cookie.Value); err != nil {
+			// The cookie is cleared regardless, so the browser is logged out; a
+			// lingering row only wastes space and is swept by session-cleanup.
+			slog.Warn("logout: could not delete session row", "err", err)
+		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, MaxAge: -1, Path: "/"})
 	jsonOK(w, map[string]string{"status": "logged out"})
@@ -248,7 +302,9 @@ func APILogoutHandler(w http.ResponseWriter, r *http.Request) {
 func LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(sessionCookie)
 	if err == nil && db != nil {
-		db.DeleteSession(cookie.Value)
+		if err := db.DeleteSession(cookie.Value); err != nil {
+			slog.Warn("logout: could not delete session row", "err", err)
+		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, MaxAge: -1, Path: "/"})
 	http.Redirect(w, r, "/dashboard/login", http.StatusFound)
@@ -264,7 +320,7 @@ func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 		Current string `json:"current"`
 		New     string `json:"new"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		jsonErr(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -289,7 +345,21 @@ func ChangePasswordHandler(w http.ResponseWriter, r *http.Request) {
 	user.PasswordHash = string(newHash)
 	user.AuthSource = "local"
 	if err := db.UpdateUser(user); err != nil {
+		slog.Error("change password: update failed", "user", user.Username, "err", err)
 		jsonErr(w, "error updating password", http.StatusInternalServerError)
+		return
+	}
+	// A password change must invalidate every OTHER session for this user — that is the
+	// whole point of changing it after a suspected compromise. The caller's own cookie is
+	// preserved so they are not logged out of the tab they just used.
+	keep := ""
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		keep = c.Value
+	}
+	if err := db.DeleteSessionsForUser(user.ID, keep); err != nil {
+		slog.Error("change password: could not invalidate other sessions", "user", user.Username, "err", err)
+		jsonErr(w, "password changed, but other sessions could not be invalidated — log out everywhere manually",
+			http.StatusInternalServerError)
 		return
 	}
 	jsonOK(w, map[string]string{"status": "password changed"})
@@ -308,12 +378,75 @@ func authenticateUser(user *store.User, password string) bool {
 	return false
 }
 
-func startSession(w http.ResponseWriter, userID int64) {
-	token := randomToken()
+// dummyHash is a real bcrypt hash of a value nobody knows, at the same cost as a live
+// one. It is compared against when the username does not exist so that path burns the
+// same ~60ms as a real check.
+var dummyHash = mustHash("jellyfreedom-nonexistent-account-placeholder")
+
+func mustHash(s string) []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte(s), bcrypt.DefaultCost)
+	if err != nil {
+		// Only possible on a bcrypt misconfiguration; a panic at init beats shipping
+		// a timing oracle.
+		panic("bcrypt: " + err.Error())
+	}
+	return h
+}
+
+// checkCredentials resolves a username and verifies the password, WITHOUT leaking via
+// timing whether the username exists.
+//
+// The old code returned immediately for an unknown user, skipping bcrypt entirely — a
+// ~60ms vs ~0ms difference that let anyone enumerate valid usernames. Now the unknown
+// path performs an equivalent bcrypt compare against a dummy hash before failing.
+func checkCredentials(username, password string) (*store.User, bool) {
+	user, err := db.GetUserByUsername(username)
+	if err != nil {
+		slog.Error("lookup user for login", "err", err)
+		bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+		return nil, false
+	}
+	if user == nil {
+		bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+		return nil, false
+	}
+	if !authenticateUser(user, password) {
+		return nil, false
+	}
+	return user, true
+}
+
+// secureCookies controls the Secure flag on the session cookie. Off by default because
+// the primary deployment is plain HTTP on a LAN, where Secure would make the cookie
+// never be sent and log every user out instantly. Operators terminating TLS in front of
+// the app turn it on. Set via SetSecureCookies from the config.
+var secureCookies atomic.Bool
+
+// SetSecureCookies enables/disables the Secure flag on the session cookie.
+func SetSecureCookies(on bool) { secureCookies.Store(on) }
+
+// startSession writes a session row and, ONLY IF that succeeded, sets the cookie.
+//
+// It used to discard the CreateSession error, so a failed write produced a 200 with a
+// cookie pointing at a session row that did not exist: the browser was "logged in",
+// every subsequent request was anonymous, and the user was bounced straight back to the
+// login screen with no error anywhere. A login that cannot be recorded is a failed login.
+func startSession(w http.ResponseWriter, userID int64) error {
+	if db == nil {
+		return errors.New("no store configured")
+	}
+	token, err := randomToken()
+	if err != nil {
+		return fmt.Errorf("generate session token: %w", err)
+	}
 	expires := time.Now().Add(sessionTTL)
-	if db != nil {
-		db.CreateSession(token, userID, expires)
-		db.PurgeSessions()
+	if err := db.CreateSession(token, userID, expires); err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	// Best-effort housekeeping: failing to purge EXPIRED rows must not fail a
+	// successful login. The session-cleanup task retries this on a schedule.
+	if err := db.PurgeSessions(); err != nil {
+		slog.Warn("purge expired sessions failed", "err", err)
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
@@ -321,59 +454,77 @@ func startSession(w http.ResponseWriter, userID int64) {
 		Expires:  expires,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   secureCookies.Load(),
 		SameSite: http.SameSiteLaxMode,
 	})
+	return nil
 }
 
-func randomToken() string {
+// randomToken returns a 192-bit hex token. crypto/rand errors are propagated rather
+// than ignored — a token built from a short read would be guessable.
+func randomToken() (string, error) {
 	b := make([]byte, 24)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
-var authTmpl = template.Must(template.New("auth").Parse(`<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>JellyFreedom {{if eq .Mode "setup"}}Setup{{else}}Login{{end}}</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#0f1117;color:#e2e4f0;font:14px/1.5 system-ui,sans-serif;
-  display:flex;align-items:center;justify-content:center;min-height:100vh}
-.card{background:#1a1d27;border:1px solid #2d3148;border-radius:12px;padding:36px 40px;width:360px}
-h1{font-size:20px;margin-bottom:6px}
-.sub{color:#6b7094;font-size:13px;margin-bottom:28px}
-label{display:block;font-size:13px;color:#6b7094;margin-bottom:6px}
-input{width:100%;background:#0f1117;border:1px solid #2d3148;color:#e2e4f0;
-  padding:10px 12px;border-radius:7px;font-size:14px;margin-bottom:16px;outline:none}
-input:focus{border-color:#60a5fa}
-button{width:100%;background:#4f46e5;border:none;color:#fff;padding:11px;border-radius:7px;
-  font-size:14px;cursor:pointer;font-weight:600}
-button:hover{background:#4338ca}
-.err{background:#7f1d1d;color:#fca5a5;padding:10px 12px;border-radius:7px;
-  font-size:13px;margin-bottom:16px}
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>🎬 JellyFreedom</h1>
-  <p class="sub">{{if eq .Mode "setup"}}Create your admin account{{else}}Dashboard login{{end}}</p>
-  {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
-  <form method="POST">
-    <label>Username</label>
-    <input type="text" name="username" autocomplete="username" autofocus required
-           {{if eq .Mode "setup"}}placeholder="Choose a username"{{end}}>
-    <label>Password</label>
-    <input type="password" name="password" autocomplete="{{if eq .Mode "setup"}}new-password{{else}}current-password{{end}}" required>
-    {{if eq .Mode "setup"}}
-    <label>Confirm password</label>
-    <input type="password" name="password2" autocomplete="new-password" required>
-    {{end}}
-    <button>{{if eq .Mode "setup"}}Create Account{{else}}Login{{end}}</button>
-  </form>
-</div>
-</body></html>`))
+// ── Auth pages ────────────────────────────────────────────────────────────────
+//
+// The setup/login pages are Go html/template documents living at web/auth/index.html,
+// so they share the app's stylesheets instead of duplicating a slab of inline CSS that
+// drifted away from the rest of the UI. They are loaded from the caller-supplied FS
+// (the embedded web tree, or a --assets directory during development).
+//
+// Data contract (unchanged): .Mode is "setup" | "login"; .Error is a human-readable
+// string, "" for none. html/template auto-escapes .Error.
+//
+// The form posts to its own URL as application/x-www-form-urlencoded with the fields
+// the handlers above read: username, password, and password2 (setup only).
+
+//go:embed auth_fallback.html
+var authFallbackHTML string
+
+var (
+	authTmplMu sync.RWMutex
+	authTmpl   = template.Must(template.New("auth").Parse(authFallbackHTML))
+)
+
+// SetAuthTemplateFS loads the auth page from the web asset tree. If the file is missing
+// or will not parse we keep the built-in fallback and log loudly: an unusable login page
+// would lock the operator out of their own dashboard, which is never an acceptable
+// outcome for a cosmetic asset problem.
+func SetAuthTemplateFS(fsys fs.FS, name string) {
+	t, err := template.ParseFS(fsys, name)
+	if err != nil {
+		slog.Error("could not load the auth page template; using the built-in fallback",
+			"path", name, "err", err)
+		return
+	}
+	authTmplMu.Lock()
+	authTmpl = t
+	authTmplMu.Unlock()
+}
 
 func renderAuthPage(w http.ResponseWriter, mode, errMsg, _ string) {
-	w.Header().Set("Content-Type", "text/html")
-	authTmpl.Execute(w, map[string]string{"Mode": mode, "Error": errMsg})
+	authTmplMu.RLock()
+	t := authTmpl
+	authTmplMu.RUnlock()
+
+	// Render to a buffer first: writing directly means a mid-template failure emits a
+	// half-page with a 200 already committed.
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, map[string]string{"Mode": mode, "Error": errMsg}); err != nil {
+		slog.Error("could not render the auth page", "mode", mode, "err", err)
+		http.Error(w, "the login page could not be rendered — see the server log", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// These pages carry a credential form; never let a proxy or the browser cache them.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if _, err := buf.WriteTo(w); err != nil {
+		slog.Debug("auth page write ended early", "err", err)
+	}
 }

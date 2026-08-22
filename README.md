@@ -1,87 +1,145 @@
 # JellyFreedom
 
-**🌐 Website: https://moontheripper.github.io/JellyFreedom/**
+[![CI](https://github.com/MoonTheRipper/JellyFreedom/actions/workflows/ci.yml/badge.svg)](https://github.com/MoonTheRipper/JellyFreedom/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/MoonTheRipper/JellyFreedom)](https://github.com/MoonTheRipper/JellyFreedom/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Search and stream movies & TV from torrent sources **straight into Jellyfin** — watch on any
-device (Apple TV, phone, browser) through one clean UI, without filling your disk or leaking
-your IP. No Docker, no paid debrid.
+**Torrent-streaming as a Jellyfin library.** A small Go orchestrator searches the indexers
+*you* configure, picks a well-seeded release, and writes a tiny `.strm` pointer file into a
+Jellyfin folder. Press play on your Apple TV, phone, or browser and it streams on demand
+through a bounded RAM cache — behind a fail-closed WireGuard kill switch. Nothing is
+downloaded to disk, so disk usage stays flat no matter how much you watch. No Docker, no
+paid debrid service.
 
----
+<!-- SCREENSHOT: add a dashboard/library screenshot here, e.g. docs/screenshot.png -->
 
-## What it is
+## What this is NOT
 
-A small Go **orchestrator** that makes torrent-streamable content appear as normal, playable
-items in your Jellyfin library. It writes tiny `.strm` pointer files; pressing play streams the
-torrent on demand through a bounded-cache engine, behind a VPN kill switch.
+- **Not a content source.** It ships no indexers, no trackers, no scrapers, no catalogue.
+  With an empty Prowlarr it finds nothing at all.
+- **Not a downloader.** There is no library on disk to keep. Streams are transient; the
+  cache is a bounded ring buffer that physically cannot grow.
+- **Not a *arr replacement.** Radarr and Sonarr are built around "a file exists". This is
+  built around "a magnet with enough seeders is resolvable right now". They do not mix.
+- **Not internet-facing software.** It binds `0.0.0.0:1990` over plain HTTP and several
+  routes are unauthenticated. LAN or private overlay network only — see
+  [SECURITY.md](SECURITY.md).
+- **Not a Docker project**, and it will not become one.
+- **Not multi-tenant.** Single household, single trusted network.
+
+## How the pieces fit
 
 | Component | Role | Provided by |
 |---|---|---|
-| **Jellyfin** | The player/library UI on every device | off-the-shelf |
-| **Orchestrator** | Search (TMDB) → pick a healthy release (Prowlarr) → drive the stream → write `.strm` | **this repo** |
-| **TorrServer** | Torrent → HTTP stream, bounded RAM cache (no disk bloat) | off-the-shelf binary |
-| **Prowlarr + FlareSolverr** | Indexer search / Cloudflare bypass | off-the-shelf |
-| **WireGuard** | Privacy for torrent traffic + a fail-closed kill switch | any provider or self-hosted |
+| **Jellyfin** | Player and library UI on every device | off-the-shelf |
+| **Orchestrator** | TMDB search → pick a healthy release via Prowlarr → drive the stream → write `.strm` | **this repo** |
+| **TorrServer** | Torrent → HTTP stream, bounded RAM cache | off-the-shelf binary |
+| **Prowlarr + FlareSolverr** | Indexer aggregation and Cloudflare bypass | off-the-shelf |
+| **WireGuard** | Privacy for torrent traffic, plus a fail-closed kill switch | your provider, or self-hosted |
 
-The installer sets up everything; the only thing you bring is a **WireGuard config** (from any
-provider) and, optionally, a TMDB key.
+## Prerequisites
 
-## How
+- **Debian or Ubuntu** (22.04 / 24.04 tested). systemd required.
+- **x86_64.** `arm64` (Raspberry Pi) is a work in progress — the orchestrator
+  cross-compiles, but the installer's FlareSolverr step is x64-only today, so arm64
+  installs currently fail.
+- **RAM: 4 GB minimum, 8 GB comfortable.** The shipped default is a **2 GB RAM-backed
+  streaming cache** (`torrserver.cache.mode: ram`, `size_mb: 2048` in
+  `release/config.sample.yaml`) — that memory is reserved for streaming, on top of
+  Jellyfin, which needs its own headroom if it has to transcode. Lower `size_mb` on a
+  small box.
+- **Disk: a few GB.** For the binaries, Jellyfin, and metadata — not for media.
+- **A WireGuard config** from any provider, on a **P2P-friendly server**. This is the one
+  thing you must bring. (A non-P2P server connects to peers and then downloads nothing.)
+- **Optionally a TMDB API key** for metadata, and indexers to add to Prowlarr.
 
-**Install** (Debian/Ubuntu):
+## Install
 
 ```bash
-# one-liner (once a release is hosted — see release/get.sh):
-curl -fsSL https://<host>/get.sh | sudo bash
-
-# or from source:
-./release/build.sh && sudo ./dist/jellyfreedom-*/install.sh
+curl -fsSL https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/get.sh | sudo bash
 ```
 
-It installs the orchestrator + TorrServer + FlareSolverr + Jellyfin + Prowlarr under standard
-paths (`/opt/jellyfreedom`, `/var/lib/jellyfreedom`, `/etc/jellyfreedom`), a dedicated service
-user, and the VPN netns plumbing. Anything already installed is left untouched.
+`get.sh` picks the bundle for your architecture and **verifies it against the release's
+`SHA256SUMS` before installing** — a mismatch or a missing entry aborts rather than
+installing unverified bytes.
 
-**First run:**
+Piping a script to `sudo bash` is still a decision you should make deliberately. To read it
+first, and to check the script itself:
 
-1. Open `http://<host>:1990/dashboard/` and create the admin account.
-2. **Settings** → enter your TMDB / Prowlarr / Jellyfin keys (stored server-side, never shown back).
-3. **VPN → Configurations** → upload a WireGuard `.conf` (any provider; pick a torrent-friendly
-   server) → **Activate**.
-4. Add the `.strm` library folders (movies + tv) to Jellyfin.
+```bash
+base=https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download
+curl -fsSLO "$base/get.sh"
+curl -fsSLO "$base/SHA256SUMS"
+sha256sum -c SHA256SUMS --ignore-missing   # expect: get.sh: OK
+less get.sh                                # read it
+sudo bash get.sh
+```
 
-Then search in the media UI and press play. First play of an item buffers for a few seconds
-while the torrent connects, then streams.
+Releases from the automated workflow also carry signed build provenance:
 
-## Why
+```bash
+gh attestation verify jellyfreedom-<version>-linux-amd64.tar.gz --repo MoonTheRipper/JellyFreedom
+```
 
-- **Torrent-streaming, not downloading** — no paid debrid, and TorrServer's bounded RAM cache
-  means disk usage stays flat no matter how much you watch.
-- **Availability = "resolvable", not "a file exists"** — the orchestrator owns this, so you
-  don't fight Radarr/Sonarr's download-complete model.
-- **Resolve-at-play** — `.strm` files point at a stable identity URL, not a frozen torrent hash,
-  so the library self-heals when releases/seeders decay (it re-picks a live one on play).
-- **Privacy is fail-closed** — torrent traffic is confined to a network namespace whose only
-  route is the WireGuard tunnel; if the VPN drops, that traffic is **blocked, not leaked**.
-  Jellyfin↔client stays on the LAN (no VPN).
-- **No Docker** — native single binaries and systemd units.
+Or build from source (see [CONTRIBUTING.md](CONTRIBUTING.md) for the toolchain):
 
-## What if… (troubleshooting)
+```bash
+./release/build.sh "$(cat VERSION)"
+sudo ./dist/jellyfreedom-"$(cat VERSION)"*/install.sh
+```
 
-| Symptom | Likely cause / fix |
+The installer sets up the orchestrator, TorrServer, FlareSolverr, Jellyfin, and Prowlarr
+under standard FHS paths (`/opt/jellyfreedom`, `/etc/jellyfreedom`, `/var/lib/jellyfreedom`)
+with dedicated service users and the VPN namespace plumbing. Anything already installed is
+detected and left alone.
+
+## First run
+
+1. Open `http://<host>:1990/dashboard/` and **create the admin account immediately** —
+   until you do, the setup page is open to anyone who can reach the host.
+2. **Settings** → enter your TMDB, Prowlarr, and Jellyfin URLs and keys.
+3. **Prowlarr** (`http://<host>:9696`) → add the indexers you intend to use. JellyFreedom
+   ships none.
+4. **VPN → Configurations** → upload a WireGuard `.conf` from a P2P-friendly server →
+   **Activate**. Until you do, torrent traffic is blocked, not leaked — that is the kill
+   switch working.
+5. In Jellyfin, add the `.strm` library folders (movies and TV) as libraries.
+
+Then search in the media UI and press play. The first play of a title buffers for a few
+seconds while the torrent connects.
+
+Update in place with `sudo jellyfreedom --update`.
+
+## Documentation
+
+| | |
 |---|---|
-| **"Playback failed — not supported by this client"** | A release whose container/audio can't direct-play. Jellyfin remux + audio-transcode are enabled by default; if it persists, pick another release via **Choose release** (prefer h264 + AAC/AC3 in MP4/MKV). |
-| **First play is slow / buffers** | Normal cold-start — the torrent is re-added on demand and connects to peers. It ramps up; well-seeded releases are fast. |
-| **Connects to seeders but downloads nothing** | Your VPN server doesn't allow P2P. Use a **torrent/P2P-friendly** WireGuard server. |
-| **Everything torrent-related is dead** | The VPN tunnel is down (kill switch blocking — working as intended). Check `systemctl status vpntorrent-netns`; the watchdog auto-re-establishes within ~60s, or upload a fresh config. |
-| **Old/niche titles won't stream** | Some content simply isn't well-seeded right now; the picker prefers connectable releases but can't conjure peers that don't exist. |
-| **FlareSolverr / Prowlarr searches fail** | First search after idle can be slow (cold indexers); retry. Ensure `flaresolverr` and `prowlarr` are `active`. |
-| **Dashboard won't load** | `journalctl -u jellyfreedom -f`. The orchestrator starts even without keys configured — set them in the dashboard. |
+| [Install guide](docs/install.md) | Prerequisites, what the one-liner does, from source, updating, uninstalling |
+| [First run](docs/first-run.md) | The ordered path from a fresh install to first playback |
+| [Configuration](docs/configuration.md) | Every config key, its default, and what it changes |
+| [Troubleshooting](docs/troubleshooting.md) | Symptom-to-fix, starting with `jellyfreedom doctor` |
+| [FAQ](docs/faq.md) | Short answers to the recurring questions |
+| [Security &amp; privacy](docs/security.md) | What is tunnelled, verifying the kill switch, what to expose |
+| [SECURITY.md](SECURITY.md) | Threat model, route authentication tiers, the privilege boundary |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Build, test, lint, and how to test the installer safely |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each release |
+| [Architecture](docs/dev/architecture.md) | How the system is put together and why it works this way |
+| [Decisions](docs/dev/decisions.md) | The reasoning behind every major choice |
+| [Operations](docs/dev/operations.md) | VPN scoping, cache tuning, Jellyfin and Apple TV setup |
+| [Roadmap](docs/dev/roadmap.md) | Genuinely open work |
+| [Project website](https://moontheripper.github.io/JellyFreedom/) | Overview |
 
-## License
+## Disclaimer
 
-[MIT](LICENSE) — free to use, modify, and distribute. Provided **as is**, without warranty.
+JellyFreedom ships **no indexers, no content, no trackers, and no sources**. It searches
+the indexers you configure yourself and points your own Jellyfin instance at the result.
+What you search for, what you stream, and whether either is permitted where you live is
+your responsibility — you are responsible for complying with the laws and terms that apply
+to you.
 
----
+This project is **not affiliated with or endorsed by** the Jellyfin, Prowlarr, TorrServer,
+FlareSolverr, TMDB, or WireGuard projects. All trademarks belong to their respective owners.
 
-*Self-hosted, single-user oriented. You are responsible for what you stream and for complying
-with the laws and terms that apply to you.*
+## Licence
+
+[MIT](LICENSE). Provided **as is**, without warranty of any kind.

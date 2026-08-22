@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Keep the pinned action versions in .github/workflows current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "Update"
+    labels: ["dependencies"]
+
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "Update"
+    labels: ["dependencies"]
+    groups:
+      go-dependencies:
+        patterns: ["*"]

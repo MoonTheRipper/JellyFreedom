@@ -1,0 +1,487 @@
+# CI — everything that must be true before a change lands.
+#
+# Jobs:
+#   go              build / vet / test / gofmt
+#   cross-compile   proves linux/amd64 AND linux/arm64 both build (arm64 support is a goal;
+#                   see docs/RELEASING.md)
+#   shell           shellcheck over every shell script we ship (~900 lines of root-executed bash)
+#   installer-harness  fast hermetic pre-check (tests/install/ + tests/doctor/, no root)
+#   installer-smoke    THE important one — runs the REAL installer on a throwaway runner VM
+#                      and asserts the stack actually comes up. See the job for the list of
+#                      assertions that are regression tests for specific past breakages.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Endpoints the installed stack is expected to answer on.
+  ORCHESTRATOR: http://127.0.0.1:1990
+  FLARESOLVERR: http://127.0.0.1:8191
+  PROWLARR: http://127.0.0.1:9696
+  JELLYFIN: http://127.0.0.1:8096
+  TORRSERVER: http://10.42.0.2:8090
+
+jobs:
+  # ------------------------------------------------------------------ Go
+  go:
+    name: Go build / vet / test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l ./cmd ./internal)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt reported unformatted files. Run: gofmt -w ./cmd ./internal"
+            echo "$unformatted"
+            gofmt -d ./cmd ./internal
+            exit 1
+          fi
+          echo "all files formatted"
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+  # ------------------------------------------------- cross-compile both arches
+  cross-compile:
+    name: Cross-compile linux/${{ matrix.goarch }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build static orchestrator
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -trimpath -ldflags "-s -w" -o "/tmp/orchestrator-${GOARCH}" ./cmd/orchestrator
+          file "/tmp/orchestrator-${GOARCH}"
+
+  # ------------------------------------------------------------------ shell
+  shell:
+    name: ShellCheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: shellcheck version
+        run: shellcheck --version   # preinstalled on the ubuntu-24.04 runner image
+
+      - name: Collect shell scripts
+        id: collect
+        run: |
+          shopt -s nullglob
+          # Globs, not a fixed list: vpntorrent/jf-netns-helper and any future script
+          # are picked up automatically whether or not they exist yet.
+          files=(
+            release/*.sh
+            release/jellyfreedom
+            release/get.sh
+            vpntorrent/*.sh
+            vpntorrent/jf-netns-helper*
+            tests/install/*.sh
+            tests/doctor/*.sh
+          )
+          # de-duplicate, keep only real files
+          : > /tmp/shellfiles.txt
+          for f in $(printf '%s\n' "${files[@]}" | sort -u); do
+            if [ -f "$f" ]; then printf '%s\n' "$f" >> /tmp/shellfiles.txt; fi
+          done
+          echo "found:"; cat /tmp/shellfiles.txt
+          test -s /tmp/shellfiles.txt
+
+      # Gate: severity warning and above must be clean.
+      # SC2097/SC2098 are excluded because tests/install/harness.sh deliberately re-exports
+      # LOG/DEST into the forked installer subshell; shellcheck cannot see that this is
+      # intentional. Drop the exclusion if a genuine instance ever appears elsewhere.
+      - name: ShellCheck (warning and above — blocking)
+        run: |
+          mapfile -t files < /tmp/shellfiles.txt
+          shellcheck --severity=warning --exclude=SC2097,SC2098 --format=gcc "${files[@]}"
+
+      # Informational: style/info notes are surfaced but do not block.
+      - name: ShellCheck (style/info — advisory)
+        continue-on-error: true
+        run: |
+          mapfile -t files < /tmp/shellfiles.txt
+          shellcheck --severity=style --format=gcc "${files[@]}"
+
+  # ------------------------------------------- hermetic installer pre-check
+  installer-harness:
+    name: Installer harness (hermetic)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Run tests/install
+        run: |
+          set -uo pipefail
+          # The harness drives release/install.sh against a fake root via
+          # JF_DESTDIR / JF_ASSUME_ROOT / JF_NONINTERACTIVE. No root, no network.
+          shopt -s nullglob
+          # Run EVERY script in tests/install/ except the harness library itself, so the
+          # naming convention (test_*.sh vs *_test.sh) never has to be agreed on again.
+          tests=()
+          for t in tests/install/*.sh; do
+            case "$(basename "$t")" in harness.sh) continue ;; esac
+            tests+=("$t")
+          done
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "::error::tests/install/ contains no test scripts — the installer contract is unguarded."
+            exit 1
+          fi
+          rc=0
+          for t in "${tests[@]}"; do
+            echo "::group::$t"
+            bash "$t" || rc=1
+            echo "::endgroup::"
+          done
+          exit "$rc"
+
+      - name: Run tests/doctor
+        run: |
+          set -uo pipefail
+          # doctor.sh checks that need neither root nor a running stack — chiefly the
+          # config parsing, which once reported seven nonexistent library folders on a
+          # healthy install by word-splitting a trailing YAML comment.
+          shopt -s nullglob
+          tests=(tests/doctor/*.sh)
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "::error::tests/doctor/ contains no test scripts."
+            exit 1
+          fi
+          rc=0
+          for t in "${tests[@]}"; do
+            echo "::group::$t"
+            bash "$t" || rc=1
+            echo "::endgroup::"
+          done
+          exit "$rc"
+
+  # ------------------------------------------------------------------------
+  # installer-smoke — runs the ACTUAL installer end to end on a clean, throwaway
+  # GitHub-hosted VM (we get root and the VM is destroyed afterwards) and then asserts
+  # the outcome. This is the job that catches "it broke on a real machine".
+  #
+  # Assertions tagged [REGRESSION] guard a breakage that has actually happened before:
+  #   R1  FlareSolverr must SOLVE a request, not merely listen — the bundled Chrome 142
+  #       renderer crash made it listen-but-fail. Asserted with a real cmd=request.get.
+  #   R2  The VPN netns must come up with NO WireGuard config present, and must then be
+  #       FAIL-CLOSED (no default route, no egress). Not skipped on the runner — asserted.
+  #   R3  Re-running the installer must be non-destructive: exit 0, config.yaml preserved.
+  #   R4  arm64 must install (currently expected to fail — see the matrix note).
+  # ------------------------------------------------------------------------
+  installer-smoke:
+    name: Installer smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+            experimental: false
+          - os: ubuntu-22.04
+            arch: amd64
+            experimental: false
+          # [REGRESSION R4] arm64. The orchestrator cross-compiles cleanly and the installer
+          # now DELIBERATELY SKIPS FlareSolverr on non-amd64 (upstream ships x64 binaries
+          # only) instead of leaving a broken service behind. The arm64 assertions below
+          # check for that skip rather than for a working FlareSolverr.
+          # Still experimental until this leg has actually been observed green once.
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            experimental: true
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build a release bundle
+        run: |
+          ./release/build.sh "$(cat VERSION)-ci"
+          bundle="$(find dist -maxdepth 1 -type d -name 'jellyfreedom-*' | sort | head -1)"
+          [ -n "$bundle" ] || { echo "::error::build.sh produced no bundle directory under dist/"; exit 1; }
+          echo "BUNDLE=$PWD/$bundle" >> "$GITHUB_ENV"
+          ls -la "$bundle"
+
+      - name: Run the real installer (as root)
+        run: |
+          cd "$BUNDLE"
+          sudo ./install.sh 2>&1 | tee /tmp/install-1.log
+          # tee hides the installer's exit status; recover it.
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Wait for services to settle
+        run: |
+          wait_http() {   # wait_http <name> <url> <seconds>
+            local name="$1" url="$2" deadline=$(( SECONDS + $3 )) code
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$url" || true)"
+              if [ -n "$code" ] && [ "$code" != "000" ]; then
+                echo "$name answered ($code) after $((SECONDS))s"; return 0
+              fi
+              sleep 3
+            done
+            echo "::warning::$name never answered at $url within $3s"
+            return 1
+          }
+          wait_http orchestrator "$ORCHESTRATOR/healthz" 60          || true
+          wait_http jellyfin     "$JELLYFIN/System/Info/Public" 120  || true
+          wait_http prowlarr     "$PROWLARR/ping" 120                || true
+          # FlareSolverr fetches a chromedriver on first start — it is the slowest.
+          # Skipped entirely on arm64, where it is deliberately not installed.
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            wait_http flaresolverr "$FLARESOLVERR/" 240              || true
+          fi
+          wait_http torrserver   "$TORRSERVER/echo" 90               || true
+
+      - name: Unit states
+        run: |
+          for u in jellyfreedom vpntorrent-netns torrserver-netns flaresolverr prowlarr jellyfin vpntorrent-portforward; do
+            printf '%-26s %s\n' "$u" "$(systemctl is-active "$u" 2>&1 || true)"
+          done
+          systemctl is-active vpntorrent-watchdog.timer || true
+
+      - name: ASSERT — core units are active
+        run: |
+          fail=0
+          for u in jellyfreedom vpntorrent-netns; do
+            state="$(systemctl is-active "$u" 2>&1 || true)"
+            if [ "$state" != "active" ]; then
+              echo "::error::$u is '$state', expected active"; fail=1
+            else
+              echo "ok: $u active"
+            fi
+          done
+          exit "$fail"
+
+      - name: ASSERT — orchestrator answers /healthz
+        run: |
+          body="$(curl -fsS -m 10 "$ORCHESTRATOR/healthz")"
+          echo "healthz: $body"
+          echo "$body" | jq -e '.status == "ok"' > /dev/null
+          echo "$body" | jq -e 'has("version")' > /dev/null
+
+      - name: "ASSERT [REGRESSION R1] — FlareSolverr actually SOLVES a request"
+        if: matrix.arch == 'amd64'
+        run: |
+          # Listening is not enough: the bundled-Chrome crash produced a process that
+          # accepted connections and failed every solve. Drive a real request.
+          state="$(systemctl is-active flaresolverr 2>&1 || true)"
+          if [ "$state" != "active" ]; then
+            echo "::error::flaresolverr is '$state', expected active"; exit 1
+          fi
+          resp="$(curl -fsS -m 90 -X POST "$FLARESOLVERR/v1" \
+                   -H 'Content-Type: application/json' \
+                   -d '{"cmd":"request.get","url":"https://example.com","maxTimeout":60000}')" || {
+            echo "::error::FlareSolverr /v1 request.get failed outright"; exit 1; }
+          echo "$resp" | head -c 800; echo
+          echo "$resp" | jq -e '.status == "ok"' > /dev/null \
+            || { echo "::error::FlareSolverr did not return status=ok — it is listening but not solving"; exit 1; }
+          echo "$resp" | jq -e '.solution.status == 200' > /dev/null \
+            || { echo "::error::FlareSolverr solved but the target did not return HTTP 200"; exit 1; }
+
+      # arm64 counterpart to R1. FlareSolverr is x64-only upstream, so the CORRECT arm64
+      # behaviour is a clean, announced skip — not a half-installed service. Assert the
+      # skip explicitly so a future change that starts shipping a broken arm64 FlareSolverr
+      # is caught rather than silently tolerated.
+      - name: "ASSERT [REGRESSION R4] — FlareSolverr is cleanly SKIPPED on arm64"
+        if: matrix.arch == 'arm64'
+        run: |
+          grep -qi 'FlareSolverr ships x64 binaries only' /tmp/install-1.log \
+            || { echo "::error::the installer did not announce skipping FlareSolverr on $(uname -m)"; exit 1; }
+          echo "ok: installer announced the skip"
+
+          if sudo test -x /opt/flaresolverr/flaresolverr; then
+            echo "::error::FlareSolverr was installed on $(uname -m) despite being x64-only"; exit 1
+          fi
+          echo "ok: no FlareSolverr binary on disk"
+
+          state="$(systemctl is-active flaresolverr 2>&1 || true)"
+          if [ "$state" = "active" ]; then
+            echo "::error::a flaresolverr unit is active on arm64; it cannot be"; exit 1
+          fi
+          echo "ok: flaresolverr unit not active (state: $state)"
+
+          # The skip must not take the rest of the install down with it.
+          [ "$(systemctl is-active jellyfreedom)" = "active" ] \
+            || { echo "::error::the FlareSolverr skip broke the rest of the install"; exit 1; }
+          echo "ok: the rest of the stack still came up"
+
+      - name: ASSERT — Prowlarr answers
+        run: |
+          state="$(systemctl is-active prowlarr 2>&1 || true)"
+          [ "$state" = "active" ] || { echo "::error::prowlarr is '$state', expected active"; exit 1; }
+          curl -fsS -m 15 "$PROWLARR/ping" | tee /dev/stderr | jq -e '.status' > /dev/null
+
+      - name: ASSERT — TorrServer answers from inside the netns
+        run: |
+          state="$(systemctl is-active torrserver-netns 2>&1 || true)"
+          [ "$state" = "active" ] || { echo "::error::torrserver-netns is '$state', expected active"; exit 1; }
+          code="$(curl -s -o /tmp/ts.out -m 10 -w '%{http_code}' "$TORRSERVER/echo" || true)"
+          echo "torrserver /echo -> $code : $(head -c 200 /tmp/ts.out || true)"
+          if [ -z "$code" ] || [ "$code" = "000" ]; then
+            echo "::error::TorrServer did not answer on $TORRSERVER"; exit 1
+          fi
+
+      - name: ASSERT — Jellyfin answers
+        run: |
+          curl -fsS -m 15 "$JELLYFIN/System/Info/Public" | tee /dev/stderr | jq -e '.Version' > /dev/null
+
+      - name: "ASSERT [REGRESSION R2] — netns up and FAIL-CLOSED with no VPN config"
+        run: |
+          # No WireGuard config is uploaded on a runner, which is exactly the documented
+          # first-boot state. The contract (vpntorrent/setup-netns.sh) is:
+          #   the namespace EXISTS, and it has NO default route, so torrent traffic is
+          #   BLOCKED rather than leaked. We assert that, we do not skip it.
+          sudo ip netns list
+          sudo ip netns list | grep -q '^vpntorrent' \
+            || { echo "::error::vpntorrent netns was not created — the kill switch plumbing did not come up"; exit 1; }
+          echo "ok: netns exists"
+
+          if [ -f /var/lib/jellyfreedom/vpnconfigs/wg0-vpntorrent.conf ]; then
+            echo "::error::a WireGuard config unexpectedly exists on the runner; this assertion covers the no-config case only"
+            exit 1
+          fi
+
+          route="$(sudo ip netns exec vpntorrent ip route show default || true)"
+          if [ -n "$route" ]; then
+            echo "::error::LEAK: vpntorrent has a default route with no VPN configured: $route"; exit 1
+          fi
+          echo "ok: no default route in vpntorrent (kill switch closed)"
+
+          if sudo ip netns exec vpntorrent curl -s -m 8 -o /dev/null https://example.com; then
+            echo "::error::LEAK: traffic escaped the vpntorrent netns with no VPN up"; exit 1
+          fi
+          echo "ok: no egress from vpntorrent (fail-closed confirmed)"
+
+          # The veth bridge to the host must still work (TorrServer is reached over it).
+          # setup-netns.sh publishes the resolved addressing to /run/vpntorrent/netns.env;
+          # fall back to the documented default if that file is not present.
+          vpn_ip=10.42.0.2
+          if sudo test -f /run/vpntorrent/netns.env; then
+            sudo cat /run/vpntorrent/netns.env
+            vpn_ip="$(sudo sed -n 's/^VETH_VPN_IP=//p' /run/vpntorrent/netns.env | head -1)"
+            [ -n "$vpn_ip" ] || vpn_ip=10.42.0.2
+          fi
+          sudo ip netns exec vpntorrent ip addr show veth-vpn | grep -q "$vpn_ip" \
+            || { echo "::error::veth-vpn is missing its $vpn_ip address"; exit 1; }
+          echo "ok: veth bridge intact at $vpn_ip"
+
+      - name: ASSERT — scoped sudoers installed and valid
+        run: |
+          sudo test -f /etc/sudoers.d/jellyfreedom
+          mode="$(sudo stat -c '%a' /etc/sudoers.d/jellyfreedom)"
+          [ "$mode" = "440" ] || { echo "::error::/etc/sudoers.d/jellyfreedom mode is $mode, expected 440"; exit 1; }
+          sudo visudo -cf /etc/sudoers.d/jellyfreedom
+          echo "--- granted rules ---"; sudo cat /etc/sudoers.d/jellyfreedom
+
+      - name: ASSERT — expected paths exist
+        run: |
+          fail=0
+          for p in /opt/jellyfreedom/bin/orchestrator /opt/jellyfreedom/web \
+                   /etc/jellyfreedom/config.yaml /var/lib/jellyfreedom \
+                   /opt/vpntorrent/setup-netns.sh /opt/vpntorrent/jf-netns-helper \
+                   /opt/jellyfreedom/doctor.sh /usr/local/bin/jellyfreedom; do
+            if sudo test -e "$p"; then echo "ok: $p"; else echo "::error::missing $p"; fail=1; fi
+          done
+          # The helper is the ONLY path to root. If the service user can write it, or its
+          # directory, the NOPASSWD sudo rules become a root shell.
+          for p in /opt/vpntorrent /opt/vpntorrent/jf-netns-helper; do
+            owner="$(sudo stat -c '%U:%G' "$p" 2>/dev/null || echo '?')"
+            [ "$owner" = "root:root" ] || { echo "::error::$p is owned by $owner, expected root:root"; fail=1; }
+          done
+          hmode="$(sudo stat -c '%a' /opt/vpntorrent/jf-netns-helper 2>/dev/null || echo '?')"
+          [ "$hmode" = "755" ] || { echo "::error::jf-netns-helper mode is $hmode, expected 755"; fail=1; }
+          # No wildcard may ever reappear in the sudoers policy.
+          if sudo grep -q '\*' /etc/sudoers.d/jellyfreedom; then
+            echo "::error::the sudoers policy contains a wildcard — every rule must be fixed-argument"
+            sudo cat /etc/sudoers.d/jellyfreedom
+            fail=1
+          fi
+          mode="$(sudo stat -c '%a' /var/lib/jellyfreedom/vpnconfigs)"
+          [ "$mode" = "700" ] || { echo "::error::vpnconfigs mode is $mode, expected 700"; fail=1; }
+          exit "$fail"
+
+      - name: "ASSERT [REGRESSION R3] — re-running the installer is non-destructive"
+        run: |
+          sudo sed -i 's|^  public_url: .*|  public_url: "http://ci-sentinel:1990"|' /etc/jellyfreedom/config.yaml
+          before="$(sudo sha256sum /etc/jellyfreedom/config.yaml | cut -d' ' -f1)"
+          cd "$BUNDLE"
+          sudo ./install.sh 2>&1 | tee /tmp/install-2.log
+          test "${PIPESTATUS[0]}" -eq 0
+          after="$(sudo sha256sum /etc/jellyfreedom/config.yaml | cut -d' ' -f1)"
+          [ "$before" = "$after" ] \
+            || { echo "::error::second install run REWROTE /etc/jellyfreedom/config.yaml — the installer claims to be non-destructive"; exit 1; }
+          sudo grep -q 'ci-sentinel' /etc/jellyfreedom/config.yaml
+          echo "ok: config preserved across a re-install"
+          [ "$(systemctl is-active jellyfreedom)" = "active" ]
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          echo "::group::installer log (run 1)"; tail -n 300 /tmp/install-1.log || true; echo "::endgroup::"
+          echo "::group::installer log (run 2)"; tail -n 300 /tmp/install-2.log || true; echo "::endgroup::"
+          for u in jellyfreedom vpntorrent-netns torrserver-netns flaresolverr prowlarr jellyfin vpntorrent-portforward; do
+            echo "::group::journal $u"
+            sudo systemctl status "$u" --no-pager -l || true
+            sudo journalctl -u "$u" --no-pager -n 120 || true
+            echo "::endgroup::"
+          done
+          echo "::group::network"
+          sudo ip netns list || true
+          sudo ip addr || true
+          sudo ip netns exec vpntorrent ip addr || true
+          sudo ip netns exec vpntorrent ip route || true
+          echo "::endgroup::"
+          echo "::group::arch"; uname -m; echo "::endgroup::"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: installer-smoke-${{ matrix.os }}
+          path: |
+            /tmp/install-1.log
+            /tmp/install-2.log
+          if-no-files-found: warn
+          retention-days: 7

@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -38,7 +40,7 @@ func (c *Config) VPNConfigDir() string {
 // Library is a named content destination: a directory, a media type, and optional picker overrides.
 type Library struct {
 	Name    string        `yaml:"name"`
-	Type    string        `yaml:"type"`    // "movie" | "tv"
+	Type    string        `yaml:"type"` // "movie" | "tv"
 	Path    string        `yaml:"path"`
 	Default bool          `yaml:"default"` // used when no library is explicitly requested
 	Adult   bool          `yaml:"adult"`   // infrastructure flag — kept here for future filtering
@@ -53,6 +55,11 @@ type legacyLibraryConfig struct {
 type ServerConfig struct {
 	Listen    string `yaml:"listen"`
 	PublicURL string `yaml:"public_url"`
+	// SecureCookies sets the Secure flag on the session cookie. Default FALSE: the
+	// primary deployment is plain HTTP on a LAN, where Secure would stop the browser
+	// sending the cookie at all and log every user out instantly. Turn it on when a
+	// TLS-terminating reverse proxy sits in front.
+	SecureCookies bool `yaml:"secure_cookies"`
 }
 
 type TMDBConfig struct {
@@ -65,8 +72,8 @@ type IndexerConfig struct {
 }
 
 type TorrServerConfig struct {
-	BaseURL string            `yaml:"base_url"`
-	Cache   TorrCacheConfig   `yaml:"cache"`
+	BaseURL string          `yaml:"base_url"`
+	Cache   TorrCacheConfig `yaml:"cache"`
 }
 
 // TorrCacheConfig is applied to TorrServer's /settings on startup so the same
@@ -139,6 +146,9 @@ func validate(cfg *Config) error {
 	if cfg.Server.PublicURL == "" {
 		// Set the LAN-reachable URL in the dashboard/config for correct .strm links.
 		cfg.Server.PublicURL = "http://localhost:1990"
+	}
+	if err := validatePublicURL(cfg.Server.PublicURL); err != nil {
+		return err
 	}
 	// TMDB / Indexer / Jellyfin keys and URLs may be empty at startup — they are entered in
 	// the dashboard (stored in the DB and applied to the clients at runtime). So never hard-fail
@@ -255,4 +265,64 @@ func (c *Config) PickerFor(lib *Library) PickerConfig {
 		merged.PreferContainers = lp.PreferContainers
 	}
 	return merged
+}
+
+// publicURLPlaceholders are the literal values the installer template ships with. If one
+// of them survives into a running config, every .strm written from that point on contains
+// an unreachable host — which is precisely the "Jellyfin shows it as ready but it won't
+// play" failure, and it is invisible until someone tries to watch something.
+//
+// Hard-failing at startup is the right trade: a config that cannot produce a playable
+// .strm is not a config the service should run with, and the message names the exact fix.
+var publicURLPlaceholders = []string{
+	"change-me-lan-ip",
+	"changeme",
+	"your-lan-ip",
+	"<lan-ip>",
+	"lan-ip-here",
+}
+
+// validatePublicURL rejects a public_url that could never produce a working .strm.
+func validatePublicURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("server.public_url %q is not a valid URL: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("server.public_url %q must start with http:// or https:// — "+
+			"it is written verbatim into every .strm file", raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("server.public_url %q has no host — "+
+			"set it to this machine's LAN address, e.g. http://192.168.1.50:1990", raw)
+	}
+
+	lower := strings.ToLower(raw)
+	for _, ph := range publicURLPlaceholders {
+		if strings.Contains(lower, ph) {
+			return fmt.Errorf("server.public_url is still the installer placeholder (%q). "+
+				"Set it to this machine's LAN address, e.g. http://192.168.1.50:1990 — "+
+				"this value is baked into every .strm file, so until it is correct Jellyfin "+
+				"will list items as ready but refuse to play them", raw)
+		}
+	}
+	return nil
+}
+
+// WarnIfPublicURLNotReachableFromLAN reports a public_url that is syntactically fine but
+// only resolvable on this machine. It is a WARNING, not an error: a single-box setup where
+// Jellyfin runs locally genuinely works this way, and someone may be mid-setup. But an
+// Apple TV cannot reach 127.0.0.1, so it is worth saying out loud.
+func (c *Config) WarnIfPublicURLNotReachableFromLAN() string {
+	u, err := url.Parse(c.Server.PublicURL)
+	if err != nil {
+		return ""
+	}
+	host := u.Hostname()
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0" {
+		return fmt.Sprintf("server.public_url is %q, which only this machine can reach. "+
+			"Every .strm points there, so other devices (Apple TV, phones) will not be able "+
+			"to play anything. Set it to this machine's LAN address.", c.Server.PublicURL)
+	}
+	return ""
 }

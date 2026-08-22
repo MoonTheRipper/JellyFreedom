@@ -14,94 +14,186 @@ import (
 // sxxeyy extracts season/episode numbers from a string like "Show S01E08".
 var sxxeyy = regexp.MustCompile(`(?i)s(\d{1,2})[\s._-]*e(\d{1,3})`)
 
+// Item is one library entry. JSON field names are snake_case and LOCKED by the API
+// contract — the web UI reads exactly these names.
 type Item struct {
-	ID           int64
-	TMDBID       int
-	MediaType    string // "movie" | "tv"
-	Title        string
-	Year         string
-	InfoHash     string
-	FileIndex    int
-	StrmPath     string
-	LibraryName  string
-	Status       string // "requested" | "ready" | "stale" (expired, revivable)
-	Seeders      int
-	Updated      time.Time
-	RequestedBy  string
-	IsPrivate    bool
-	PosterURL    string
-	Magnet       string     // the magnet used — kept so a dropped torrent can be re-added
-	ReleaseTitle string     // the chosen release name, e.g. "Inception.2010.1080p.BluRay.x264"
-	StaleSince   *time.Time // when it went stale; nil while ready
-	Season       int        // 0 for movies
-	Episode      int        // 0 for movies
+	ID           int64      `json:"id"`
+	TMDBID       int        `json:"tmdb_id"`
+	MediaType    string     `json:"media_type"` // "movie" | "tv"
+	Title        string     `json:"title"`
+	Year         string     `json:"year"`
+	InfoHash     string     `json:"info_hash"`
+	FileIndex    int        `json:"file_index"`
+	StrmPath     string     `json:"strm_path"`
+	LibraryName  string     `json:"library_name"`
+	Status       string     `json:"status"` // "requested" | "ready" | "stale" (expired, revivable)
+	Seeders      int        `json:"seeders"`
+	Updated      time.Time  `json:"updated"`
+	RequestedBy  string     `json:"requested_by"`
+	IsPrivate    bool       `json:"is_private"`
+	PosterURL    string     `json:"poster_url"`
+	Magnet       string     `json:"magnet"`        // the magnet used — kept so a dropped torrent can be re-added
+	ReleaseTitle string     `json:"release_title"` // the chosen release name, e.g. "Inception.2010.1080p.BluRay.x264"
+	StaleSince   *time.Time `json:"stale_since"`   // when it went stale; nil while ready
+	Season       int        `json:"season"`        // 0 for movies
+	Episode      int        `json:"episode"`       // 0 for movies
+}
+
+// Redacted returns a copy of the item with server-side/secret fields blanked, for
+// serialisation to an UNAUTHENTICATED caller. Magnets carry tracker lists, strm_path
+// is a server filesystem path, and requested_by is another user's identity — none of
+// which an anonymous LAN visitor may see. (API contract §2.)
+func (i Item) Redacted() Item {
+	i.Magnet = ""
+	i.StrmPath = ""
+	i.RequestedBy = ""
+	return i
 }
 
 // itemCols is the canonical SELECT column list for Item rows.
 const itemCols = `id,tmdb_id,media_type,title,year,info_hash,file_index,strm_path,library_name,status,seeders,updated,requested_by,is_private,poster_url,magnet,release_title,stale_since,season,episode`
 
+// Queue stage tokens — a CLOSED, ordered set the UI renders as a stepper.
+// Progress stays free-text human prose; Stage is the machine-readable position.
+// (API contract §6.)
+const (
+	StageQueued    = "queued"
+	StageIndexing  = "indexing"
+	StagePicking   = "picking"
+	StageAdding    = "adding"
+	StageVerifying = "verifying"
+	StageWriting   = "writing"
+	StageDone      = "done"
+	StageFailed    = "failed"
+	StageCancelled = "cancelled"
+)
+
 type QueueItem struct {
-	ID             int64
-	TMDBID         int
-	MediaType      string
-	Title          string
-	Year           string
-	PosterURL      string
-	Season         int
-	Episode        int
-	LibraryName    string
-	RequestedBy    string
-	MagnetOverride string
-	Status         string // pending|processing|done|failed|cancelled
-	Progress       string
-	ErrorMsg       string
-	InfoHash       string
-	StrmPath       string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID             int64     `json:"id"`
+	TMDBID         int       `json:"tmdb_id"`
+	MediaType      string    `json:"media_type"`
+	Title          string    `json:"title"`
+	Year           string    `json:"year"`
+	PosterURL      string    `json:"poster_url"`
+	Season         int       `json:"season"`
+	Episode        int       `json:"episode"`
+	LibraryName    string    `json:"library_name"`
+	RequestedBy    string    `json:"requested_by"`
+	MagnetOverride string    `json:"magnet_override"`
+	Status         string    `json:"status"` // pending|processing|done|failed|cancelled
+	Progress       string    `json:"progress"`
+	Stage          string    `json:"stage"`
+	ErrorMsg       string    `json:"error_msg"`
+	InfoHash       string    `json:"info_hash"`
+	StrmPath       string    `json:"strm_path"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+
+	// Diagnosis is a JSON blob explaining a "no release found" failure. It is served
+	// only from GET /api/queue/{id}/diagnosis, never inline in the queue list.
+	Diagnosis string `json:"-"`
+}
+
+// Redacted blanks the fields an unauthenticated caller must not see. (API contract §2.)
+func (q QueueItem) Redacted() QueueItem {
+	q.MagnetOverride = ""
+	q.StrmPath = ""
+	q.RequestedBy = ""
+	return q
 }
 
 type User struct {
-	ID             int64
-	Username       string
-	PasswordHash   string
-	JellyfinUserID string
-	AuthSource     string // "local" | "jellyfin"
-	IsAdmin        bool
-	CreatedAt      time.Time
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+	// PasswordHash MUST never be serialised. Tagged json:"-" so no handler can leak
+	// the bcrypt hash by marshalling a User directly.
+	PasswordHash   string    `json:"-"`
+	JellyfinUserID string    `json:"jellyfin_user_id"`
+	AuthSource     string    `json:"auth_source"` // "local" | "jellyfin"
+	IsAdmin        bool      `json:"is_admin"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // Subscription auto-fetches newly-aired episodes of a TV season for airing shows.
 type Subscription struct {
-	ID          int64
-	TMDBID      int
-	Season      int
-	Title       string
-	PosterURL   string
-	LibraryName string
-	RequestedBy string
-	IsAiring    bool
-	LastChecked *time.Time
-	CreatedAt   time.Time
+	ID          int64      `json:"id"`
+	TMDBID      int        `json:"tmdb_id"`
+	Season      int        `json:"season"`
+	Title       string     `json:"title"`
+	PosterURL   string     `json:"poster_url"`
+	LibraryName string     `json:"library_name"`
+	RequestedBy string     `json:"requested_by"`
+	IsAiring    bool       `json:"is_airing"`
+	LastChecked *time.Time `json:"last_checked"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+// Redacted blanks the fields an unauthenticated caller must not see. (API contract §2.)
+func (s Subscription) Redacted() Subscription {
+	s.RequestedBy = ""
+	return s
 }
 
 type Store struct {
 	db *sql.DB
 }
 
+// DSN builds the modernc.org/sqlite connection string for a database file.
+//
+// Every pragma here is load-bearing:
+//
+//   - busy_timeout   — without it SQLite returns SQLITE_BUSY *immediately* on any write
+//     contention. With a 3s worker tick, HTTP handlers, and background
+//     tasks all writing, that meant the overwhelming majority of
+//     concurrent writes simply failed.
+//   - journal_mode=WAL — readers no longer block the writer (and vice versa), which is the
+//     actual fix for a read-heavy dashboard polling next to a writer.
+//   - foreign_keys     — enforced rather than silently ignored, so referential bugs surface.
+//   - _txlock=immediate — take the write lock at BEGIN instead of upgrading mid-transaction,
+//     which is what turns a deadlock into a retriable busy wait.
+func DSN(path string) string {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "_pragma=busy_timeout(10000)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=foreign_keys(on)" +
+		"&_txlock=immediate"
+}
+
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", DSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	// SQLite permits exactly one writer. Serialising at the pool removes write
+	// contention entirely rather than relying on every caller to retry; busy_timeout
+	// above still covers contention from *other processes* (e.g. a `sqlite3` shell).
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+
+	// sql.Open is lazy — force a real connection now so a bad path/permission fails
+	// at startup instead of on the first request.
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open db %s: %w", path, err)
+	}
+
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return s, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// Ping verifies the database is actually usable. /healthz calls it so liveness means
+// "the process is up AND its own storage answers", not just "the process is up".
+func (s *Store) Ping() error { return s.db.Ping() }
 
 func (s *Store) migrate() error {
 	_, err := s.db.Exec(`
@@ -175,45 +267,92 @@ func (s *Store) migrate() error {
 	if err := s.migrateItemsConstraint(); err != nil {
 		return err
 	}
-	// Additive column migrations — ignore errors if column already exists.
-	s.db.Exec(`ALTER TABLE items    ADD COLUMN library_name  TEXT    NOT NULL DEFAULT ''`)
-	s.db.Exec(`ALTER TABLE sessions ADD COLUMN user_id       INTEGER NOT NULL DEFAULT 0`)
-	s.db.Exec(`ALTER TABLE items    ADD COLUMN requested_by  TEXT    NOT NULL DEFAULT ''`)
-	s.db.Exec(`ALTER TABLE items    ADD COLUMN is_private     INTEGER NOT NULL DEFAULT 0`)
-	s.db.Exec(`ALTER TABLE items ADD COLUMN poster_url TEXT NOT NULL DEFAULT ''`)
-	s.db.Exec(`ALTER TABLE items ADD COLUMN magnet        TEXT NOT NULL DEFAULT ''`)
-	s.db.Exec(`ALTER TABLE items ADD COLUMN release_title TEXT NOT NULL DEFAULT ''`)
-	s.db.Exec(`ALTER TABLE items ADD COLUMN stale_since   DATETIME`)
-	s.db.Exec(`ALTER TABLE items ADD COLUMN season        INTEGER NOT NULL DEFAULT 0`)
-	s.db.Exec(`ALTER TABLE items ADD COLUMN episode       INTEGER NOT NULL DEFAULT 0`)
+	// Additive column migrations. addColumn tolerates ONLY "duplicate column name"
+	// (the column already exists from a previous run); any other failure is a real
+	// migration error and aborts startup rather than leaving a half-migrated schema
+	// that the rest of the code will then read wrong.
+	adds := []string{
+		`ALTER TABLE items    ADD COLUMN library_name  TEXT     NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN user_id       INTEGER  NOT NULL DEFAULT 0`,
+		`ALTER TABLE items    ADD COLUMN requested_by  TEXT     NOT NULL DEFAULT ''`,
+		`ALTER TABLE items    ADD COLUMN is_private    INTEGER  NOT NULL DEFAULT 0`,
+		`ALTER TABLE items    ADD COLUMN poster_url    TEXT     NOT NULL DEFAULT ''`,
+		`ALTER TABLE items    ADD COLUMN magnet        TEXT     NOT NULL DEFAULT ''`,
+		`ALTER TABLE items    ADD COLUMN release_title TEXT     NOT NULL DEFAULT ''`,
+		`ALTER TABLE items    ADD COLUMN stale_since   DATETIME`,
+		`ALTER TABLE items    ADD COLUMN season        INTEGER  NOT NULL DEFAULT 0`,
+		`ALTER TABLE items    ADD COLUMN episode       INTEGER  NOT NULL DEFAULT 0`,
+		`ALTER TABLE queue    ADD COLUMN stage         TEXT     NOT NULL DEFAULT ''`,
+		`ALTER TABLE queue    ADD COLUMN diagnosis     TEXT     NOT NULL DEFAULT ''`,
+	}
+	for _, stmt := range adds {
+		if err := s.addColumn(stmt); err != nil {
+			return err
+		}
+	}
 	// Reset interrupted queue items on restart.
-	s.db.Exec(`UPDATE queue SET status='pending', progress='' WHERE status='processing'`)
+	if _, err := s.db.Exec(
+		`UPDATE queue SET status='pending', progress='', stage=? WHERE status='processing'`,
+		StageQueued); err != nil {
+		return fmt.Errorf("reset interrupted queue items: %w", err)
+	}
+	// Backfill the stage token for rows written before the column existed, so the UI
+	// stepper has something to render for historical items.
+	if _, err := s.db.Exec(`UPDATE queue SET stage=status WHERE stage='' AND status IN ('done','failed','cancelled')`); err != nil {
+		return fmt.Errorf("backfill queue stage: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE queue SET stage=? WHERE stage='' AND status='pending'`, StageQueued); err != nil {
+		return fmt.Errorf("backfill queue stage: %w", err)
+	}
 	// Backfill season/episode for TV items created before those columns existed.
-	s.backfillEpisodeNumbers()
+	if err := s.backfillEpisodeNumbers(); err != nil {
+		return err
+	}
 	// Migrate old single-password setting into the users table.
 	return s.migrateAdminUser()
+}
+
+// addColumn runs an ALTER TABLE ... ADD COLUMN, treating "column already exists" as
+// success and every other error as fatal.
+func (s *Store) addColumn(stmt string) error {
+	_, err := s.db.Exec(stmt)
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return nil // already migrated
+	}
+	return fmt.Errorf("migration %q: %w", stmt, err)
 }
 
 // migrateAdminUser promotes the old dashboard_password_hash setting into a proper
 // admin User row so the new multi-user system is backward-compatible.
 func (s *Store) migrateAdminUser() error {
 	var n int
-	s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n)
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n); err != nil {
+		return fmt.Errorf("count users: %w", err)
+	}
 	if n > 0 {
 		return nil // users table already populated
 	}
-	hash, _ := s.GetSetting("dashboard_password_hash")
+	hash, err := s.GetSetting("dashboard_password_hash")
+	if err != nil {
+		return fmt.Errorf("read legacy password hash: %w", err)
+	}
 	if hash == "" {
 		return nil // fresh install — setup page will create the first user
 	}
-	_, err := s.db.Exec(
+	if _, err := s.db.Exec(
 		`INSERT INTO users (username, password_hash, auth_source, is_admin) VALUES ('admin', ?, 'local', 1)`,
 		hash,
-	)
-	if err != nil {
-		return err
+	); err != nil {
+		return fmt.Errorf("migrate admin user: %w", err)
 	}
-	s.db.Exec(`DELETE FROM settings WHERE key='dashboard_password_hash'`)
+	// Only drop the legacy setting once the user row above committed — otherwise a
+	// failure here would leave the install with no credentials at all.
+	if _, err := s.db.Exec(`DELETE FROM settings WHERE key='dashboard_password_hash'`); err != nil {
+		return fmt.Errorf("clear legacy password hash: %w", err)
+	}
 	return nil
 }
 
@@ -221,11 +360,14 @@ func (s *Store) migrateItemsConstraint() error {
 	// SQLite UNIQUE table constraints create autoindexes with sql=NULL in sqlite_master,
 	// so we check the table DDL directly instead of looking for an explicit index entry.
 	var ddl string
-	s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='items'`).Scan(&ddl)
+	err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='items'`).Scan(&ddl)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("read items DDL: %w", err)
+	}
 	if strings.Contains(ddl, "UNIQUE(strm_path)") || strings.Contains(ddl, "UNIQUE (strm_path)") {
 		return nil
 	}
-	_, err := s.db.Exec(`
+	_, err = s.db.Exec(`
 	CREATE TABLE IF NOT EXISTS items_new (
 		id           INTEGER  PRIMARY KEY AUTOINCREMENT,
 		tmdb_id      INTEGER  NOT NULL,
@@ -328,19 +470,23 @@ func (s *Store) GetSessionUser(token string) (*User, bool) {
 	return user, true
 }
 
-// ValidSession is kept for compatibility but delegates to GetSessionUser.
-func (s *Store) ValidSession(token string) bool {
-	_, ok := s.GetSessionUser(token)
-	return ok
-}
-
 func (s *Store) DeleteSession(token string) error {
 	_, err := s.db.Exec(`DELETE FROM sessions WHERE token=?`, token)
 	return err
 }
 
-func (s *Store) PurgeSessions() {
-	s.db.Exec(`DELETE FROM sessions WHERE expires < ?`, time.Now())
+func (s *Store) PurgeSessions() error {
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE expires < ?`, time.Now())
+	return err
+}
+
+// DeleteSessionsForUser invalidates every session belonging to a user. Called on a
+// password change so a stolen cookie cannot outlive the credential it was issued for.
+// keepToken (may be empty) is preserved so the user changing their own password is
+// not logged out of the tab they are using.
+func (s *Store) DeleteSessionsForUser(userID int64, keepToken string) error {
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE user_id=? AND token<>?`, userID, keepToken)
+	return err
 }
 
 // ── Items ─────────────────────────────────────────────────────────────────────
@@ -419,10 +565,10 @@ func (s *Store) CountByHash(hash string) (int, error) {
 
 // backfillEpisodeNumbers parses S##E## out of the title for TV items that have
 // season/episode still at 0 (rows created before those columns existed).
-func (s *Store) backfillEpisodeNumbers() {
+func (s *Store) backfillEpisodeNumbers() error {
 	rows, err := s.db.Query(`SELECT id, title FROM items WHERE media_type='tv' AND season=0 AND episode=0`)
 	if err != nil {
-		return
+		return fmt.Errorf("backfill episode numbers: %w", err)
 	}
 	type upd struct {
 		id            int64
@@ -432,8 +578,9 @@ func (s *Store) backfillEpisodeNumbers() {
 	for rows.Next() {
 		var id int64
 		var title string
-		if rows.Scan(&id, &title) != nil {
-			continue
+		if err := rows.Scan(&id, &title); err != nil {
+			rows.Close()
+			return fmt.Errorf("backfill episode numbers: %w", err)
 		}
 		if m := sxxeyy.FindStringSubmatch(title); m != nil {
 			sn, _ := strconv.Atoi(m[1])
@@ -443,26 +590,39 @@ func (s *Store) backfillEpisodeNumbers() {
 			}
 		}
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("backfill episode numbers: %w", err)
+	}
 	rows.Close()
 	for _, u := range updates {
-		s.db.Exec(`UPDATE items SET season=?, episode=? WHERE id=?`, u.season, u.epNum, u.id)
+		if _, err := s.db.Exec(`UPDATE items SET season=?, episode=? WHERE id=?`, u.season, u.epNum, u.id); err != nil {
+			return fmt.Errorf("backfill episode numbers: %w", err)
+		}
 	}
+	return nil
 }
 
 // EpisodeActive reports whether a TV episode is already ready in the library or
 // already pending/processing in the queue — used to skip redundant enqueues.
-func (s *Store) EpisodeActive(tmdbID, season, episode int) bool {
+// On a DB error it reports true (fail CLOSED): skipping a possible duplicate is
+// strictly safer than enqueuing a second copy of an episode we may already have.
+func (s *Store) EpisodeActive(tmdbID, season, episode int) (bool, error) {
 	var n int
-	s.db.QueryRow(
+	if err := s.db.QueryRow(
 		`SELECT COUNT(*) FROM items WHERE tmdb_id=? AND season=? AND episode=? AND status='ready'`,
-		tmdbID, season, episode).Scan(&n)
-	if n > 0 {
-		return true
+		tmdbID, season, episode).Scan(&n); err != nil {
+		return true, err
 	}
-	s.db.QueryRow(
+	if n > 0 {
+		return true, nil
+	}
+	if err := s.db.QueryRow(
 		`SELECT COUNT(*) FROM queue WHERE tmdb_id=? AND season=? AND episode=? AND status IN ('pending','processing')`,
-		tmdbID, season, episode).Scan(&n)
-	return n > 0
+		tmdbID, season, episode).Scan(&n); err != nil {
+		return true, err
+	}
+	return n > 0, nil
 }
 
 // SetPrivate toggles the is_private flag on an item by strm path.
@@ -471,20 +631,29 @@ func (s *Store) SetPrivate(strmPath string, private bool) error {
 	return err
 }
 
-func (s *Store) GetStatusByTMDBIDs(ids []int) (map[int]Item, error) {
+// GetStatusByTMDBIDs returns the best-status item per TMDB id, filtered to what the
+// viewer may see. This endpoint feeds the search-result badges and was previously
+// UNFILTERED, so a private item's existence, title and library leaked to anyone who
+// guessed its TMDB id.
+func (s *Store) GetStatusByTMDBIDs(ids []int, viewer string, isAdmin bool) (map[int]Item, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
 	placeholders := make([]string, len(ids))
-	args := make([]any, len(ids))
+	args := make([]any, 0, len(ids)+2)
 	for i, id := range ids {
 		placeholders[i] = "?"
-		args[i] = id
+		args = append(args, id)
+	}
+	where := ""
+	if !isAdmin {
+		where = ` AND (is_private=0 OR (requested_by=? AND ?<>''))`
+		args = append(args, viewer, viewer)
 	}
 	q := fmt.Sprintf(
-		`SELECT `+itemCols+` FROM items WHERE tmdb_id IN (%s)
+		`SELECT `+itemCols+` FROM items WHERE tmdb_id IN (%s)%s
 		 ORDER BY CASE status WHEN 'ready' THEN 0 WHEN 'stale' THEN 1 WHEN 'error' THEN 2 ELSE 3 END`,
-		strings.Join(placeholders, ","),
+		strings.Join(placeholders, ","), where,
 	)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -529,12 +698,6 @@ func (s *Store) SetPosterURL(id int64, url string) error {
 	return err
 }
 
-func (s *Store) CountReadyByHash(hash string) (int, error) {
-	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM items WHERE info_hash=? AND status='ready'`, hash).Scan(&n)
-	return n, err
-}
-
 // CountReadyByHashExcept counts ready items sharing an info hash, excluding one strm path.
 // Used on playback-stop to decide whether ANY OTHER live item (e.g. another episode from
 // the same season pack) still needs the torrent before we drop it from TorrServer. The
@@ -562,40 +725,49 @@ func (s *Store) GetByIdentity(tmdbID int, mediaType string, season, episode int)
 	return scanItem(row)
 }
 
-func (s *Store) GetByTMDB(tmdbID int, mediaType string) (*Item, error) {
-	row := s.db.QueryRow(`SELECT `+itemCols+` FROM items WHERE tmdb_id=? AND media_type=?`, tmdbID, mediaType)
-	return scanItem(row)
-}
-
 func (s *Store) GetByStrmPath(path string) (*Item, error) {
 	row := s.db.QueryRow(`SELECT `+itemCols+` FROM items WHERE strm_path=?`, path)
 	return scanItem(row)
 }
 
-// ListReady returns all managed items (ready + stale) — background-job view.
-// The health check uses this to both verify ready items and attempt to revive
-// stale (expired) ones.
-func (s *Store) ListReady() ([]*Item, error) {
-	return s.ListVisible("", true)
+// ── Visibility ────────────────────────────────────────────────────────────────
+//
+// There used to be ONE parameter pair (viewerUsername, isAdmin) with the rule
+// "empty username == admin". That sentinel was meant only for the background job
+// caller, but the HTTP layer passed "" for an *unauthenticated* viewer too — so an
+// anonymous LAN visitor was treated as an admin and could read private items that
+// a logged-in non-admin correctly could not. Logging out granted access that
+// logging in denied.
+//
+// The sentinel is gone. The job path calls the explicit ListAll* methods; the HTTP
+// path calls the List* methods, where an empty viewer means ANONYMOUS and always
+// takes the most restrictive branch.
+
+// ListAllItems returns every managed item regardless of privacy — the BACKGROUND JOB
+// view. It must never be reached from an HTTP handler.
+func (s *Store) ListAllItems() ([]*Item, error) {
+	return s.queryItems(`SELECT ` + itemCols + ` FROM items WHERE status IN ('ready','stale')`)
 }
 
 // ListVisible returns library items visible to the given viewer. Includes both
 // 'ready' (live) and 'stale' (expired but revivable) items — stale items are the
 // user's request history and surface in the UI with an "Expired" badge.
-// Admins (or empty viewerUsername) see all. Others see their own + public items.
-func (s *Store) ListVisible(viewerUsername string, isAdmin bool) ([]*Item, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if isAdmin || viewerUsername == "" {
-		rows, err = s.db.Query(`SELECT ` + itemCols + ` FROM items WHERE status IN ('ready','stale')`)
-	} else {
-		rows, err = s.db.Query(
-			`SELECT `+itemCols+` FROM items WHERE status IN ('ready','stale') AND (is_private=0 OR requested_by=?)`,
-			viewerUsername,
-		)
+//
+// viewer=="" means ANONYMOUS: public items only, never private ones.
+func (s *Store) ListVisible(viewer string, isAdmin bool) ([]*Item, error) {
+	if isAdmin {
+		return s.ListAllItems()
 	}
+	// The `?<>''` guard makes the anonymous case (viewer=="") collapse to
+	// "public items only" instead of matching rows whose requested_by is blank.
+	return s.queryItems(
+		`SELECT `+itemCols+` FROM items
+		 WHERE status IN ('ready','stale') AND (is_private=0 OR (requested_by=? AND ?<>''))`,
+		viewer, viewer)
+}
+
+func (s *Store) queryItems(q string, args ...any) ([]*Item, error) {
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -677,12 +849,34 @@ func boolToInt(b bool) int {
 
 // ── Queue ─────────────────────────────────────────────────────────────────────
 
+// queueCols is the canonical SELECT column list for QueueItem rows.
+const queueCols = `id,tmdb_id,media_type,title,year,poster_url,season,episode,library_name,
+                   requested_by,magnet_override,status,progress,stage,error_msg,info_hash,strm_path,
+                   diagnosis,created_at,updated_at`
+
+func scanQueueItem(sc scanner) (*QueueItem, error) {
+	var item QueueItem
+	err := sc.Scan(
+		&item.ID, &item.TMDBID, &item.MediaType, &item.Title, &item.Year, &item.PosterURL,
+		&item.Season, &item.Episode, &item.LibraryName, &item.RequestedBy, &item.MagnetOverride,
+		&item.Status, &item.Progress, &item.Stage, &item.ErrorMsg, &item.InfoHash, &item.StrmPath,
+		&item.Diagnosis, &item.CreatedAt, &item.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 func (s *Store) Enqueue(item *QueueItem) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO queue (tmdb_id,media_type,title,year,poster_url,season,episode,library_name,requested_by,magnet_override)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO queue (tmdb_id,media_type,title,year,poster_url,season,episode,library_name,requested_by,magnet_override,stage)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		item.TMDBID, item.MediaType, item.Title, item.Year, item.PosterURL,
-		item.Season, item.Episode, item.LibraryName, item.RequestedBy, item.MagnetOverride,
+		item.Season, item.Episode, item.LibraryName, item.RequestedBy, item.MagnetOverride, StageQueued,
 	)
 	if err != nil {
 		return 0, err
@@ -692,131 +886,136 @@ func (s *Store) Enqueue(item *QueueItem) (int64, error) {
 
 // NextPending atomically claims the next pending queue item by marking it processing.
 func (s *Store) NextPending() (*QueueItem, error) {
-	var item QueueItem
-	err := s.db.QueryRow(
-		`SELECT id,tmdb_id,media_type,title,year,poster_url,season,episode,library_name,
-                requested_by,magnet_override,status,progress,error_msg,info_hash,strm_path,created_at,updated_at
-         FROM queue WHERE status='pending' ORDER BY created_at LIMIT 1`).Scan(
-		&item.ID, &item.TMDBID, &item.MediaType, &item.Title, &item.Year, &item.PosterURL,
-		&item.Season, &item.Episode, &item.LibraryName, &item.RequestedBy, &item.MagnetOverride,
-		&item.Status, &item.Progress, &item.ErrorMsg, &item.InfoHash, &item.StrmPath,
-		&item.CreatedAt, &item.UpdatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
+	item, err := scanQueueItem(s.db.QueryRow(
+		`SELECT ` + queueCols + ` FROM queue WHERE status='pending' ORDER BY created_at LIMIT 1`))
+	if err != nil || item == nil {
 		return nil, err
 	}
-	_, err = s.db.Exec(`UPDATE queue SET status='processing', updated_at=CURRENT_TIMESTAMP WHERE id=?`, item.ID)
+	if _, err := s.db.Exec(
+		`UPDATE queue SET status='processing', stage=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		StageIndexing, item.ID); err != nil {
+		// The claim did not commit. Returning the item anyway would let a restart
+		// double-process it, so report the failure and let the worker retry later.
+		return nil, fmt.Errorf("claim queue item %d: %w", item.ID, err)
+	}
 	item.Status = "processing"
-	return &item, err
+	item.Stage = StageIndexing
+	return item, nil
 }
 
 func (s *Store) UpdateQueue(item *QueueItem) error {
 	_, err := s.db.Exec(
-		`UPDATE queue SET status=?,progress=?,error_msg=?,info_hash=?,strm_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-		item.Status, item.Progress, item.ErrorMsg, item.InfoHash, item.StrmPath, item.ID,
+		`UPDATE queue SET status=?,progress=?,stage=?,error_msg=?,info_hash=?,strm_path=?,diagnosis=?,
+		 updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		item.Status, item.Progress, item.Stage, item.ErrorMsg, item.InfoHash, item.StrmPath,
+		item.Diagnosis, item.ID,
 	)
 	return err
 }
 
 func (s *Store) GetQueueItem(id int64) (*QueueItem, error) {
-	var item QueueItem
-	err := s.db.QueryRow(
-		`SELECT id,tmdb_id,media_type,title,year,poster_url,season,episode,library_name,
-                requested_by,magnet_override,status,progress,error_msg,info_hash,strm_path,created_at,updated_at
-         FROM queue WHERE id=?`, id).Scan(
-		&item.ID, &item.TMDBID, &item.MediaType, &item.Title, &item.Year, &item.PosterURL,
-		&item.Season, &item.Episode, &item.LibraryName, &item.RequestedBy, &item.MagnetOverride,
-		&item.Status, &item.Progress, &item.ErrorMsg, &item.InfoHash, &item.StrmPath,
-		&item.CreatedAt, &item.UpdatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	return &item, err
+	return scanQueueItem(s.db.QueryRow(`SELECT `+queueCols+` FROM queue WHERE id=?`, id))
 }
 
+// ListQueue returns queue rows visible to the caller. requester=="" means ANONYMOUS,
+// which sees nothing — a queue row is a named person's viewing request.
 func (s *Store) ListQueue(requester string, isAdmin bool) ([]*QueueItem, error) {
-	var rows *sql.Rows
-	var err error
-	if isAdmin || requester == "" {
-		rows, err = s.db.Query(
-			`SELECT id,tmdb_id,media_type,title,year,poster_url,season,episode,library_name,
-                    requested_by,magnet_override,status,progress,error_msg,info_hash,strm_path,created_at,updated_at
-             FROM queue ORDER BY created_at DESC LIMIT 100`)
-	} else {
-		rows, err = s.db.Query(
-			`SELECT id,tmdb_id,media_type,title,year,poster_url,season,episode,library_name,
-                    requested_by,magnet_override,status,progress,error_msg,info_hash,strm_path,created_at,updated_at
-             FROM queue WHERE requested_by=? ORDER BY created_at DESC LIMIT 100`, requester)
+	if isAdmin {
+		return s.queryQueue(`SELECT ` + queueCols + ` FROM queue ORDER BY created_at DESC LIMIT 100`)
 	}
+	if requester == "" {
+		return nil, nil
+	}
+	return s.queryQueue(
+		`SELECT `+queueCols+` FROM queue WHERE requested_by=? ORDER BY created_at DESC LIMIT 100`, requester)
+}
+
+// ListAllQueue returns every queue row — the BACKGROUND JOB view, never an HTTP one.
+func (s *Store) ListAllQueue() ([]*QueueItem, error) {
+	return s.queryQueue(`SELECT ` + queueCols + ` FROM queue ORDER BY created_at DESC`)
+}
+
+func (s *Store) queryQueue(q string, args ...any) ([]*QueueItem, error) {
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var items []*QueueItem
 	for rows.Next() {
-		var item QueueItem
-		if err := rows.Scan(
-			&item.ID, &item.TMDBID, &item.MediaType, &item.Title, &item.Year, &item.PosterURL,
-			&item.Season, &item.Episode, &item.LibraryName, &item.RequestedBy, &item.MagnetOverride,
-			&item.Status, &item.Progress, &item.ErrorMsg, &item.InfoHash, &item.StrmPath,
-			&item.CreatedAt, &item.UpdatedAt,
-		); err != nil {
+		item, err := scanQueueItem(rows)
+		if err != nil {
 			return nil, err
 		}
-		items = append(items, &item)
+		items = append(items, item)
 	}
 	return items, rows.Err()
 }
 
-func (s *Store) CancelQueueItem(id int64, requester string, isAdmin bool) error {
-	if isAdmin || requester == "" {
-		_, err := s.db.Exec(`UPDATE queue SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'`, id)
-		return err
-	}
-	_, err := s.db.Exec(`UPDATE queue SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending' AND requested_by=?`, id, requester)
-	return err
-}
-
-func (s *Store) DeleteQueueItem(id int64, requester string, isAdmin bool) error {
+// CancelQueueItem cancels a pending row. Returns the number of rows affected so the
+// handler can distinguish "cancelled" from "not yours / not pending / gone" instead of
+// reporting success on an unchanged row.
+func (s *Store) CancelQueueItem(id int64, requester string, isAdmin bool) (int64, error) {
+	var (
+		res sql.Result
+		err error
+	)
 	if isAdmin {
-		_, err := s.db.Exec(`DELETE FROM queue WHERE id=?`, id)
-		return err
+		res, err = s.db.Exec(
+			`UPDATE queue SET status='cancelled', stage=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'`,
+			StageCancelled, id)
+	} else {
+		if requester == "" {
+			return 0, nil
+		}
+		res, err = s.db.Exec(
+			`UPDATE queue SET status='cancelled', stage=?, updated_at=CURRENT_TIMESTAMP
+			 WHERE id=? AND status='pending' AND requested_by=?`,
+			StageCancelled, id, requester)
 	}
-	_, err := s.db.Exec(`DELETE FROM queue WHERE id=? AND requested_by=? AND status IN ('done','failed','cancelled')`, id, requester)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
-func (s *Store) QueuePendingCount() int {
+// DeleteQueueItem removes a finished row. Returns rows affected (see CancelQueueItem).
+func (s *Store) DeleteQueueItem(id int64, requester string, isAdmin bool) (int64, error) {
+	var (
+		res sql.Result
+		err error
+	)
+	if isAdmin {
+		res, err = s.db.Exec(`DELETE FROM queue WHERE id=?`, id)
+	} else {
+		if requester == "" {
+			return 0, nil
+		}
+		res, err = s.db.Exec(
+			`DELETE FROM queue WHERE id=? AND requested_by=? AND status IN ('done','failed','cancelled')`,
+			id, requester)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (s *Store) QueuePendingCount() (int, error) {
 	var n int
-	s.db.QueryRow(`SELECT COUNT(*) FROM queue WHERE status IN ('pending','processing')`).Scan(&n)
-	return n
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM queue WHERE status IN ('pending','processing')`).Scan(&n)
+	return n, err
 }
 
 // ActiveQueueItem returns the newest in-flight (pending|processing) queue row for an identity,
 // or nil if none. Used to make a repeat request idempotent — we hand back the existing row
 // instead of enqueuing a duplicate that would show up alongside the library entry.
 func (s *Store) ActiveQueueItem(tmdbID int, mediaType string, season, episode int) (*QueueItem, error) {
-	var item QueueItem
-	err := s.db.QueryRow(
-		`SELECT id,tmdb_id,media_type,title,year,poster_url,season,episode,library_name,
-                requested_by,magnet_override,status,progress,error_msg,info_hash,strm_path,created_at,updated_at
-         FROM queue
+	return scanQueueItem(s.db.QueryRow(
+		`SELECT `+queueCols+` FROM queue
          WHERE tmdb_id=? AND media_type=? AND season=? AND episode=? AND status IN ('pending','processing')
          ORDER BY created_at DESC LIMIT 1`,
-		tmdbID, mediaType, season, episode).Scan(
-		&item.ID, &item.TMDBID, &item.MediaType, &item.Title, &item.Year, &item.PosterURL,
-		&item.Season, &item.Episode, &item.LibraryName, &item.RequestedBy, &item.MagnetOverride,
-		&item.Status, &item.Progress, &item.ErrorMsg, &item.InfoHash, &item.StrmPath,
-		&item.CreatedAt, &item.UpdatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	return &item, err
+		tmdbID, mediaType, season, episode))
 }
 
 // ClearTerminalQueue deletes finished (done|failed|cancelled) queue rows for an identity.
@@ -868,38 +1067,31 @@ func (s *Store) UpsertSubscription(sub *Subscription) error {
 	return err
 }
 
-func (s *Store) SubscriptionExists(tmdbID, season int) bool {
+func (s *Store) SubscriptionExists(tmdbID, season int) (bool, error) {
 	var n int
-	s.db.QueryRow(`SELECT COUNT(*) FROM subscriptions WHERE tmdb_id=? AND season=?`, tmdbID, season).Scan(&n)
-	return n > 0
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM subscriptions WHERE tmdb_id=? AND season=?`, tmdbID, season).Scan(&n)
+	return n > 0, err
 }
 
+// ListSubscriptions returns subscriptions visible to the caller. requester=="" means
+// ANONYMOUS, which sees nothing — a subscription names who requested it.
 func (s *Store) ListSubscriptions(requester string, isAdmin bool) ([]*Subscription, error) {
-	var rows *sql.Rows
-	var err error
-	if isAdmin || requester == "" {
-		rows, err = s.db.Query(`SELECT ` + subCols + ` FROM subscriptions ORDER BY created_at DESC`)
-	} else {
-		rows, err = s.db.Query(`SELECT `+subCols+` FROM subscriptions WHERE requested_by=? ORDER BY created_at DESC`, requester)
+	if isAdmin {
+		return s.querySubs(`SELECT ` + subCols + ` FROM subscriptions ORDER BY created_at DESC`)
 	}
-	if err != nil {
-		return nil, err
+	if requester == "" {
+		return nil, nil
 	}
-	defer rows.Close()
-	var subs []*Subscription
-	for rows.Next() {
-		sub, err := scanSubscription(rows)
-		if err != nil {
-			return nil, err
-		}
-		subs = append(subs, sub)
-	}
-	return subs, rows.Err()
+	return s.querySubs(`SELECT `+subCols+` FROM subscriptions WHERE requested_by=? ORDER BY created_at DESC`, requester)
 }
 
 // ListAiringSubscriptions returns subscriptions still flagged as airing (for the checker task).
 func (s *Store) ListAiringSubscriptions() ([]*Subscription, error) {
-	rows, err := s.db.Query(`SELECT ` + subCols + ` FROM subscriptions WHERE is_airing=1`)
+	return s.querySubs(`SELECT ` + subCols + ` FROM subscriptions WHERE is_airing=1`)
+}
+
+func (s *Store) querySubs(q string, args ...any) ([]*Subscription, error) {
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -921,11 +1113,23 @@ func (s *Store) MarkSubscriptionChecked(id int64, isAiring bool) error {
 	return err
 }
 
-func (s *Store) DeleteSubscription(id int64, requester string, isAdmin bool) error {
-	if isAdmin || requester == "" {
-		_, err := s.db.Exec(`DELETE FROM subscriptions WHERE id=?`, id)
-		return err
+// DeleteSubscription removes a subscription the caller owns (or any, for an admin).
+// Returns rows affected so the handler can report "not yours" rather than success.
+func (s *Store) DeleteSubscription(id int64, requester string, isAdmin bool) (int64, error) {
+	var (
+		res sql.Result
+		err error
+	)
+	if isAdmin {
+		res, err = s.db.Exec(`DELETE FROM subscriptions WHERE id=?`, id)
+	} else {
+		if requester == "" {
+			return 0, nil
+		}
+		res, err = s.db.Exec(`DELETE FROM subscriptions WHERE id=? AND requested_by=?`, id, requester)
 	}
-	_, err := s.db.Exec(`DELETE FROM subscriptions WHERE id=? AND requested_by=?`, id, requester)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

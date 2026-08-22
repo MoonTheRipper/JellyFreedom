@@ -2,12 +2,16 @@ package jellyfin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"jellyfreedom/internal/redact"
 )
 
 type Client struct {
@@ -31,6 +35,36 @@ func (c *Client) Configure(baseURL, apiKey string) {
 	c.baseURL = strings.TrimRight(baseURL, "/")
 	c.apiKey = apiKey
 	c.mu.Unlock()
+	// Backstop: keep this key out of any error string or log line.
+	redact.Register(apiKey)
+}
+
+// ErrNotConfigured is returned instead of attempting a request with no URL/key, so
+// callers can render a specific setup message rather than a transport error.
+var ErrNotConfigured = errors.New("Jellyfin is not configured — set its URL and API key in Settings → Connections")
+
+// Ping reports whether Jellyfin is reachable and the API key is accepted.
+func (c *Client) Ping(ctx context.Context) error {
+	if !c.Configured() {
+		return ErrNotConfigured
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base()+"/System/Info", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Emby-Token", c.key())
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("Jellyfin is unreachable — check it is running and the URL in Settings → Connections")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("Jellyfin rejected the API key — re-enter it in Settings → Connections")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Jellyfin returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // Configured reports whether both base URL and API key are set.
@@ -56,6 +90,9 @@ func (c *Client) key() string {
 // up newly written .strm files. Falls back to /Library/Refresh if the task
 // cannot be found.
 func (c *Client) TriggerLibraryScan() error {
+	if !c.Configured() {
+		return ErrNotConfigured
+	}
 	taskID, err := c.scanTaskID()
 	if err == nil && taskID != "" {
 		return c.apiPost("/ScheduledTasks/Running/"+taskID, nil)
@@ -166,24 +203,35 @@ func (c *Client) ActiveSessionsForItem(itemID string) int {
 // ActivePlaybackCount returns how many Jellyfin sessions are currently playing anything.
 // Used by the VPN watchdog / port-forward keeper to DEFER non-urgent TorrServer restarts
 // while someone is watching (so a port rotation or a transient blip never kills a stream).
-func (c *Client) ActivePlaybackCount() int {
+//
+// It FAILS CLOSED: any error returns an error, never 0. This used to return 0 on every
+// failure path, which meant an unreachable or unconfigured Jellyfin told the watchdog
+// "nobody is watching" and it would restart TorrServer in the middle of a stream. When
+// the truth is unknown the safe answer is "assume someone is watching".
+func (c *Client) ActivePlaybackCount() (int, error) {
+	if !c.Configured() {
+		return 0, ErrNotConfigured
+	}
 	req, err := http.NewRequest(http.MethodGet, c.base()+"/Sessions", nil)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	req.Header.Set("X-Emby-Token", c.key())
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("jellyfin sessions: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("jellyfin sessions: status %d", resp.StatusCode)
+	}
 	var sessions []struct {
 		NowPlayingItem *struct {
 			ID string `json:"Id"`
 		} `json:"NowPlayingItem"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-		return 0
+		return 0, fmt.Errorf("jellyfin sessions: %w", err)
 	}
 	n := 0
 	for _, s := range sessions {
@@ -191,7 +239,7 @@ func (c *Client) ActivePlaybackCount() int {
 			n++
 		}
 	}
-	return n
+	return n, nil
 }
 
 // JellyfinUser is a minimal user record returned by the Jellyfin /Users API.

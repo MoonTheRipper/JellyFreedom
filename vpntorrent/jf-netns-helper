@@ -1,0 +1,465 @@
+#!/bin/bash
+#
+# jf-netns-helper — the single privileged entry point for the vpntorrent namespace.
+#
+# INSTALLATION REQUIREMENTS (release/install.sh must guarantee all three):
+#   path  : /opt/vpntorrent/jf-netns-helper
+#   owner : root:root
+#   mode  : 0755
+#   The containing directory MUST be root-owned and NOT writable by the service user.
+#   This file is reachable through NOPASSWD sudo. If the service user can edit it — or
+#   its directory, or anything it sources — the sudo rules become a root shell.
+#
+# WHY THIS EXISTS
+#   The dashboard needs a few privileged facts (tunnel status, exit IP, kill-switch state)
+#   and two privileged actions (bring the tunnel up/down). The old sudoers granted
+#   `ip netns exec vpntorrent /usr/bin/curl *` and `... wg show *`, which is root-equivalent:
+#   `curl -o /etc/sudoers.d/x` writes any root file, `curl file:///etc/shadow` reads any root
+#   file, and `wg show <if> private-key` prints the tunnel's private key. This helper replaces
+#   both with a CLOSED SET OF VERBS AND NO FREE-FORM ARGUMENTS — every dynamic value the old
+#   code passed across the sudo boundary (the --resolve address, the config path) is now
+#   computed in here, on the trusted side.
+#
+# VERBS (each is one sudoers line; see the handoff doc for the exact sudoers file)
+#   status     wg show for the tunnel, with any key material filtered out
+#   exit-ip    the namespace's public IPv4, one line, nothing else
+#   leakcheck  key=value kill-switch facts (see leakcheck() for the exact keys)
+#   routes     routing table + links inside the namespace (human-readable diagnostics)
+#   vpn-up     sanitise the active config, then bring the tunnel up (NO argument)
+#   vpn-down   take the tunnel down
+#
+# EXIT CODES
+#   0  success
+#   1  failure (a human-readable reason is printed on stderr)
+#   2  usage error (unknown verb / unexpected argument)
+#   3  "not configured yet" — vpn-up found no active WireGuard config. Callers should
+#      treat this as a warning: the namespace is still up and still fails closed.
+#
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+umask 077
+
+NETNS=vpntorrent
+WG_IF=wg0-vpntorrent
+VETH_VPN=veth-vpn
+RUN_DIR=/run/vpntorrent
+SAFE_CONF="$RUN_DIR/$WG_IF.conf"
+NETNS_ENV="$RUN_DIR/netns.env"
+SETTINGS=/etc/vpntorrent/helper.conf
+DEFAULT_CONFIG_DIR=/var/lib/jellyfreedom/vpnconfigs
+
+# A sanitised config holds the tunnel's private key. If we abort half-way through writing
+# one, do not leave it lying around.
+TMP_CONF=""
+cleanup() { [ -n "$TMP_CONF" ] && rm -f "$TMP_CONF"; return 0; }
+trap cleanup EXIT
+
+die() { printf 'jf-netns-helper: %s\n' "$*" >&2; exit 1; }
+note() { printf 'jf-netns-helper: %s\n' "$*" >&2; }
+
+# Everything here needs CAP_SYS_ADMIN (entering a network namespace). Say so plainly instead
+# of letting each command fail with its own confusing permission error.
+[ "$(id -u)" = "0" ] || die "must run as root — the orchestrator invokes this through sudo (see /etc/sudoers.d/jellyfreedom)"
+
+# ---------------------------------------------------------------------------
+# Settings
+#
+# The helper deliberately does NOT read its settings from the environment: sudo's
+# env_reset would strip them anyway, and honouring them would let a caller point
+# root's config reader at an arbitrary file. Overrides come from a root-owned file
+# instead, so only root can change where the active config lives.
+# ---------------------------------------------------------------------------
+setting() { # setting <KEY> <DEFAULT>
+    local key="$1" def="$2" val=""
+    if [ -f "$SETTINGS" ]; then
+        # Refuse to honour a settings file the service user could have written.
+        local owner
+        owner="$(stat -c '%u' "$SETTINGS")" || die "cannot stat $SETTINGS"
+        [ "$owner" = "0" ] || die "$SETTINGS is not owned by root (uid $owner); refusing to use it"
+        # `|| true` throughout: these are pipelines under `set -o pipefail`, and an empty
+        # result is a normal outcome, not an error we want to abort the whole run on.
+        val="$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$SETTINGS" | head -1 | tr -d '[:space:]' || true)"
+    fi
+    printf '%s' "${val:-$def}"
+}
+
+# Values written by setup-netns.sh when it builds the namespace, so the veth addressing
+# is defined in exactly one place. Falls back to the shipped defaults when the file is
+# absent (e.g. the helper is called before the namespace has ever been built).
+netns_env() { # netns_env <KEY> <DEFAULT>
+    local key="$1" def="$2" val="" owner=""
+    if [ -r "$NETNS_ENV" ]; then
+        # Belt-and-braces, matching setting() above. setup-netns.sh creates $RUN_DIR as
+        # root:root 0700, so only root can write this file today and the check can never
+        # fail in a correct install. It is here so that a future change loosening those
+        # permissions degrades to "helper ignores the file" rather than "service user
+        # chooses the veth gateway that root then installs routes and firewall rules for".
+        owner="$(stat -c '%u' "$NETNS_ENV" 2>/dev/null || echo "")"
+        if [ "$owner" = "0" ]; then
+            val="$(sed -n "s/^${key}=//p" "$NETNS_ENV" | head -1 | tr -d '[:space:]' || true)"
+        else
+            note "ignoring $NETNS_ENV: not owned by root (uid ${owner:-unknown}); using built-in defaults"
+        fi
+    fi
+    printf '%s' "${val:-$def}"
+}
+
+CONFIG_DIR="$(setting VPNTORRENT_CONFIG_DIR "$DEFAULT_CONFIG_DIR")"
+case "$CONFIG_DIR" in
+    /*) ;;
+    *) die "VPNTORRENT_CONFIG_DIR in $SETTINGS must be an absolute path, got '$CONFIG_DIR'" ;;
+esac
+ACTIVE_CONF="$CONFIG_DIR/$WG_IF.conf"
+
+VETH_HOST_IP="$(netns_env VETH_HOST_IP 10.42.0.1)"
+
+nsexec() { ip netns exec "$NETNS" "$@"; }
+ipt() { nsexec iptables -w 5 "$@"; }
+
+require_netns() {
+    # Test the namespace file directly, not `ip netns list | grep`: under `set -o pipefail`
+    # a matching `grep -q` can SIGPIPE its upstream and make the pipeline report failure.
+    [ -e "/var/run/netns/${NETNS}" ] \
+        || die "network namespace '$NETNS' does not exist. Start it with: systemctl start vpntorrent-netns.service"
+}
+
+wg_if_up() { nsexec ip link show "$WG_IF" >/dev/null 2>&1; }
+
+ipv6_available() { [ -d /proc/sys/net/ipv6 ]; }
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+verb_status() {
+    require_netns
+    if ! wg_if_up; then
+        die "tunnel interface $WG_IF is not present in the $NETNS namespace (VPN is down)"
+    fi
+    local out
+    out="$(nsexec wg show "$WG_IF")" || die "'wg show $WG_IF' failed inside the $NETNS namespace"
+    # `wg show <if>` prints key material as "(hidden)", but filter regardless: this output
+    # is rendered in a web dashboard and a future wg release must not be able to leak a key
+    # through it. Nothing downstream parses the filtered lines.
+    printf '%s\n' "$out" | grep -v -i -E '(private|preshared)[[:space:]]+key' || true
+}
+
+# ---------------------------------------------------------------------------
+# exit-ip
+# ---------------------------------------------------------------------------
+verb_exit_ip() {
+    require_netns
+    local out ip
+
+    # Primary: Cloudflare's trace endpoint addressed by IP literal. No DNS is involved at
+    # all, so there is no name to resolve through the tunnel and no dynamic argument to
+    # pass anywhere. 1.1.1.1's certificate carries the IP in its SANs, so TLS still verifies.
+    out="$(nsexec curl -4 -s --max-time 8 https://1.1.1.1/cdn-cgi/trace 2>/dev/null || true)"
+    ip="$(printf '%s\n' "$out" | sed -n 's/^ip=//p' | head -1 | tr -d '[:space:]' || true)"
+
+    if [ -z "$ip" ]; then
+        # Fallback: ip-api.com, the endpoint the dashboard used before. The name is resolved
+        # HERE, in the host namespace, and pinned with --resolve so the lookup never crosses
+        # the tunnel's resolver. Previously the Go code computed that --resolve value and
+        # passed it through sudo; now it never leaves this file.
+        local apiip
+        apiip="$(getent ahostsv4 ip-api.com 2>/dev/null | awk 'NR==1{print $1}')" || apiip=""
+        if [ -n "$apiip" ]; then
+            out="$(nsexec curl -4 -s --max-time 8 \
+                --resolve "ip-api.com:80:${apiip}" \
+                'http://ip-api.com/json?fields=query' 2>/dev/null || true)"
+            ip="$(printf '%s\n' "$out" | sed -n 's/.*"query"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)"
+        fi
+    fi
+
+    case "$ip" in
+        [0-9]*.[0-9]*.[0-9]*.[0-9]*) ;;
+        *) die "could not determine the namespace's exit IP — the tunnel is probably down. Check: systemctl status vpntorrent-netns.service" ;;
+    esac
+    printf '%s\n' "$ip"
+}
+
+# ---------------------------------------------------------------------------
+# leakcheck  (stable key=value output — parsed by the dashboard)
+# ---------------------------------------------------------------------------
+verb_leakcheck() {
+    require_netns
+    local v6pol v4pol defdev v6dis ephit
+
+    # Each of these may legitimately come back empty (no tunnel, no iptables); `|| true`
+    # keeps a missing fact from aborting the whole report — reporting "unknown" is the point.
+    v6pol="$(nsexec ip6tables -w 5 -S OUTPUT 2>/dev/null | sed -n 's/^-P OUTPUT //p' | head -1 || true)"
+    v4pol="$(nsexec iptables -w 5 -S OUTPUT 2>/dev/null | sed -n 's/^-P OUTPUT //p' | head -1 || true)"
+    defdev="$(nsexec ip -4 route show default 2>/dev/null | awk '/^default/{for(i=1;i<NF;i++) if($i=="dev") print $(i+1); exit}' || true)"
+    if nsexec sh -c "test -r /proc/sys/net/ipv6/conf/${VETH_VPN}/disable_ipv6" 2>/dev/null; then
+        v6dis="$(nsexec cat "/proc/sys/net/ipv6/conf/${VETH_VPN}/disable_ipv6" 2>/dev/null || echo unknown)"
+    else
+        v6dis="n/a"   # host booted without IPv6 — there is nothing to leak
+    fi
+    if nsexec iptables -w 5 -S OUTPUT 2>/dev/null | grep -qF 'jf-wg-endpoint'; then
+        ephit=present
+    else
+        ephit=absent
+    fi
+
+    printf 'ipv4_output_policy=%s\n' "${v4pol:-unknown}"
+    printf 'ipv6_output_policy=%s\n' "${v6pol:-unknown}"
+    printf 'ipv4_default_dev=%s\n'   "${defdev:-none}"
+    printf 'veth_ipv6_disabled=%s\n' "$v6dis"
+    printf 'wg_endpoint_rule=%s\n'   "$ephit"
+    printf 'wg_interface=%s\n'       "$(wg_if_up && echo up || echo down)"
+}
+
+# ---------------------------------------------------------------------------
+# routes
+# ---------------------------------------------------------------------------
+verb_routes() {
+    require_netns
+    echo "# ip -4 route show"
+    nsexec ip -4 route show || true
+    echo
+    echo "# ip -4 rule show"
+    nsexec ip -4 rule show || true
+    echo
+    echo "# ip -br link show"
+    nsexec ip -br link show || true
+}
+
+# ---------------------------------------------------------------------------
+# Config sanitisation — the layer that makes web-admin -> root impossible.
+#
+# The VPN config directory is owned by the service user, so the service user controls the
+# bytes root's wg-quick will parse. wg-quick runs PostUp/PostDown/PreUp/PreDown through
+# `bash -c` as root: one uploaded config with a PostUp line would be a root shell.
+#
+# We therefore never hand wg-quick a file the service user can write. We rebuild the config
+# from scratch into a root-owned copy under /run, emitting ONLY keys from an allow-list.
+# Rebuilding (rather than deleting bad lines) also removes any parser differential: whatever
+# wg-quick sees is exactly what we decided to write, not a line we tried and failed to match.
+#
+# Dropped on purpose:
+#   PostUp/PostDown/PreUp/PreDown  root command execution
+#   Table                          `Table = off` suppresses wg-quick's routing entirely,
+#                                  which would silently defeat a routing-based kill switch
+#   SaveConfig                     lets wg-quick write back over the file
+#   DNS                            the namespace pins its own resolvers (/etc/netns/...)
+# ---------------------------------------------------------------------------
+sanitise_conf() { # sanitise_conf <src> <dst>
+    local src="$1" dst="$2"
+    local section="" line stripped key value dropped="" tmp
+    local keep_v6=1
+    ipv6_available || keep_v6=0
+
+    [ -r "$src" ] || die "cannot read $src"
+
+    tmp="${dst}.new"
+    TMP_CONF="$tmp"        # picked up by the EXIT trap so a failed run leaves no stray key file
+    rm -f "$tmp"
+    : > "$tmp" || die "could not write $tmp — is $(dirname "$dst") present and root-owned?"
+    chmod 600 "$tmp"
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Match wg-quick's own parse: strip trailing comments, then trim.
+        stripped="${line%%#*}"
+        stripped="$(printf '%s' "$stripped" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [ -n "$stripped" ] || continue
+
+        case "$stripped" in
+            "[Interface]"|"[interface]"|"[INTERFACE]") section=interface; printf '[Interface]\n' >>"$tmp"; continue ;;
+            "[Peer]"|"[peer]"|"[PEER]")               section=peer;      printf '[Peer]\n'      >>"$tmp"; continue ;;
+            \[*\])  dropped="$dropped $stripped"; continue ;;
+        esac
+
+        case "$stripped" in
+            *=*) ;;
+            *) dropped="$dropped <malformed-line>"; continue ;;
+        esac
+        key="${stripped%%=*}"
+        value="${stripped#*=}"
+        key="$(printf '%s' "$key" | sed -e 's/[[:space:]]//g')"
+        value="$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+        # Allow-list, per section. Anything not named here is dropped by construction.
+        # NOTE: the allow-list runs BEFORE the value check on purpose — a PostUp line full of
+        # shell metacharacters is exactly what we expect to find and drop, not a reason to
+        # refuse an otherwise-fine config.
+        case "${section}:${key}" in
+            interface:PrivateKey|interface:ListenPort|interface:MTU|interface:FwMark) ;;
+            interface:Address|peer:AllowedIPs)
+                if [ "$keep_v6" = "0" ]; then
+                    # Host booted without IPv6 (ipv6.disable=1). wg-quick would fail trying to
+                    # add a v6 address / v6 routes, taking the whole tunnel with it. Drop the
+                    # v6 entries instead — the namespace has no IPv6 path to leak through.
+                    value="$(printf '%s' "$value" | tr ',' '\n' \
+                        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+                        | { grep -v ':' || true; } | paste -sd, -)"
+                    [ -n "$value" ] || die "refusing to use $src: '$key' has only IPv6 entries but this host has IPv6 disabled"
+                fi
+                ;;
+            peer:PublicKey|peer:PresharedKey|peer:Endpoint|peer:PersistentKeepalive) ;;
+            *)
+                dropped="$dropped ${key}"
+                continue
+                ;;
+        esac
+
+        # Defence in depth: even an allow-listed value must not carry shell metacharacters
+        # into a file root's wg-quick will parse.
+        case "$value" in
+            *'`'*|*'$'*|*';'*|*'&'*|*'|'*|*'<'*|*'>'*|*'('*|*')'*|*'"'*|*"'"*|*'\'*)
+                die "refusing to use $src: the value of '$key' contains shell metacharacters" ;;
+        esac
+
+        printf '%s = %s\n' "$key" "$value" >>"$tmp"
+    done < "$src"
+
+    grep -q '^\[Interface\]' "$tmp" || die "refusing to use $src: no [Interface] section found"
+    grep -q '^\[Peer\]' "$tmp"      || die "refusing to use $src: no [Peer] section found"
+    grep -q '^PrivateKey = ' "$tmp" || die "refusing to use $src: no PrivateKey in [Interface]"
+    grep -q '^Endpoint = ' "$tmp"   || die "refusing to use $src: no Endpoint in [Peer]"
+
+    [ -z "$dropped" ] || note "sanitised $(basename "$src"): dropped unsupported/unsafe directives:$dropped"
+
+    mv -f "$tmp" "$dst"
+    TMP_CONF=""
+    chown root:root "$dst"
+    chmod 600 "$dst"
+}
+
+ensure_run_dir() {
+    # Root-only: this directory holds a config containing the tunnel's private key.
+    install -d -o root -g root -m 0700 "$RUN_DIR"
+}
+
+# Rewrites Endpoint to a literal IPv4 address, resolving the name HERE (host namespace) if
+# needed. Inside the namespace the only resolvers are reachable *through* the tunnel, so a
+# hostname endpoint could never be resolved before the tunnel exists — a chicken-and-egg that
+# used to leave wg-quick failing with a bare "Name or service not known".
+pin_endpoint() { # prints "<ip> <port>"
+    local raw host port ip
+    raw="$(sed -n 's/^Endpoint = //p' "$SAFE_CONF" | head -1 || true)"
+    [ -n "$raw" ] || die "no Endpoint in $SAFE_CONF"
+    case "$raw" in
+        \[*\]:*)  # [v6addr]:port
+            die "the WireGuard Endpoint is IPv6 ($raw). IPv6 is disabled inside the $NETNS namespace to prevent leaks; use a config with an IPv4 endpoint." ;;
+        *:*) host="${raw%:*}"; port="${raw##*:}" ;;
+        *) die "malformed Endpoint '$raw' (expected host:port)" ;;
+    esac
+    case "$port" in
+        ''|*[!0-9]*) die "malformed Endpoint port '$port' in $SAFE_CONF" ;;
+    esac
+
+    case "$host" in
+        [0-9]*.[0-9]*.[0-9]*.[0-9]*) ip="$host" ;;
+        *)
+            ip="$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR==1{print $1}')" || ip=""
+            [ -n "$ip" ] || die "could not resolve the WireGuard endpoint '$host' from the host namespace. Check DNS on this machine, or use a config with a literal IPv4 endpoint."
+            note "resolved endpoint $host -> $ip (pinned; the namespace cannot resolve names until the tunnel is up)"
+            sed -i "s|^Endpoint = .*|Endpoint = ${ip}:${port}|" "$SAFE_CONF"
+            ;;
+    esac
+    printf '%s %s\n' "$ip" "$port"
+}
+
+# WireGuard's own encapsulated UDP (the handshake and every encrypted packet after it) is the
+# one thing that legitimately leaves the namespace over the veth. Everything else out the veth
+# is a leak, so it gets exactly one narrow rule — one host, one port, UDP only — tagged with a
+# comment so we can find and replace it when the VPN server changes.
+refresh_endpoint_rule() { # refresh_endpoint_rule <ip> <port>
+    local ip="$1" port="$2" rule
+    if ! nsexec iptables -w 5 -S OUTPUT >/dev/null 2>&1; then
+        note "WARNING: iptables is unavailable inside the namespace; the v4 filter backstop is not active (the routing kill switch still is)"
+        return 0
+    fi
+    # Drop any previously-installed endpoint rule (the VPN server may have changed).
+    while read -r rule; do
+        [ -n "$rule" ] || continue
+        # shellcheck disable=SC2086 # deliberate word split: these are our own rules, no spaces in any value
+        ipt -D OUTPUT $rule 2>/dev/null || true
+    done < <(nsexec iptables -w 5 -S OUTPUT 2>/dev/null | sed -n 's/^-A OUTPUT //p' | grep -F 'jf-wg-endpoint' | tr -d '"')
+
+    ipt -A OUTPUT -o "$VETH_VPN" -p udp -d "${ip}/32" --dport "$port" \
+        -m comment --comment jf-wg-endpoint -j ACCEPT \
+        || note "WARNING: could not install the endpoint allow rule; the WireGuard handshake may be blocked"
+}
+
+# ---------------------------------------------------------------------------
+# vpn-up / vpn-down
+# ---------------------------------------------------------------------------
+verb_vpn_up() {
+    require_netns
+    ensure_run_dir
+
+    if [ ! -f "$ACTIVE_CONF" ]; then
+        note "no active WireGuard config at $ACTIVE_CONF — the namespace stays fail-closed (no default route, OUTPUT DROP). Upload and activate a config in the dashboard, then restart vpntorrent-netns.service."
+        exit 3
+    fi
+
+    sanitise_conf "$ACTIVE_CONF" "$SAFE_CONF"
+
+    local ep ip port
+    ep="$(pin_endpoint)"
+    ip="${ep%% *}"
+    port="${ep##* }"
+
+    # Route the endpoint out the veth (through the host's NAT) so the handshake — and only
+    # the handshake — can reach the VPN server while the default route points at the tunnel.
+    nsexec ip route replace "${ip}/32" via "$VETH_HOST_IP" dev "$VETH_VPN" \
+        || die "could not route the WireGuard endpoint $ip via $VETH_HOST_IP dev $VETH_VPN. Is the veth pair up? Try: systemctl restart vpntorrent-netns.service"
+
+    refresh_endpoint_rule "$ip" "$port"
+
+    if wg_if_up; then
+        note "$WG_IF is already up; refreshed routes and firewall only (use vpn-down first to reconnect)"
+    else
+        if ! nsexec wg-quick up "$SAFE_CONF"; then
+            die "wg-quick could not bring up $WG_IF. Common causes: the config's PrivateKey is wrong, the VPN server rotated, or the wireguard kernel module is missing (check: modprobe wireguard). The namespace remains fail-closed."
+        fi
+    fi
+
+    # THE kill switch: the only default route in this namespace is the tunnel. If wg0 goes
+    # away, the namespace has no way out at all.
+    nsexec ip route replace default dev "$WG_IF" \
+        || die "brought up $WG_IF but could not set it as the default route; torrent traffic will not flow"
+
+    printf 'VPN up in namespace %s via %s (endpoint %s:%s)\n' "$NETNS" "$WG_IF" "$ip" "$port"
+}
+
+verb_vpn_down() {
+    require_netns
+    if [ -f "$SAFE_CONF" ]; then
+        nsexec wg-quick down "$SAFE_CONF" >/dev/null 2>&1 || true
+    fi
+    if wg_if_up; then
+        # wg-quick down could not (or would not) remove it — take the interface out directly.
+        nsexec ip link del "$WG_IF" >/dev/null 2>&1 || true
+    fi
+    if wg_if_up; then
+        die "could not remove $WG_IF from the $NETNS namespace"
+    fi
+    printf 'VPN down in namespace %s\n' "$NETNS"
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch — closed verb set, and NO verb accepts an argument.
+# ---------------------------------------------------------------------------
+usage() {
+    cat >&2 <<'USAGE'
+usage: jf-netns-helper <status|exit-ip|leakcheck|routes|vpn-up|vpn-down>
+No verb takes any argument. This is deliberate: every one of these runs as root through
+NOPASSWD sudo, so there is no free-form input for a caller to steer.
+USAGE
+    exit 2
+}
+
+[ "$#" -eq 1 ] || usage
+
+case "$1" in
+    status)    verb_status ;;
+    exit-ip)   verb_exit_ip ;;
+    leakcheck) verb_leakcheck ;;
+    routes)    verb_routes ;;
+    vpn-up)    verb_vpn_up ;;
+    vpn-down)  verb_vpn_down ;;
+    *)         usage ;;
+esac

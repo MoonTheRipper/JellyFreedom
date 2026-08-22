@@ -2,7 +2,7 @@
 # same unit on a target — no user-specific paths, so it works on any install.
 [Unit]
 Description=JellyFreedom Orchestrator
-After=network-online.target vpntorrent-netns.service
+After=network-online.target vpntorrent-netns.service torrserver-netns.service
 Wants=network-online.target
 
 [Service]

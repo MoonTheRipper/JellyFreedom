@@ -1,4 +1,11 @@
-# JellyFreedom: allow wg-quick to read VPN configs from the orchestrator-owned config dir
-# (so configs can be uploaded/activated via the dashboard without root-writing /etc/wireguard).
+# JellyFreedom: wg-quick is invoked by jf-netns-helper on a SANITISED copy of the VPN config
+# that the helper writes under /run/vpntorrent (root:root 0600). The service user can never
+# write that file — that is the whole point — so this is the path wg-quick actually reads.
+/run/vpntorrent/ r,
+/run/vpntorrent/** r,
+
+# Legacy: the orchestrator-owned config directory. wg-quick no longer reads from here (the
+# helper reads it, sanitises it, and hands wg-quick the /run copy), but a hand-run
+# `wg-quick up /var/lib/jellyfreedom/vpnconfigs/...` still needs it.
 /var/lib/jellyfreedom/vpnconfigs/ r,
 /var/lib/jellyfreedom/vpnconfigs/** r,

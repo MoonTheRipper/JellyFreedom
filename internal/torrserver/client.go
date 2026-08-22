@@ -2,13 +2,32 @@ package torrserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+// infoHashRe matches a canonical 40-character hex BitTorrent v1 info hash.
+var infoHashRe = regexp.MustCompile(`^[A-Fa-f0-9]{40}$`)
+
+// ValidInfoHash reports whether s is a well-formed 40-hex info hash.
+//
+// Every hash that reaches TorrServer or is interpolated into a stream URL must pass
+// this first: the stream proxy took `link` straight from the query string and pasted
+// it into an upstream URL unescaped, so an attacker-supplied value could both smuggle
+// URL parameters and cause an ARBITRARY torrent to be added over the user's VPN.
+func ValidInfoHash(s string) bool { return infoHashRe.MatchString(s) }
+
+// ErrNotConfigured is returned instead of dialling an empty base URL.
+var ErrNotConfigured = errors.New("TorrServer is not configured — set its URL in Settings → Connections")
 
 type Client struct {
 	mu         sync.RWMutex
@@ -18,7 +37,7 @@ type Client struct {
 
 func New(baseURL string) *Client {
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
+		baseURL:    strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -50,21 +69,42 @@ func (c *Client) BaseURL() string { return c.base() }
 // list to resolve. Returns true once the torrent has a file list (i.e. it's alive
 // and streamable). Used by the stream proxy and the Resolve-at-Play path so a
 // dropped torrent comes back on play — and so a dead cached release can be detected.
-func (c *Client) EnsureLoaded(hash, magnet, title string, waitSecs int) bool {
+func (c *Client) EnsureLoaded(ctx context.Context, hash, magnet, title string, waitSecs int) bool {
 	if info, err := c.Stat(hash); err == nil && len(info.Files) > 0 {
 		return true // already loaded
 	}
 	if magnet == "" {
 		magnet = "magnet:?xt=urn:btih:" + hash
 	}
-	c.Add(magnet, title)
+	if _, err := c.Add(magnet, title); err != nil {
+		return false
+	}
 	for i := 0; i < waitSecs; i++ {
 		if info, err := c.Stat(hash); err == nil && len(info.Files) > 0 {
 			return true
 		}
-		time.Sleep(1 * time.Second)
+		if !sleepCtx(ctx, time.Second) {
+			return false // caller went away / deadline hit — stop burning the wait
+		}
 	}
 	return false
+}
+
+// sleepCtx waits d, or returns false as soon as ctx is done.
+//
+// These waits used to be bare time.Sleep in a loop that ignored the request context
+// entirely, so a client that hung up still held the handler for the full window — and
+// /play could stack EnsureLoaded + WaitConnectable + a 150s indexer search + four
+// candidate attempts into roughly five minutes of unbreakable work.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // CacheSettings is the subset of TorrServer settings the orchestrator manages so
@@ -146,12 +186,14 @@ type TorrentInfo struct {
 // It requires a REAL connection (a connected seeder or active peer) within the window — not
 // merely peer DISCOVERY: a ghost can discover peers (total_peers>0) yet never connect to any,
 // which still won't stream, so discovery alone is not enough.
-func (c *Client) WaitConnectable(hash string, secs int) bool {
+func (c *Client) WaitConnectable(ctx context.Context, hash string, secs int) bool {
 	for i := 0; i < secs; i++ {
 		if info, err := c.Stat(hash); err == nil && (info.ConnectedSeeders > 0 || info.ActivePeers > 0) {
 			return true
 		}
-		time.Sleep(1 * time.Second)
+		if !sleepCtx(ctx, time.Second) {
+			return false
+		}
 	}
 	return false
 }
@@ -209,7 +251,12 @@ func (c *Client) List() ([]string, error) {
 // StreamURL returns the HTTP stream URL for a file within a torrent.
 // TorrServer MatriX requires the &play parameter to serve actual bytes.
 func (c *Client) StreamURL(hash string, fileIndex int) string {
-	return fmt.Sprintf("%s/stream?link=%s&index=%d&play", c.base(), hash, fileIndex)
+	// Query values are escaped rather than interpolated raw; hash is additionally
+	// constrained to 40-hex by ValidInfoHash at every entry point.
+	q := url.Values{}
+	q.Set("link", hash)
+	q.Set("index", strconv.Itoa(fileIndex))
+	return fmt.Sprintf("%s/stream?%s&play", c.base(), q.Encode())
 }
 
 // BestFileIndex picks the largest file in the torrent (the main video file).
@@ -293,11 +340,17 @@ func EpisodeFileIndex(files []FileInfo, season, episode int) (index int, matched
 }
 
 func (c *Client) post(path string, payload any, out any) error {
+	if c.base() == "" {
+		return ErrNotConfigured
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	resp, err := c.httpClient.Post(c.baseURL+path, "application/json", bytes.NewReader(body))
+	// c.base() takes the read lock. Reading c.baseURL directly here raced with
+	// Configure() writing it from the Settings handler (reproduced under -race);
+	// every other accessor already went through base().
+	resp, err := c.httpClient.Post(c.base()+path, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -308,6 +361,27 @@ func (c *Client) post(path string, payload any, out any) error {
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+// Ping reports whether TorrServer is reachable. Used by the pre-flight dependency gate.
+func (c *Client) Ping(ctx context.Context) error {
+	base := c.base()
+	if base == "" {
+		return ErrNotConfigured
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/echo", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("TorrServer is unreachable — check it is running and the URL in Settings \u2192 Connections")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("TorrServer returned HTTP %d", resp.StatusCode)
 	}
 	return nil
 }

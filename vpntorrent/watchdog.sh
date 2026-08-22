@@ -6,17 +6,36 @@
 #      after TWO consecutive failures (ignore transient blips), and skip the probe entirely while
 #      a stream is live (a live stream already proves the client works — no churn, no false restart).
 #  (3) VPN data path: probe two independent targets; on a real outage re-establish the tunnel.
-set -u
+#
+# NOTE ON `set -e`: deliberately NOT used here. This script is a prober; a non-zero exit from
+# curl/grep/iptables is normal control flow and is what every branch below is testing for.
+# `set -e` would turn the first failed probe into a silent abort — the opposite of a watchdog.
+set -uo pipefail
+
 NETNS=vpntorrent
-WG=wg0-vpntorrent
-CONF=/etc/wireguard/wg0-vpntorrent.conf
-TS=http://10.42.0.2:8090
 ORCH=http://127.0.0.1:1990
 HC_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 STATUS=/run/vpntorrent-status
 TS_STRIKES=/run/vpntorrent-ts-strikes
+RUN_DIR=/run/vpntorrent
 
-endpoint(){ grep -iE '^[[:space:]]*Endpoint' "$CONF" | head -1 | sed -E 's/.*=[[:space:]]*//; s/:[0-9]+.*//' | tr -d '[:space:]'; }
+# The veth addressing is decided once, by setup-netns.sh, and published here. Fall back to the
+# shipped defaults if the namespace has never been built (nothing to watch in that case anyway).
+nv() { # nv <KEY> <DEFAULT>
+    local v=""
+    [ -r "$RUN_DIR/netns.env" ] && v="$(sed -n "s/^${1}=//p" "$RUN_DIR/netns.env" | head -1 | tr -d '[:space:]')"
+    printf '%s' "${v:-$2}"
+}
+VETH_SUBNET="$(nv VETH_SUBNET 10.42.0.0/30)"
+VETH_VPN_IP="$(nv VETH_VPN_IP 10.42.0.2)"
+TS="http://${VETH_VPN_IP}:8090"
+
+# The privileged helper owns config sanitisation and tunnel bring-up — this script must never
+# hand wg-quick a config itself, or there would be two sanitisers to keep in sync.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HELPER="$SCRIPT_DIR/jf-netns-helper"
+[ -x "$HELPER" ] || HELPER=/opt/vpntorrent/jf-netns-helper
+
 playback_active(){ curl -s --max-time 4 "$ORCH/api/playback/active" 2>/dev/null | grep -q '"active":true'; }
 probe(){
   ip netns exec "$NETNS" curl -s --max-time 8 -o /dev/null https://1.1.1.1/cdn-cgi/trace && return 0
@@ -27,8 +46,9 @@ probe(){
 # (1) Heal the host NAT/forwarding the WG handshake rides on — an external flush (ufw reload,
 # docker install, firewall reset) would otherwise silently break the tunnel until a netns restart.
 sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || true
-iptables -t nat -C POSTROUTING -s 10.42.0.0/30 -j MASQUERADE 2>/dev/null || \
-  iptables -t nat -A POSTROUTING -s 10.42.0.0/30 -j MASQUERADE 2>/dev/null || true
+iptables -w 5 -t nat -C POSTROUTING -s "$VETH_SUBNET" -j MASQUERADE 2>/dev/null || \
+  iptables -w 5 -t nat -A POSTROUTING -s "$VETH_SUBNET" -j MASQUERADE 2>/dev/null || \
+  logger -t vpntorrent-watchdog "could not re-assert the MASQUERADE rule for $VETH_SUBNET"
 
 # (2) TorrServer BT-client health — 2-strike, and never while streaming.
 if curl -s --max-time 5 "$TS/echo" | grep -q MatriX; then
@@ -64,11 +84,15 @@ if probe; then echo "ok" > "$STATUS"; exit 0; fi
 
 logger -t vpntorrent-watchdog "tunnel has no data path; bouncing WireGuard"
 echo "down: bouncing wg" > "$STATUS"
-EP="$(endpoint)"
-ip netns exec "$NETNS" wg-quick down "$CONF" 2>/dev/null || true
-ip netns exec "$NETNS" wg-quick up "$CONF" 2>/dev/null || true
-[ -n "$EP" ] && ip netns exec "$NETNS" ip route replace "${EP}/32" via 10.42.0.1 dev veth-vpn 2>/dev/null || true
-ip netns exec "$NETNS" ip route replace default dev "$WG" 2>/dev/null || true
+if [ -x "$HELPER" ]; then
+  # vpn-up re-sanitises the active config, re-pins the endpoint route and refreshes the
+  # handshake firewall rule — so a bounce also picks up a config the user just activated
+  # in the dashboard, including one pointing at a different VPN server.
+  "$HELPER" vpn-down 2>&1 | logger -t vpntorrent-watchdog
+  "$HELPER" vpn-up   2>&1 | logger -t vpntorrent-watchdog
+else
+  logger -t vpntorrent-watchdog "privileged helper missing at $HELPER — cannot bounce the tunnel; reinstall JellyFreedom"
+fi
 sleep 8
 if probe; then logger -t vpntorrent-watchdog "recovered via wg bounce"; echo "ok" > "$STATUS"; exit 0; fi
 

@@ -1,39 +1,62 @@
 #!/bin/bash
-# Run this once after downloading your Proton WireGuard config.
-# Usage: sudo ./setup-wg.sh /path/to/proton-wg.conf
+# One-shot CLI installer for a WireGuard config, for people who would rather not use the
+# dashboard's upload form. Usage:  sudo ./setup-wg.sh /path/to/proton-wg.conf
 #
 # What it does:
-#   1. Strips DNS from the config (DNS is not needed inside the netns)
-#   2. Installs wg0 inside the vpntorrent namespace
-#   3. Sets wg0 as the default route (kill switch: no wg0 = no outbound)
-#   4. Configures wg0 to auto-restart via a systemd dropin
+#   1. Installs the file as the ACTIVE config, in the orchestrator-owned config directory
+#      (the same one the dashboard writes to) — so the CLI and the dashboard cannot disagree
+#      about which config is live.
+#   2. Hands the rest to jf-netns-helper, which is the single implementation of config
+#      sanitisation (stripping PostUp/PostDown/PreUp/PreDown/Table/SaveConfig/DNS), endpoint
+#      pinning, tunnel bring-up and the kill-switch rules. This script deliberately does NOT
+#      call wg-quick itself: a second sanitiser is a second thing to get wrong.
+set -euo pipefail
 
-set -e
-WG_CONF="${1:?Usage: $0 /path/to/proton-wg.conf}"
+SRC="${1:-}"
+[ -n "$SRC" ] || { echo "Usage: $0 /path/to/proton-wg.conf" >&2; exit 2; }
+[ -r "$SRC" ] || { echo "ERROR: cannot read $SRC" >&2; exit 1; }
+[ "$(id -u)" = "0" ] || { echo "ERROR: run this with sudo" >&2; exit 1; }
+
 NETNS=vpntorrent
+WG_IF=wg0-vpntorrent
+CONFIG_DIR="${VPNTORRENT_CONFIG_DIR:-/var/lib/jellyfreedom/vpnconfigs}"
+DEST="$CONFIG_DIR/$WG_IF.conf"
 
-if ! ip netns list | grep -q "^${NETNS}"; then
-    echo "ERROR: run setup-netns.sh first"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HELPER="$SCRIPT_DIR/jf-netns-helper"
+[ -x "$HELPER" ] || HELPER=/opt/vpntorrent/jf-netns-helper
+[ -x "$HELPER" ] || { echo "ERROR: privileged helper not found at $HELPER — reinstall JellyFreedom" >&2; exit 1; }
+
+# Test the namespace file directly (see the same note in jf-netns-helper: `grep -q` in a
+# pipeline can SIGPIPE its upstream and make `set -o pipefail` report a false failure).
+if [ ! -e "/var/run/netns/${NETNS}" ]; then
+    echo "ERROR: the $NETNS namespace does not exist. Run: systemctl start vpntorrent-netns.service" >&2
     exit 1
 fi
 
-# Strip DNS line (we don't want DNS leaks from inside the netns)
-STRIPPED=$(grep -v '^\s*DNS\s*=' "${WG_CONF}")
+# Keep the previous config so a bad one can be rolled back by hand.
+mkdir -p "$CONFIG_DIR"
+if [ -f "$DEST" ]; then
+    cp -a "$DEST" "$DEST.previous"
+    echo "kept the previous config as $DEST.previous"
+fi
+install -m 600 "$SRC" "$DEST"
+# The directory belongs to the orchestrator's service user; keep ownership consistent so the
+# dashboard can still list and replace the config it now shares with this script.
+if id -u jellyfreedom >/dev/null 2>&1; then
+    chown jellyfreedom:jellyfreedom "$DEST"
+fi
+echo "installed $SRC as the active config ($DEST)"
 
-# Write to /etc/wireguard/wg0-vpntorrent.conf
-echo "${STRIPPED}" > /etc/wireguard/wg0-vpntorrent.conf
-chmod 600 /etc/wireguard/wg0-vpntorrent.conf
+"$HELPER" vpn-down || true
+"$HELPER" vpn-up
 
-# Bring up WireGuard inside the netns
-ip netns exec ${NETNS} wg-quick up /etc/wireguard/wg0-vpntorrent.conf
-
-# Set default route via wg0 inside netns (this IS the kill switch)
-WG_IP=$(ip netns exec ${NETNS} ip -4 addr show wg0 2>/dev/null | grep -oP '(?<=inet )[^/]+')
-ip netns exec ${NETNS} ip route replace default dev wg0
-
-echo "WireGuard up inside vpntorrent. VPN IP: ${WG_IP}"
-echo "Kill switch active: if wg0 goes down, vpntorrent has no default route."
-
-# Test: confirm TorrServer can reach the internet via VPN
-echo "Testing connectivity..."
-ip netns exec ${NETNS} curl -s --max-time 5 https://ifconfig.me && echo " <- VPN exit IP"
+echo
+echo "Testing connectivity from inside the namespace..."
+if EXIT_IP="$("$HELPER" exit-ip)"; then
+    echo "VPN exit IP: $EXIT_IP"
+    echo "Kill switch active: if the tunnel goes down, $NETNS has no default route and OUTPUT is DROP."
+else
+    echo "WARNING: the tunnel came up but no exit IP could be fetched. Check: journalctl -u vpntorrent-netns" >&2
+    exit 1
+fi

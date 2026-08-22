@@ -1,0 +1,131 @@
+name: Installer problem
+description: install.sh, get.sh, uninstall.sh, or `jellyfreedom --update` failed or left a broken install.
+title: "[Install]: "
+labels: ["installer"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The installer's third-party steps (Jellyfin, Prowlarr, TorrServer, FlareSolverr)
+        are the most common source of breakage, and they fail differently on different
+        machines. The details below are what make it fixable.
+
+        **Known-unsupported today:** architectures other than `x86_64`. `install.sh`
+        fetches an x64-only FlareSolverr build, so **arm64 / Raspberry Pi installs fail**.
+        If `uname -m` says `aarch64`, you have hit that — please still file it, and say so.
+
+  - type: dropdown
+    id: step
+    attributes:
+      label: Which step failed?
+      description: The installer prints a `==>` heading before each step. Which was the last one?
+      options:
+        - "Installing OS dependencies (apt)"
+        - "Service users / directories"
+        - "Orchestrator + web assets"
+        - "TorrServer"
+        - "FlareSolverr"
+        - "Jellyfin"
+        - "Prowlarr"
+        - "systemd units"
+        - "Scoped sudoers"
+        - "AppArmor override"
+        - "Enabling services"
+        - "It completed, but the install is broken"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      description: "Run: `. /etc/os-release && echo \"$PRETTY_NAME $(uname -m) kernel $(uname -r)\"`"
+      placeholder: "Ubuntu 24.04.1 LTS aarch64 kernel 6.8.0-51-generic"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: method
+    attributes:
+      label: How did you invoke it?
+      options:
+        - "curl -fsSL .../get.sh | sudo bash"
+        - "sudo ./install.sh from an extracted release tarball"
+        - "sudo ./install.sh from a source build (./release/build.sh)"
+        - "sudo jellyfreedom --update"
+        - "sudo ./uninstall.sh"
+        - "release/migrate-local.sh"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Release version being installed
+      placeholder: "0.2.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: fresh
+    attributes:
+      label: Was this a fresh machine?
+      description: >
+        The installer promises to leave existing Jellyfin/Prowlarr/TorrServer/FlareSolverr
+        installs and configs alone. If something pre-existed, we need to know.
+      options:
+        - "Fresh machine, nothing preinstalled"
+        - "Jellyfin was already installed"
+        - "Prowlarr was already installed"
+        - "TorrServer or FlareSolverr was already installed"
+        - "A previous JellyFreedom install existed"
+        - "Several of the above"
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Installer output
+      description: >
+        The last 100 lines or so, including the error. Re-run capturing everything with
+        `sudo ./install.sh 2>&1 | tee /tmp/jf-install.log` if you no longer have it.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: units
+    attributes:
+      label: Service states after the attempt
+      description: |
+        ```bash
+        for u in jellyfreedom vpntorrent-netns torrserver-netns flaresolverr prowlarr jellyfin; do
+          printf '%-26s %s\n' "$u" "$(systemctl is-active "$u" 2>&1)"
+        done
+        ```
+      render: text
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Journal for whichever unit failed
+      description: "`journalctl -u <unit> -n 80 --no-pager`"
+      render: text
+
+  - type: dropdown
+    id: netns
+    attributes:
+      label: Did the VPN network namespace come up?
+      description: "`ip netns list` — it should list `vpntorrent` even with no WireGuard config."
+      options:
+        - "Yes, `vpntorrent` is listed"
+        - "No, `ip netns list` is empty or errors"
+        - "I haven't checked"
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Networking oddities, a proxy, IPv6-only host, non-standard kernel, SELinux/AppArmor.

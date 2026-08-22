@@ -2,11 +2,15 @@
 # jellyfreedom — control + self-update CLI for an INSTALLED JellyFreedom instance.
 #
 # It operates ONLY on the deployed instance under /opt/jellyfreedom and the systemd service —
-# never on a source checkout. `--update` pulls the latest published release, swaps the binary
-# and web assets in place, and restarts the service.
+# never on a source checkout. `--update` pulls the latest published release for this machine's
+# architecture and re-runs its installer, which is idempotent and preserves your config,
+# database and uploaded VPN configs.
 #
 #   jellyfreedom --update     download the latest release and update this instance
 #   jellyfreedom --version    show the installed version
+#   jellyfreedom doctor       diagnose the whole stack and say how to fix what is broken
+#   jellyfreedom repair       re-run the installer over this instance (safe, keeps config)
+#   jellyfreedom uninstall    remove JellyFreedom (keeps your data + config)
 #   jellyfreedom status       service status
 #   jellyfreedom restart      restart the service
 #   jellyfreedom logs         follow the service log
@@ -17,10 +21,18 @@ set -euo pipefail
 APP_DIR="${JELLYFREEDOM_APP_DIR:-/opt/jellyfreedom}"
 VPN_DIR="${JELLYFREEDOM_VPN_DIR:-/opt/vpntorrent}"
 SERVICE="jellyfreedom"
-RELEASE_URL="${JELLYFREEDOM_URL:-https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/jellyfreedom.tar.gz}"
+RELEASE_BASE="${JELLYFREEDOM_BASE:-https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download}"
+# Match the running machine, exactly as get.sh does. Pulling the amd64 bundle onto an arm64
+# box would replace a working binary with one that cannot exec.
+case "$(uname -m)" in
+  x86_64|amd64)  JF_GOARCH=amd64 ;;
+  aarch64|arm64) JF_GOARCH=arm64 ;;
+  *) JF_GOARCH="" ;;
+esac
+RELEASE_URL="${JELLYFREEDOM_URL:-$RELEASE_BASE/jellyfreedom-linux-${JF_GOARCH}.tar.gz}"
 
 usage() {
-  sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 need_root() {
@@ -42,40 +54,67 @@ case "$cmd" in
     need_root --update
     [ -x "$APP_DIR/bin/orchestrator" ] || { echo "no installed instance at $APP_DIR — run the installer first." >&2; exit 1; }
     guard_not_repo
+    [ -n "$JF_GOARCH" ] || [ -n "${JELLYFREEDOM_URL:-}" ] || {
+      echo "unsupported architecture '$(uname -m)' — no published bundle for it. Build from source instead." >&2; exit 1; }
 
     tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
     echo "==> downloading $RELEASE_URL"
-    curl -4 -fsSL "$RELEASE_URL" -o "$tmp/jf.tar.gz"
+    curl -4 -fsSL "$RELEASE_URL" -o "$tmp/jf.tar.gz" || { echo "download failed" >&2; exit 1; }
+
+    # Verify before extracting. This tarball's install.sh is about to run AS ROOT, and the
+    # dashboard can trigger this with one click, so installing unverified bytes is not an
+    # option. Mirrors what get.sh does for a first install.
+    asset="$(basename "${RELEASE_URL%%\?*}")"
+    if [ -n "${JELLYFREEDOM_URL:-}" ]; then
+      echo "==> custom URL supplied — skipping checksum verification"
+    elif curl -4 -fsSL --retry 2 "$RELEASE_BASE/SHA256SUMS" -o "$tmp/SHA256SUMS" 2>/dev/null; then
+      expected="$(awk -v a="$asset" '$2 == a || $2 == "*"a {print $1}' "$tmp/SHA256SUMS" | head -1)"
+      if [ -z "$expected" ]; then
+        echo "SHA256SUMS has no entry for $asset — refusing to install unverified bytes." >&2
+        echo "Override with JELLYFREEDOM_SKIP_VERIFY=1 if you understand the risk." >&2
+        [ "${JELLYFREEDOM_SKIP_VERIFY:-0}" = "1" ] || exit 1
+      else
+        actual="$(sha256sum "$tmp/jf.tar.gz" | cut -d' ' -f1)"
+        if [ "$expected" != "$actual" ]; then
+          echo "CHECKSUM MISMATCH for $asset" >&2
+          echo "  expected: $expected" >&2
+          echo "  actual:   $actual" >&2
+          echo "Refusing to install. Nothing has been changed." >&2
+          exit 1
+        fi
+        echo "==> checksum verified"
+      fi
+    elif [ "${JELLYFREEDOM_SKIP_VERIFY:-0}" = "1" ]; then
+      echo "==> SHA256SUMS unavailable — continuing because JELLYFREEDOM_SKIP_VERIFY=1"
+    else
+      echo "could not fetch $RELEASE_BASE/SHA256SUMS to verify the download." >&2
+      echo "Re-run with JELLYFREEDOM_SKIP_VERIFY=1 to update without verification." >&2
+      exit 1
+    fi
+
     tar xzf "$tmp/jf.tar.gz" -C "$tmp"
     src="$(find "$tmp" -maxdepth 1 -type d -name 'jellyfreedom-*' | head -1)"
-    [ -n "$src" ] && [ -x "$src/bin/orchestrator" ] || { echo "unexpected bundle layout" >&2; exit 1; }
+    [ -n "$src" ] && [ -x "$src/install.sh" ] || { echo "unexpected bundle layout" >&2; exit 1; }
 
     new="$(cat "$src/VERSION" 2>/dev/null || echo '?')"
     cur="$(cat "$APP_DIR/VERSION" 2>/dev/null || echo '?')"
-    if [ "$new" = "$cur" ] && [ "$new" != "?" ]; then
-      echo "==> already on $cur — nothing to do."
+    if [ "$new" = "$cur" ] && [ "$new" != "?" ] && [ "${JELLYFREEDOM_FORCE:-0}" != "1" ]; then
+      echo "==> already on $cur — nothing to do.  (JELLYFREEDOM_FORCE=1 to reinstall anyway)"
       exit 0
     fi
     echo "==> updating ${cur} -> ${new}"
 
-    # Preserve the existing run-user ownership of binary + assets.
-    owner="$(stat -c '%U:%G' "$APP_DIR/bin/orchestrator")"
-
-    install -o "${owner%:*}" -g "${owner#*:}" -m 755 "$src/bin/orchestrator" "$APP_DIR/bin/.orchestrator.new"
-    rm -rf "$APP_DIR/.web.new"; cp -r "$src/web" "$APP_DIR/.web.new"; chown -R "$owner" "$APP_DIR/.web.new"
-
-    # Swap atomically-ish, then restart.
-    mv -f "$APP_DIR/bin/.orchestrator.new" "$APP_DIR/bin/orchestrator"
-    rm -rf "$APP_DIR/web"; mv "$APP_DIR/.web.new" "$APP_DIR/web"
-    [ -f "$src/VERSION" ] && cp -f "$src/VERSION" "$APP_DIR/VERSION"
-
-    # Refresh VPN-netns scripts in place if they're deployed (non-fatal).
-    if [ -d "$src/vpntorrent" ] && [ -d "$VPN_DIR" ]; then
-      for s in setup-netns.sh watchdog.sh portforward.sh; do
-        [ -f "$src/vpntorrent/$s" ] && install -m 755 "$src/vpntorrent/$s" "$VPN_DIR/$s"
-      done
-      echo "==> refreshed VPN-netns scripts (restart vpntorrent-* to apply if changed)"
-    fi
+    # Run the bundle's OWN installer rather than hand-swapping files.
+    #
+    # This is deliberate and load-bearing. The previous implementation copied only
+    # bin/orchestrator, web/, VERSION and the vpntorrent scripts — so an update never
+    # refreshed the systemd units, the sudoers policy, the AppArmor override, or any NEW
+    # file a release introduces. A release that adds a privileged helper, or fixes a
+    # sudoers path, could not be delivered by --update at all: the new binary would call
+    # a helper that was never installed. The installer is idempotent and preserves
+    # config.yaml, the database and uploaded VPN configs, so it is the correct and only
+    # source of truth for what a deployment looks like.
+    bash "$src/install.sh" || { echo "installer failed — this instance may be partially updated. Run: jellyfreedom doctor" >&2; exit 1; }
 
     echo "==> restarting $SERVICE"
     systemctl restart "$SERVICE"
@@ -91,6 +130,36 @@ case "$cmd" in
   --version|version)
     if [ -f "$APP_DIR/VERSION" ]; then cat "$APP_DIR/VERSION"
     else curl -fsS http://127.0.0.1:1990/healthz 2>/dev/null || echo "unknown"; fi
+    ;;
+
+  doctor)
+    # Diagnosis must work even when the service is down, so it shells out rather than
+    # asking the orchestrator about itself.
+    shift
+    if   [ -x "$APP_DIR/doctor.sh" ]; then exec bash "$APP_DIR/doctor.sh" "$@"
+    elif [ -x "$VPN_DIR/doctor.sh" ]; then exec bash "$VPN_DIR/doctor.sh" "$@"
+    else echo "doctor is not installed on this instance — run: sudo jellyfreedom repair" >&2; exit 1; fi
+    ;;
+
+  repair)
+    need_root repair
+    guard_not_repo
+    # Re-running the installer over an existing instance is the supported repair path: it
+    # is idempotent, it never touches config/data, and it re-asserts every piece an update
+    # or a partial install may have left wrong (units, sudoers, helper, AppArmor).
+    if [ -x "$APP_DIR/install.sh" ]; then
+      echo "==> re-running the installer bundled with this instance"
+      exec bash "$APP_DIR/install.sh"
+    fi
+    echo "==> no bundled installer found; fetching the current release instead"
+    exec env JELLYFREEDOM_FORCE=1 "$0" --update
+    ;;
+
+  uninstall)
+    need_root uninstall
+    [ -x "$APP_DIR/uninstall.sh" ] || { echo "no uninstaller at $APP_DIR/uninstall.sh — this instance predates it. Fetch one with: sudo jellyfreedom repair" >&2; exit 1; }
+    shift
+    exec bash "$APP_DIR/uninstall.sh" "$@"
     ;;
 
   status)  systemctl status "$SERVICE" --no-pager ;;

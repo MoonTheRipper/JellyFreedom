@@ -1,14 +1,23 @@
 [Unit]
 Description=vpntorrent network namespace setup
-Before=torrserver.service
+Before=torrserver-netns.service
 After=network-online.target
 Wants=network-online.target
+# Pull TorrServer back up after this unit restarts. TorrServer BindsTo= this unit, so a
+# restart here stops it; without this Wants= it would simply stay down until something else
+# started it. Wants= only propagates *start*, so the pair cannot loop.
+Wants=torrserver-netns.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/opt/vpntorrent/setup-netns.sh
-ExecStop=ip netns del vpntorrent
+# Absolute paths: systemd requires them, and `ip` alone silently fails to load the unit.
+# The leading '-' keeps a stop from failing when the namespace is already gone.
+ExecStop=-/usr/sbin/ip netns del vpntorrent
+# The sanitised copy of the WireGuard config holds the tunnel's private key. Deleting the
+# namespace makes it useless, but do not leave it on disk either.
+ExecStop=-/usr/bin/rm -f /run/vpntorrent/wg0-vpntorrent.conf /run/vpntorrent/wg0-vpntorrent.conf.new
 
 [Install]
 WantedBy=multi-user.target

@@ -22,7 +22,7 @@ type Task struct {
 	Name         string     `json:"name"`
 	Description  string     `json:"description"`
 	Category     string     `json:"category"` // "library" | "metadata" | "system"
-	IntervalStr  string     `json:"interval"`  // human-readable, e.g. "30m"
+	IntervalStr  string     `json:"interval"` // human-readable, e.g. "30m"
 	Status       TaskStatus `json:"status"`
 	LastRun      *time.Time `json:"last_run,omitempty"`
 	NextRun      *time.Time `json:"next_run,omitempty"`

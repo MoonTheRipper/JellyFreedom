@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>JellyFreedom {{if eq .Mode "setup"}}Setup{{else}}Login{{end}}</title>
+<!--
+  MINIMAL FALLBACK ONLY. The real page is web/auth/index.html, loaded at startup via
+  SetAuthTemplateFS. This copy is compiled in so that a missing, moved or unparseable
+  asset degrades to a plain-but-working login form rather than locking the operator out
+  of their own dashboard.
+-->
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f1117;color:#e2e4f0;font:14px/1.5 system-ui,sans-serif;
+  display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#1a1d27;border:1px solid #2d3148;border-radius:12px;padding:36px 40px;width:360px}
+h1{font-size:20px;margin-bottom:6px}
+.sub{color:#6b7094;font-size:13px;margin-bottom:28px}
+label{display:block;font-size:13px;color:#6b7094;margin-bottom:6px}
+input{width:100%;background:#0f1117;border:1px solid #2d3148;color:#e2e4f0;
+  padding:10px 12px;border-radius:7px;font-size:14px;margin-bottom:16px;outline:none}
+input:focus{border-color:#60a5fa}
+button{width:100%;background:#4f46e5;border:none;color:#fff;padding:11px;border-radius:7px;
+  font-size:14px;cursor:pointer;font-weight:600}
+button:hover{background:#4338ca}
+.err{background:#7f1d1d;color:#fca5a5;padding:10px 12px;border-radius:7px;
+  font-size:13px;margin-bottom:16px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>JellyFreedom</h1>
+  <p class="sub">{{if eq .Mode "setup"}}Create your admin account{{else}}Dashboard login{{end}}</p>
+  {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
+  <form method="POST">
+    <label for="username">Username</label>
+    <input id="username" type="text" name="username" autocomplete="username" autofocus required
+           {{if eq .Mode "setup"}}placeholder="Choose a username"{{end}}>
+    <label for="password">Password</label>
+    <input id="password" type="password" name="password" autocomplete="{{if eq .Mode "setup"}}new-password{{else}}current-password{{end}}" required>
+    {{if eq .Mode "setup"}}
+    <label for="password2">Confirm password</label>
+    <input id="password2" type="password" name="password2" autocomplete="new-password" required>
+    {{end}}
+    <button type="submit">{{if eq .Mode "setup"}}Create Account{{else}}Login{{end}}</button>
+  </form>
+</div>
+</body></html>

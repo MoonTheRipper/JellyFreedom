@@ -1,0 +1,134 @@
+name: Bug report
+description: Something in a working install behaves incorrectly (playback, search, dashboard, VPN).
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **If the installer itself failed**, use the *Installer problem* template instead.
+        **If this is a security vulnerability**, do not file it here — see
+        [SECURITY.md](../blob/main/SECURITY.md).
+
+        Every field below exists because it has been needed to diagnose a real report.
+        Please fill them in — a report without them usually costs a round trip.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        1. Searched for "..."
+        2. Pressed play on the Apple TV app
+        3. Expected it to stream; got "Playback failed — not supported by this client"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: JellyFreedom version
+      description: "Run: `jellyfreedom --version` (or `curl -s localhost:1990/healthz`)"
+      placeholder: "0.2.1"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      description: "Run: `. /etc/os-release && echo \"$PRETTY_NAME $(uname -m) kernel $(uname -r)\"`"
+      placeholder: "Ubuntu 24.04.1 LTS x86_64 kernel 6.8.0-51-generic"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How was it installed?
+      options:
+        - "One-liner (curl .../get.sh | sudo bash)"
+        - "Downloaded release tarball, ran ./install.sh"
+        - "Built from source (./release/build.sh)"
+        - "Updated in place (sudo jellyfreedom --update)"
+        - "Other / I don't remember"
+    validations:
+      required: true
+
+  - type: textarea
+    id: units
+    attributes:
+      label: Service states
+      description: |
+        Run this and paste the whole output:
+        ```bash
+        for u in jellyfreedom vpntorrent-netns torrserver-netns flaresolverr prowlarr jellyfin \
+                 vpntorrent-portforward vpntorrent-watchdog.timer; do
+          printf '%-26s %s\n' "$u" "$(systemctl is-active "$u" 2>&1)"
+        done
+        ```
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Orchestrator log excerpt
+      description: |
+        `journalctl -u jellyfreedom -n 100 --no-pager`
+        (redact API keys and anything else you would rather not publish)
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: vpn-provider
+    attributes:
+      label: VPN provider / WireGuard config source
+      description: >
+        Which provider, and is the server you selected flagged for P2P? "Connects to peers
+        but downloads nothing" is almost always a non-P2P server. Say "none" if you have
+        not uploaded a config yet.
+      placeholder: "Proton VPN, NL#42 (P2P-flagged)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: prowlarr-indexers
+    attributes:
+      label: Does Prowlarr have indexers configured?
+      description: "Prowlarr → Indexers. JellyFreedom ships none; an empty Prowlarr finds nothing."
+      options:
+        - "Yes, and a manual search in Prowlarr returns results"
+        - "Yes, but a manual search in Prowlarr returns nothing"
+        - "No indexers are configured"
+        - "I can't reach the Prowlarr UI"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: flaresolverr
+    attributes:
+      label: Does FlareSolverr answer a request?
+      description: |
+        ```bash
+        curl -s -X POST http://127.0.0.1:8191/v1 -H 'Content-Type: application/json' \
+          -d '{"cmd":"request.get","url":"https://example.com","maxTimeout":60000}' | head -c 400
+        ```
+      options:
+        - 'Yes — returns "status":"ok"'
+        - 'It responds, but not with status ok (paste the output below)'
+        - "Connection refused / no response"
+        - "I haven't tried"
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: FlareSolverr output, other logs, screenshots, what you already tried.

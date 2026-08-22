@@ -1,0 +1,107 @@
+{{/*
+  JellyFreedom setup / login page.
+
+  This file is a Go html/template. It replaces the string literal `authTmpl` in
+  internal/api/auth.go so the auth screens use the same design tokens as the
+  rest of the product instead of a third, unrelated indigo identity.
+
+  Template data (unchanged from the current handler):
+    .Mode   "setup" | "login"
+    .Error  human-readable error string, or "" for none
+
+  Served at /dashboard/setup and /dashboard/login. Both stylesheets are
+  root-absolute because the handler URL has no trailing slash and must keep
+  resolving identically whichever of the two paths is being rendered. They are
+  served by the public FileServer mounted at "/" (web/public/shared on disk),
+  so they need no authentication — which matters, because a user who is not
+  logged in must still get a styled login page.
+
+  FORM CONTRACT — the backend must keep these exact names:
+    POST to the same URL, application/x-www-form-urlencoded
+    username   (both modes)
+    password   (both modes)
+    password2  (setup mode only — confirmation)
+  Success redirects: setup -> /dashboard/#setup   login -> /dashboard/
+  Failure re-renders this template with .Error set and HTTP 200.
+*/}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0a0b10">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex">
+<title>JellyFreedom {{if eq .Mode "setup"}}Setup{{else}}Sign in{{end}}</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/shared/theme.css">
+<link rel="stylesheet" href="/shared/auth.css">
+</head>
+<body class="auth-body">
+
+<main class="auth-card">
+  <div class="auth-brand">
+    <svg class="auth-logo" viewBox="0 0 24 24" aria-hidden="true">
+      <defs><linearGradient id="jf-logo" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#aa5cc3"/><stop offset="1" stop-color="#00a4dc"/>
+      </linearGradient></defs>
+      <circle cx="12" cy="12" r="10" fill="url(#jf-logo)"/>
+      <path d="M10 8.2 16.5 12 10 15.8z" fill="#0a0b10"/>
+    </svg>
+    <span class="auth-wordmark"><span class="grad">Jelly</span>Freedom</span>
+  </div>
+
+  <h1>{{if eq .Mode "setup"}}Create your admin account{{else}}Sign in{{end}}</h1>
+  <p class="auth-sub">{{if eq .Mode "setup"}}This is the first account on this
+    server. It gets admin rights, and it is the account you will use to add your
+    TMDB key, indexers and VPN config.{{else}}Sign in to manage this JellyFreedom
+    instance.{{end}}</p>
+
+  {{if .Error}}
+  <div class="callout err" role="alert">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3.5 22 20H2z"/><path d="M12 10v4M12 17.5h.01"/>
+    </svg>
+    <div class="callout-body">{{.Error}}</div>
+  </div>
+  {{end}}
+
+  <form method="POST" class="auth-form">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" autocomplete="username" autofocus required
+      {{if eq .Mode "setup"}}placeholder="Choose a username"{{end}}>
+
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" required
+      autocomplete="{{if eq .Mode "setup"}}new-password{{else}}current-password{{end}}"
+      {{if eq .Mode "setup"}}minlength="8" placeholder="At least 8 characters"{{end}}>
+
+    {{if eq .Mode "setup"}}
+    <label for="password2">Confirm password</label>
+    <input type="password" id="password2" name="password2" autocomplete="new-password"
+      minlength="8" required>
+    {{end}}
+
+    <button type="submit" class="auth-submit">
+      {{if eq .Mode "setup"}}Create account{{else}}Sign in{{end}}
+    </button>
+  </form>
+
+  {{if eq .Mode "setup"}}
+  <p class="auth-note">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>
+    </svg>
+    <span>Next you will land on a setup checklist that walks through the TMDB key,
+    Prowlarr indexers, Jellyfin and the VPN config.</span>
+  </p>
+  {{else}}
+  <p class="auth-note">
+    <a href="/">← Back to the app</a>
+  </p>
+  {{end}}
+</main>
+
+</body>
+</html>

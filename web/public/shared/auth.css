@@ -1,0 +1,50 @@
+/* ==========================================================================
+   Setup / login pages. Loaded with shared/theme.css, so these screens use the
+   same tokens, buttons, callouts and focus ring as the app and the dashboard.
+   Kept in web/public/shared/ (URL /shared/auth.css) so it is served without
+   authentication — an unauthenticated visitor must still get a styled page.
+   ========================================================================== */
+
+.auth-body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+  padding:max(24px,var(--sat)) max(20px,var(--sar)) max(24px,var(--sab)) max(20px,var(--sal));
+  background-image:radial-gradient(900px 500px at 50% -10%,rgba(124,92,255,.14),transparent 62%),
+    radial-gradient(700px 420px at 10% 100%,rgba(0,164,220,.09),transparent 60%);
+  background-attachment:fixed;font-size:14px;line-height:1.55}
+
+.auth-card{background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r-xl);padding:34px 36px;width:400px;max-width:100%;
+  box-shadow:var(--sh-3)}
+
+.auth-brand{display:flex;align-items:center;gap:10px;margin-bottom:22px}
+.auth-logo{width:26px;height:26px;flex-shrink:0}
+.auth-wordmark{font-size:17px;font-weight:800;letter-spacing:-.02em}
+.auth-wordmark .grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;color:transparent}
+
+.auth-card h1{font-size:20px;font-weight:800;letter-spacing:-.02em;margin-bottom:6px}
+.auth-sub{color:var(--muted);font-size:13px;line-height:1.6;margin-bottom:22px}
+
+.auth-form{display:flex;flex-direction:column}
+.auth-form label{font-size:12px;font-weight:700;color:var(--muted2);margin-bottom:6px}
+.auth-form input{width:100%;background:var(--bg);border:1px solid var(--border);
+  color:var(--text);padding:11px 13px;border-radius:var(--r-sm);font-size:15px;
+  margin-bottom:16px;outline:none}
+.auth-form input:focus-visible{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+
+.auth-submit{width:100%;background:var(--grad);border:none;color:#fff;padding:13px;
+  border-radius:var(--r-md);font-size:15px;font-weight:700;cursor:pointer;
+  box-shadow:var(--sh-2);transition:filter .15s,transform .12s;margin-top:4px}
+.auth-submit:hover{filter:brightness(1.08)}
+.auth-submit:active{transform:translateY(1px)}
+
+.auth-note{display:flex;gap:8px;align-items:flex-start;margin-top:20px;
+  font-size:12.5px;color:var(--muted);line-height:1.6}
+.auth-note .ic{width:15px;height:15px;margin-top:2px;flex-shrink:0;color:var(--blue)}
+.auth-note a{color:var(--accent)}
+.auth-note a:hover{text-decoration:underline}
+
+.auth-card .callout{margin-bottom:18px}
+
+@media (max-width: 440px){
+  .auth-card{padding:26px 22px;border-radius:var(--r-lg)}
+}

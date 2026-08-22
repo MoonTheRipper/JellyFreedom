@@ -6,6 +6,20 @@
 <title>JellyFreedom — stream torrents straight into Jellyfin</title>
 <meta name="description" content="Self-hosted: search & stream movies and TV from torrents straight into Jellyfin, on any device, behind a fail-closed WireGuard kill switch. No Docker, no debrid.">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="canonical" href="https://moontheripper.github.io/JellyFreedom/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="JellyFreedom">
+<meta property="og:title" content="JellyFreedom — stream torrents straight into Jellyfin">
+<meta property="og:description" content="Self-hosted torrent streaming into your Jellyfin library. No Docker, no debrid, fail-closed WireGuard kill switch.">
+<meta property="og:url" content="https://moontheripper.github.io/JellyFreedom/">
+<!-- TODO(social-card): replace with a real 1200x630 PNG once one exists.
+     Do NOT ship an invented screenshot; the SVG mark is honest until then. -->
+<meta property="og:image" content="https://moontheripper.github.io/JellyFreedom/favicon.svg">
+<meta property="og:image:alt" content="The JellyFreedom mark: a purple-to-cyan play button.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="JellyFreedom — stream torrents straight into Jellyfin">
+<meta name="twitter:description" content="Self-hosted torrent streaming into your Jellyfin library. No Docker, no debrid, fail-closed WireGuard kill switch.">
+<meta name="twitter:image" content="https://moontheripper.github.io/JellyFreedom/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@500;600;700&family=Open+Sans:wght@400;600&display=swap" rel="stylesheet">
@@ -17,7 +31,8 @@
     --grad:linear-gradient(90deg,var(--g1),var(--g2));
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--text);font-family:'Open Sans',system-ui,sans-serif;line-height:1.6;-webkit-font-smoothing:antialiased}
+  body{background:var(--bg);color:var(--text);font-family:'Open Sans',system-ui,sans-serif;line-height:1.6;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  img,svg{max-width:100%}
   h1,h2,h3,.brand{font-family:'Quicksand',system-ui,sans-serif;font-weight:700}
   a{color:inherit;text-decoration:none}
   .wrap{max-width:1040px;margin:0 auto;padding:0 24px}
@@ -75,6 +90,24 @@
   footer{border-top:1px solid var(--border);padding:40px 0;text-align:center;color:var(--muted);font-size:13.5px}
   footer a{color:var(--g2)}
   .disclaimer{margin-top:14px;font-size:12px;opacity:.8;max-width:620px;margin-left:auto;margin-right:auto}
+
+  /* ── Responsive ─────────────────────────────────────────────────────── */
+  @media (max-width: 720px){
+    .wrap{padding:0 18px}
+    nav .wrap{height:auto;flex-direction:column;align-items:flex-start;gap:8px;padding-top:12px;padding-bottom:12px}
+    .nav-links{flex-wrap:wrap;gap:14px;width:100%}
+    header.hero{padding:64px 0 56px}
+    section{padding:52px 0}
+    .code{font-size:12.5px;padding:16px 14px;padding-top:44px}
+    .copy{top:8px;left:14px;right:auto}
+    .cta{flex-direction:column;align-items:stretch}
+    .cta .btn{text-align:center}
+    .grid,.steps{grid-template-columns:1fr}
+  }
+  @media (max-width: 400px){
+    .brand{font-size:17px}
+    .nav-links{font-size:13px;gap:12px}
+  }
 </style>
 </head>
 <body>
@@ -115,8 +148,8 @@
   <h2 class="section-title">Up and running in one line</h2>
   <p class="section-sub">Debian / Ubuntu. Installs the orchestrator, TorrServer, FlareSolverr, Jellyfin &amp; Prowlarr.</p>
   <div class="code">
-    <button class="copy" onclick="cp(this)">Copy</button>
-    <span class="prompt">$</span> curl -fsSL https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/get.sh | sudo bash
+    <button class="copy" type="button" data-copy-target="install-cmd">Copy</button>
+    <span class="prompt" aria-hidden="true">$</span> <code id="install-cmd">curl -fsSL https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/get.sh | sudo bash</code>
   </div>
   <p class="install-note">Then open <code>http://&lt;host&gt;:1990/dashboard/</code>, add your keys, and upload a WireGuard config from any provider.</p>
 </div></section>
@@ -129,7 +162,7 @@
     <div class="card"><div class="ico">💾</div><h3>No disk bloat</h3><p>A bounded RAM ring-buffer streams the playhead window and evicts the rest. Disk usage stays flat.</p></div>
     <div class="card"><div class="ico">🛡️</div><h3>Fail-closed VPN</h3><p>Torrent traffic is confined to a network namespace whose only route is WireGuard. If the VPN drops, it's blocked — not leaked.</p></div>
     <div class="card"><div class="ico">🔁</div><h3>Self-healing</h3><p>Resolve-at-play: links point at a stable identity, not a frozen hash, so the library re-picks a live release when seeders decay.</p></div>
-    <div class="card"><div class="ico">🎛️</div><h3>One dashboard</h3><p>Search, a request queue, a release picker, VPN config upload/activate, health, and tasks — all in one admin UI.</p></div>
+    <div class="card"><div class="ico">🎛️</div><h3>Web UI included</h3><p>A request app for everyone — search, queue, release picker, calendar — plus an admin dashboard for health, VPN config upload/activate, users, settings and scheduled tasks.</p></div>
     <div class="card"><div class="ico">🧩</div><h3>No Docker, any VPN</h3><p>Native single binaries and systemd units. Bring a WireGuard config from any provider or self-hosted.</p></div>
   </div>
 </div></section>
@@ -156,9 +189,37 @@
 </div></footer>
 
 <script>
-function cp(btn){
-  var line="curl -fsSL https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/get.sh | sudo bash";
-  navigator.clipboard.writeText(line).then(function(){btn.textContent="Copied!";setTimeout(function(){btn.textContent="Copy"},1500)});
+// The install command lives in the markup once; this reads it from the DOM so
+// the two can never drift apart.
+document.addEventListener('click', function (e) {
+  var btn = e.target.closest('[data-copy-target]');
+  if (!btn) return;
+  var src = document.getElementById(btn.getAttribute('data-copy-target'));
+  if (!src) return;
+  var text = src.textContent.trim();
+  function done(ok) {
+    btn.textContent = ok ? 'Copied!' : 'Press Ctrl+C';
+    if (!ok) selectText(src);
+    setTimeout(function () { btn.textContent = 'Copy'; }, 1800);
+  }
+  // navigator.clipboard is undefined on plain http and rejects when the page
+  // is not focused, so both the missing-API and the rejection path need a
+  // fallback — otherwise the button silently does nothing.
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done(true); },
+                                            function () { done(false); });
+  } else {
+    done(false);
+  }
+});
+function selectText(el) {
+  try {
+    var r = document.createRange();
+    r.selectNodeContents(el);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+  } catch (_) { /* selection is a convenience, not a requirement */ }
 }
 </script>
 </body>

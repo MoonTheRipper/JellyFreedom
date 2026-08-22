@@ -10,12 +10,25 @@
 # never get a mapping — this keeper then backs off and idles quietly; streaming still works
 # (leeching is outbound and needs no forwarded port). The system requires only a WireGuard
 # tunnel, regardless of provider. Override the gateway with VPNTORRENT_PF_GATEWAY if needed.
-set -u
+#
+# NOTE ON `set -e`: deliberately NOT used. Every loop iteration probes things that are
+# allowed to fail (no NAT-PMP at the gateway, TorrServer restarting); non-zero exits are
+# this script's normal control flow, and `set -e` would kill the keeper on the first one.
+set -uo pipefail
 NETNS=vpntorrent
 GW="${VPNTORRENT_PF_GATEWAY:-10.2.0.1}"
-TS=http://10.42.0.2:8090
 ORCH=http://127.0.0.1:1990
 STATUS=/run/vpntorrent-portforward
+RUN_DIR=/run/vpntorrent
+
+# The veth addressing is decided once, by setup-netns.sh, and published here — so overriding
+# VPNTORRENT_VETH_SUBNET does not require editing this file too.
+nv() { # nv <KEY> <DEFAULT>
+    local v=""
+    [ -r "$RUN_DIR/netns.env" ] && v="$(sed -n "s/^${1}=//p" "$RUN_DIR/netns.env" | head -1 | tr -d '[:space:]')"
+    printf '%s' "${v:-$2}"
+}
+TS="http://$(nv VETH_VPN_IP 10.42.0.2):8090"
 
 req_port(){
   ip netns exec "$NETNS" natpmpc -a 1 0 udp 60 -g "$GW" >/dev/null 2>&1
@@ -36,6 +49,9 @@ LAST="$(ts_get_port)"
 fails=0
 while true; do
   PORT="$(req_port)"
+  # Only ever let a plain number through: PORT is parsed out of natpmpc's stdout and is
+  # interpolated into a shell command and a python snippet below.
+  case "$PORT" in ''|*[!0-9]*) PORT="" ;; esac
   if [ -z "$PORT" ]; then
     fails=$((fails+1))
     if [ "$fails" -le 3 ]; then

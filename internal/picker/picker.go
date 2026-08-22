@@ -1,11 +1,44 @@
 package picker
 
 import (
+	"math"
 	"regexp"
 	"strings"
 
 	"jellyfreedom/internal/indexer"
 )
+
+// Rejection reason tokens returned by RejectedBy. Closed set — the UI renders them.
+const (
+	RejectMinSeeders = "min_seeders"
+	RejectMaxSize    = "max_size_gb"
+	RejectCAMRule    = "reject_cam"
+	RejectTitle      = "title_mismatch"
+)
+
+// RejectedBy reports which single filter rule excluded a release from auto-pick, or
+// "" if it was eligible. Rules are evaluated in the order Score applies them, so the
+// answer matches what actually happened. This is what turns "no suitable release found"
+// into "these 12 releases were found and here is exactly which rule rejected each".
+//
+// requireTitleMatch mirrors the caller's policy: the resolve pipeline only *prefers* a
+// title match (Score adds +500), while the library health check treats a mismatch as
+// disqualifying. Passing false therefore never reports RejectTitle.
+func RejectedBy(r indexer.Release, cfg Config, title, year string, requireTitleMatch bool) string {
+	if r.Seeders < cfg.MinSeeders {
+		return RejectMinSeeders
+	}
+	if maxBytes := int64(cfg.MaxSizeGB) * 1024 * 1024 * 1024; maxBytes > 0 && r.SizeBytes > maxBytes {
+		return RejectMaxSize
+	}
+	if cfg.RejectCAM && IsCAM(r.Title) {
+		return RejectCAMRule
+	}
+	if requireTitleMatch && title != "" && !TitleMatch(r.Title, title, year) {
+		return RejectTitle
+	}
+	return ""
+}
 
 type Config struct {
 	MinSeeders        int
@@ -43,13 +76,15 @@ func ReleaseQuality(title string) string {
 		return "cam"
 	case strings.Contains(t, "remux"):
 		return "remux"
-	case strings.Contains(t, "bluray"), strings.Contains(t, "blu-ray"),
-		strings.Contains(t, "bdrip"), strings.Contains(t, "brrip"), strings.Contains(t, "brip"):
-		return "bluray"
+	// The web cases MUST be tested before bluray: "webrip" contains the substring
+	// "brip", so with bluray first every WEBRip release was mislabelled as a BluRay.
 	case strings.Contains(t, "web-dl"), strings.Contains(t, "webdl"), strings.Contains(t, "web.dl"):
 		return "webdl"
 	case strings.Contains(t, "webrip"), strings.Contains(t, "web-rip"), strings.Contains(t, "web"):
 		return "webrip"
+	case strings.Contains(t, "bluray"), strings.Contains(t, "blu-ray"),
+		strings.Contains(t, "bdrip"), strings.Contains(t, "brrip"), strings.Contains(t, "brip"):
+		return "bluray"
 	case strings.Contains(t, "hdtv"), strings.Contains(t, "hdrip"):
 		return "hdtv"
 	case strings.Contains(t, "dvdrip"), strings.Contains(t, "dvd"):
@@ -72,17 +107,6 @@ func Best(releases []indexer.Release, cfg Config) *indexer.Release {
 	return nil
 }
 
-// BestForTitle is like Best but filters strongly on title similarity.
-func BestForTitle(releases []indexer.Release, cfg Config, title, year string) *indexer.Release {
-	scored := Score(releases, cfg, title, year)
-	for i := range scored {
-		if scored[i].IsBest {
-			return &scored[i].Release
-		}
-	}
-	return nil
-}
-
 // Score returns all releases sorted best-first with scores and title-match flags.
 // title and year are used for TitleMatch; pass empty strings to skip that check.
 func Score(releases []indexer.Release, cfg Config, title, year string) []ScoredRelease {
@@ -90,7 +114,10 @@ func Score(releases []indexer.Release, cfg Config, title, year string) []ScoredR
 
 	var out []ScoredRelease
 	bestIdx := -1
-	bestScore := -1
+	// Start below every representable score. It used to start at -1, which silently
+	// made "all candidates are CAMs" return NOTHING: the CAM penalty is -10000, so
+	// every eligible release scored below the seed and none was ever marked IsBest.
+	bestScore := math.MinInt
 
 	for _, r := range releases {
 		if r.Seeders < cfg.MinSeeders {

@@ -1,0 +1,278 @@
+# Release — cut a signed, checksummed, multi-arch release from a v* tag.
+#
+#   git tag -a v0.3.0 -m 'JellyFreedom 0.3.0' && git push origin v0.3.0
+#
+# See docs/RELEASING.md for the full checklist.
+#
+# ── Contract with release/build.sh ──────────────────────────────────────────────
+# This workflow calls:   JF_VERSION=<v> GOOS=linux GOARCH=<amd64|arm64> ./release/build.sh <v>
+# and expects exactly one tarball to appear under dist/ for that invocation. See
+# docs/RELEASING.md § "build.sh contract" for the required behaviour (version from the
+# VERSION file — never a date, GOARCH honoured, version stamped into the binary).
+# The workflow renames whatever tarball build.sh produced to the canonical asset name,
+# so it works both before and after build.sh grows arch awareness.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v0.3.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------ build
+  build:
+    name: Build linux/${{ matrix.goarch }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: v
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          file_version="$(tr -d '[:space:]' < VERSION)"
+          if [ "$version" != "$file_version" ]; then
+            echo "::error::tag $tag implies version '$version' but ./VERSION says '$file_version' — bump VERSION and re-tag"
+            exit 1
+          fi
+          echo "tag=$tag"          >> "$GITHUB_OUTPUT"
+          echo "version=$version"  >> "$GITHUB_OUTPUT"
+
+      - name: Build bundle
+        env:
+          JF_VERSION: ${{ steps.v.outputs.version }}
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          rm -rf dist
+          ./release/build.sh "$JF_VERSION"
+          shopt -s nullglob
+          tarballs=(dist/*.tar.gz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one tarball under dist/, got ${#tarballs[@]}: ${tarballs[*]}"
+            exit 1
+          fi
+          canonical="jellyfreedom-${JF_VERSION}-linux-${GOARCH}.tar.gz"
+          mkdir -p out
+          mv "${tarballs[0]}" "out/$canonical"
+          echo "produced out/$canonical"
+          ls -la out
+
+      - name: Verify bundle contents and architecture
+        env:
+          JF_VERSION: ${{ steps.v.outputs.version }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          tmp="$(mktemp -d)"
+          tar xzf "out/jellyfreedom-${JF_VERSION}-linux-${GOARCH}.tar.gz" -C "$tmp"
+          root="$(find "$tmp" -maxdepth 1 -type d -name 'jellyfreedom-*' | head -1)"
+          [ -n "$root" ] || { echo "::error::tarball has no jellyfreedom-* top-level directory"; exit 1; }
+          echo "bundle root: ${root#"$tmp"/}"
+
+          fail=0
+          # Every file the installer needs. A bundle missing any of these produces an
+          # install that is broken in a way the user cannot diagnose:
+          #   jf-netns-helper  — the ONLY privileged path; without it every VPN control
+          #                      in the dashboard silently does nothing.
+          #   doctor.sh        — the first thing docs/troubleshooting.md tells users to run.
+          for f in bin/orchestrator install.sh uninstall.sh jellyfreedom doctor.sh \
+                   config.sample.yaml VERSION \
+                   vpntorrent/jf-netns-helper vpntorrent/setup-netns.sh \
+                   vpntorrent/watchdog.sh vpntorrent/portforward.sh; do
+            if [ -f "$root/$f" ]; then echo "ok: $f"; else echo "::error::bundle is missing $f"; fail=1; fi
+          done
+          for f in bin/orchestrator install.sh uninstall.sh jellyfreedom doctor.sh vpntorrent/jf-netns-helper; do
+            [ -x "$root/$f" ] || { echo "::error::$f is not executable in the bundle"; fail=1; }
+          done
+          [ -d "$root/web" ] || { echo "::error::bundle is missing web/"; fail=1; }
+          [ "$(tr -d '[:space:]' < "$root/VERSION")" = "$JF_VERSION" ] \
+            || { echo "::error::bundle VERSION does not match $JF_VERSION"; fail=1; }
+          [ "$fail" -eq 0 ] || exit 1
+
+          info="$(file -b "$root/bin/orchestrator")"
+          echo "$info"
+          case "$GOARCH" in
+            amd64) echo "$info" | grep -q 'x86-64' || { echo "::error::not an x86-64 binary"; exit 1; } ;;
+            arm64) echo "$info" | grep -q 'aarch64' || { echo "::error::not an aarch64 binary"; exit 1; } ;;
+          esac
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: bundle-${{ matrix.goarch }}
+          path: out/*.tar.gz
+          if-no-files-found: error
+          retention-days: 5
+
+  # ------------------------------------------------------------------ publish
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write       # create the release + upload assets
+      id-token: write       # attest-build-provenance signing
+      attestations: write   # attest-build-provenance
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve version
+        id: v
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          echo "tag=$tag"           >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}"   >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          path: dl
+          pattern: bundle-*
+          merge-multiple: true
+
+      - name: Assemble release assets
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          mkdir -p assets
+          cp dl/*.tar.gz assets/
+          cd assets
+
+          for a in amd64 arm64; do
+            versioned="jellyfreedom-${VERSION}-linux-${a}.tar.gz"
+            [ -f "$versioned" ] || { echo "::error::missing $versioned"; exit 1; }
+            # STABLE, VERSION-FREE NAME — load-bearing. release/get.sh resolves
+            # releases/latest/download/jellyfreedom-linux-<arch>.tar.gz and refuses to
+            # install without a matching SHA256SUMS entry. Renaming these breaks the
+            # one-liner (closed, not silently).
+            cp "$versioned" "jellyfreedom-linux-${a}.tar.gz"
+          done
+
+          # Legacy alias for the v0.2.1-era get.sh still in circulation, which requests the
+          # unsuffixed name. Drop one release after the arch-aware get.sh has shipped.
+          cp "jellyfreedom-${VERSION}-linux-amd64.tar.gz" jellyfreedom.tar.gz
+
+          cp ../release/get.sh get.sh
+
+          # BARE filenames only — do NOT use `sha256sum ./*.tar.gz`. get.sh matches with
+          #   awk '$2 == a || $2 == "*"a'
+          # so a "./jellyfreedom-linux-amd64.tar.gz" entry would not match and every
+          # one-liner install would fail closed.
+          sha256sum \
+            "jellyfreedom-${VERSION}-linux-amd64.tar.gz" \
+            "jellyfreedom-${VERSION}-linux-arm64.tar.gz" \
+            jellyfreedom-linux-amd64.tar.gz \
+            jellyfreedom-linux-arm64.tar.gz \
+            jellyfreedom.tar.gz \
+            get.sh > SHA256SUMS
+          echo "--- SHA256SUMS ---"; cat SHA256SUMS
+          ls -la
+
+      # Guards the exact contract release/get.sh depends on. If this fails, the published
+      # one-liner would refuse to install rather than install unverified bytes — still bad.
+      - name: Verify SHA256SUMS resolves the way get.sh resolves it
+        run: |
+          cd assets
+          sha256sum -c SHA256SUMS
+          rc=0
+          for asset in jellyfreedom-linux-amd64.tar.gz jellyfreedom-linux-arm64.tar.gz; do
+            expected="$(awk -v a="$asset" '$2 == a || $2 == "*"a {print $1}' SHA256SUMS | head -1)"
+            if [ -z "$expected" ]; then
+              echo "::error::SHA256SUMS has no entry matching '$asset' — release/get.sh would refuse to install"
+              rc=1
+              continue
+            fi
+            actual="$(sha256sum "$asset" | cut -d' ' -f1)"
+            if [ "$expected" != "$actual" ]; then
+              echo "::error::$asset digest in SHA256SUMS does not match the file"; rc=1; continue
+            fi
+            echo "ok: $asset -> $expected"
+          done
+          exit "$rc"
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error::CHANGELOG.md is missing"; exit 1
+          fi
+          # Take everything between "## [<version>]" and the next "## [" heading.
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { grab = 1; next }
+            grab && /^## \[/       { exit }
+            grab && /^\[/          { exit }
+            grab                    { print }
+          ' CHANGELOG.md > /tmp/notes.md
+          if [ ! -s /tmp/notes.md ]; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section — add one before tagging"
+            exit 1
+          fi
+          {
+            echo
+            echo "### Install"
+            echo
+            echo '```bash'
+            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/get.sh | sudo bash"
+            echo '```'
+            echo
+            echo "Verify downloads against \`SHA256SUMS\`:"
+            echo
+            echo '```bash'
+            echo "sha256sum -c SHA256SUMS --ignore-missing"
+            echo '```'
+            echo
+            echo "Artifacts are signed with build provenance — verify with:"
+            echo
+            echo '```bash'
+            echo "gh attestation verify jellyfreedom-${VERSION}-linux-amd64.tar.gz --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+          } >> /tmp/notes.md
+          echo "--- notes ---"; cat /tmp/notes.md
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: "assets/*.tar.gz"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3.0.2
+        with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          name: JellyFreedom ${{ steps.v.outputs.version }}
+          body_path: /tmp/notes.md
+          draft: true
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            assets/jellyfreedom-${{ steps.v.outputs.version }}-linux-amd64.tar.gz
+            assets/jellyfreedom-${{ steps.v.outputs.version }}-linux-arm64.tar.gz
+            assets/jellyfreedom-linux-amd64.tar.gz
+            assets/jellyfreedom-linux-arm64.tar.gz
+            assets/jellyfreedom.tar.gz
+            assets/get.sh
+            assets/SHA256SUMS

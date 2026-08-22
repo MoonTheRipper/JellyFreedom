@@ -1,7 +1,9 @@
 package indexer
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,6 +12,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"jellyfreedom/internal/redact"
+)
+
+// Sentinel errors so callers can render a SPECIFIC, actionable message instead of
+// leaking transport detail. Neither ever contains a URL or a key.
+var (
+	ErrNotConfigured = errors.New("Prowlarr is not configured — set its URL and API key in Settings → Connections")
+	ErrBadKey        = errors.New("Prowlarr rejected the API key — re-enter it in Settings → Connections")
 )
 
 // Client talks to Prowlarr's JSON search API.
@@ -18,6 +29,10 @@ type Client struct {
 	baseURL    string
 	apiKey     string
 	httpClient *http.Client
+	// ctlClient handles short control-plane calls (ping, indexer list). The search
+	// client's 150s timeout is right for a cold FlareSolverr wake-up and badly wrong
+	// for a pre-flight health probe that must answer fast or not at all.
+	ctlClient *http.Client
 }
 
 func New(baseURL, apiKey string) *Client {
@@ -27,6 +42,7 @@ func New(baseURL, apiKey string) *Client {
 		// Generous: the FIRST Prowlarr search after idle wakes FlareSolverr +
 		// indexers and can take 90s+; warm searches return in well under a second.
 		httpClient: &http.Client{Timeout: 150 * time.Second},
+		ctlClient:  &http.Client{Timeout: 8 * time.Second},
 	}
 }
 
@@ -36,6 +52,8 @@ func (c *Client) Configure(baseURL, apiKey string) {
 	c.baseURL = strings.TrimRight(baseURL, "/")
 	c.apiKey = apiKey
 	c.mu.Unlock()
+	// Backstop: if this key ever reaches a log line or an error string, mask it.
+	redact.Register(apiKey)
 }
 
 // Configured reports whether both base URL and API key are set.
@@ -109,24 +127,52 @@ const (
 )
 
 // Search queries Prowlarr's /api/v1/search endpoint.
+//
+// The API key travels in the X-Api-Key HEADER, never in the query string. As a query
+// parameter it ended up inside *url.Error (which embeds the whole URL), and those error
+// strings were being returned verbatim to unauthenticated HTTP callers and written to
+// the log — a verified key disclosure.
 func (c *Client) Search(query string, categories []int) ([]Release, error) {
+	return c.search(context.Background(), query, categories)
+}
+
+// SearchContext is Search with caller-controlled cancellation, so an abandoned HTTP
+// request does not keep a 150s indexer call alive behind it.
+func (c *Client) SearchContext(ctx context.Context, query string, categories []int) ([]Release, error) {
+	return c.search(ctx, query, categories)
+}
+
+func (c *Client) search(ctx context.Context, query string, categories []int) ([]Release, error) {
+	base, key := c.base(), c.key()
+	if base == "" {
+		return nil, ErrNotConfigured
+	}
 	catParams := make([]string, len(categories))
 	for i, cat := range categories {
 		catParams[i] = "categories=" + strconv.Itoa(cat)
 	}
-	u := fmt.Sprintf("%s/api/v1/search?apikey=%s&query=%s&%s",
-		c.base(),
-		c.key(),
+	u := fmt.Sprintf("%s/api/v1/search?query=%s&%s",
+		base,
 		url.QueryEscape(query),
 		strings.Join(catParams, "&"),
 	)
 
-	resp, err := c.httpClient.Get(u)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("indexer search: %w", err)
+	}
+	req.Header.Set("X-Api-Key", key)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("indexer search: %w", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, ErrBadKey
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("indexer search: status %d", resp.StatusCode)
 	}
@@ -155,12 +201,6 @@ func (c *Client) Search(query string, categories []int) ([]Release, error) {
 		releases = append(releases, rel)
 	}
 	return releases, nil
-}
-
-// SearchCount runs a search (used to warm the indexers) and returns the result count.
-func (c *Client) SearchCount(query string, categories []int) (int, error) {
-	r, err := c.Search(query, categories)
-	return len(r), err
 }
 
 // publicTrackers are reliable public trackers appended to every magnet so peer
@@ -233,4 +273,75 @@ func parseCodecs(r *Release) {
 	case strings.Contains(t, ".mp4"), strings.Contains(t, "mp4"):
 		r.Container = "mp4"
 	}
+}
+
+// IndexerCount returns how many indexers Prowlarr currently has configured, or an
+// error if Prowlarr is unreachable / rejects the key.
+//
+// This exists to surface the invisible "Prowlarr installed with zero indexers" trap:
+// a perfectly valid URL and key with no indexers behind it returns an empty result
+// set forever, which is indistinguishable in the UI from "nothing matched".
+func (c *Client) IndexerCount(ctx context.Context) (int, error) {
+	base, key := c.base(), c.key()
+	if base == "" || key == "" {
+		return 0, ErrNotConfigured
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/indexer", nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("X-Api-Key", key)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.ctlClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("prowlarr unreachable")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return 0, ErrBadKey
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("prowlarr returned HTTP %d", resp.StatusCode)
+	}
+	var list []struct {
+		ID     int  `json:"id"`
+		Enable bool `json:"enable"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return 0, fmt.Errorf("prowlarr sent an unreadable indexer list")
+	}
+	n := 0
+	for _, ix := range list {
+		if ix.Enable {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// Ping reports whether Prowlarr is reachable and the key is accepted. Used by the
+// pre-flight dependency gate so /request and /play fail fast with a specific message
+// instead of discovering the problem 150 seconds into a search.
+func (c *Client) Ping(ctx context.Context) error {
+	base, key := c.base(), c.key()
+	if base == "" || key == "" {
+		return ErrNotConfigured
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/system/status", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Api-Key", key)
+	resp, err := c.ctlClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("Prowlarr is unreachable — check it is running and the URL in Settings → Connections")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return ErrBadKey
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Prowlarr returned HTTP %d — see Settings → Connections → Test", resp.StatusCode)
+	}
+	return nil
 }

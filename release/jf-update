@@ -1,0 +1,31 @@
+#!/bin/bash
+#
+# jf-update — the privileged entry point for a dashboard-triggered self-update.
+#
+# INSTALLATION: /opt/jellyfreedom/jf-update, root:root 0755, in a root-owned directory.
+# Reachable through NOPASSWD sudo, so if the service user can edit it — or its directory —
+# the sudo rule becomes a root shell.
+#
+# WHY THIS EXISTS RATHER THAN sudo'ing the CLI directly
+#   The update restarts jellyfreedom.service. systemd kills the entire control group on
+#   restart, so an updater spawned as a child of the orchestrator would be killed partway
+#   through and leave a half-installed system. Launching it as a separate transient unit
+#   detaches it from our cgroup so it survives the restart it causes.
+#
+# It takes NO arguments: the caller cannot choose a version, URL or path, so a hostile
+# request to the API cannot influence what gets installed as root.
+set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+[ "$(id -u)" = "0" ] || { echo "jf-update: must run as root (via sudo)" >&2; exit 1; }
+[ -x /usr/local/bin/jellyfreedom ] || { echo "jf-update: /usr/local/bin/jellyfreedom is missing" >&2; exit 1; }
+
+# --collect so the unit is garbage-collected when it finishes; a fixed unit name means a
+# second invocation fails loudly instead of racing a running update.
+exec systemd-run \
+  --unit=jellyfreedom-update \
+  --collect \
+  --description="JellyFreedom self-update" \
+  --setenv=JELLYFREEDOM_TRIGGERED_BY=dashboard \
+  /usr/local/bin/jellyfreedom --update

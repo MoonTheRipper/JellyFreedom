@@ -5,324 +5,137 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#0a0b10">
 <meta name="color-scheme" content="dark">
-<title>JellyFreedom</title>
+<title>JellyFreedom · Dashboard</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="apple-touch-icon" href="/favicon.svg">
-<style>
-:root{--bg:#0a0b10;--sidebar:#111420;--surface:#161a26;--border:#252a3d;
-  --text:#e2e6f3;--muted:#6b7296;--muted2:#8a90b2;--green:#4ade80;--red:#f87171;
-  --yellow:#fbbf24;--blue:#60a5fa;--purple:#a78bfa;
-  --brand-1:#aa5cc3;--brand-2:#00a4dc;--grad:linear-gradient(135deg,#aa5cc3 0%,#7c5cff 45%,#00a4dc 100%);
-  --accent:#8b6cff;--accent-h:#7857ff;--accent-soft:rgba(139,108,255,.12);
-  --r-sm:6px;--r-md:10px;--r-lg:14px;
-  --sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);
-  --sal:env(safe-area-inset-left,0px);--sar:env(safe-area-inset-right,0px)}
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);
-  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Inter,Roboto,system-ui,sans-serif;
-  font-size:13px;line-height:1.55;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
-  display:flex;flex-direction:column;min-height:100vh}
-
-header{background:var(--sidebar);border-bottom:1px solid var(--border);
-  padding:11px 20px;display:flex;align-items:center;gap:10px;flex-shrink:0}
-header h1{font-size:14px;font-weight:800;letter-spacing:-.01em}
-header h1 .brand{background:var(--grad);-webkit-background-clip:text;background-clip:text;
-  -webkit-text-fill-color:transparent;color:transparent}
-header .sep{color:var(--border)}
-.header-user{color:var(--muted);font-size:12px}
-.header-right{margin-left:auto;display:flex;gap:8px;align-items:center}
-a.search-link{color:var(--muted);font-size:12px;text-decoration:none;padding:4px 10px;
-  border:1px solid var(--border);border-radius:5px}
-a.search-link:hover{color:var(--text)}
-a.logout{color:var(--muted);font-size:12px;text-decoration:none;padding:4px 10px;
-  border:1px solid var(--border);border-radius:5px}
-a.logout:hover{border-color:var(--red);color:var(--red)}
-
-.layout{display:flex;flex:1;min-height:0}
-
-/* Sidebar */
-.sidebar{width:172px;flex-shrink:0;background:var(--sidebar);
-  border-right:1px solid var(--border);padding:12px 0;overflow-y:auto}
-.nav-item{display:flex;align-items:center;gap:10px;padding:9px 18px;
-  color:var(--muted);cursor:pointer;font-size:13px;font-weight:500;
-  border-left:2px solid transparent;transition:color .12s;user-select:none}
-.nav-item:hover{color:var(--text)}
-.nav-item.active{color:var(--text);border-left-color:var(--accent);
-  background:var(--accent-soft)}
-.nav-icon{font-size:13px;width:16px;text-align:center;flex-shrink:0}
-
-/* Content */
-.content{flex:1;padding:26px 32px;overflow-y:auto;min-width:0}
-.section{display:none}
-.section.active{display:block}
-
-.section-header{display:flex;align-items:center;justify-content:space-between;
-  margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid var(--border)}
-.section-header h2{font-size:15px;font-weight:600}
-
-.subsection{margin-top:28px}
-.sub-title{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;
-  letter-spacing:.06em;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
-
-/* Tables */
-table{width:100%;border-collapse:collapse}
-th{text-align:left;font-size:11px;color:var(--muted);font-weight:600;
-  text-transform:uppercase;letter-spacing:.04em;padding:0 14px 8px 0;
-  border-bottom:1px solid var(--border)}
-td{padding:9px 14px 9px 0;border-bottom:1px solid var(--border);vertical-align:middle}
-tr:last-child td{border-bottom:none}
-
-/* Badges */
-.badge{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;white-space:nowrap}
-.badge.active{background:#14532d;color:var(--green)}
-.badge.failed,.badge.error{background:#450a0a;color:var(--red)}
-.badge.inactive,.badge.stale{background:#1c1f2e;color:var(--muted)}
-.badge.unknown{background:#3d2a00;color:var(--yellow)}
-.badge.local{background:#1e3a5f;color:var(--blue)}
-.badge.jellyfin{background:#3b1f5e;color:var(--purple)}
-.badge.admin{background:#3d2510;color:var(--yellow)}
-
-/* Status dot */
-.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0;margin-top:1px}
-.dot.active{background:var(--green);box-shadow:0 0 5px var(--green)}
-.dot.failed{background:var(--red);box-shadow:0 0 5px var(--red)}
-.dot.inactive{background:var(--muted)}
-.dot.unknown{background:var(--yellow)}
-
-/* Buttons */
-.btn{background:var(--surface);border:1px solid var(--border);color:var(--text);
-  padding:5px 13px;border-radius:5px;cursor:pointer;font-size:12px;white-space:nowrap}
-.btn:hover{background:var(--border)}
-.btn.primary{background:var(--grad);border-color:transparent;color:#fff;box-shadow:0 4px 14px rgba(124,92,255,.25)}
-.btn.primary:hover{filter:brightness(1.08)}
-.btn.danger{border-color:transparent}
-.btn.danger:hover{background:#450a0a;border-color:#7f1d1d;color:var(--red)}
-.btn.sm{padding:3px 9px;font-size:11px}
-.btn:disabled{opacity:.45;cursor:default}
-
-/* Key-value grid */
-.kv{display:grid;grid-template-columns:150px 1fr;gap:7px 16px;align-items:center;max-width:560px}
-.kv-label{color:var(--muted);font-size:12px}
-.kv-val{font-family:monospace;font-size:12px}
-.kv-val.ok{color:var(--green)}
-.kv-val.err{color:var(--red)}
-
-/* Config switcher */
-.vpn-switch{display:flex;gap:8px;align-items:center;margin-top:14px}
-select{background:var(--surface);color:var(--text);border:1px solid var(--border);
-  padding:5px 10px;border-radius:5px;font-size:12px;outline:none}
-select:focus{border-color:var(--accent)}
-
-/* VPN configurations */
-.hint{font-size:12px;color:var(--muted,#9aa);margin:4px 0 10px}
-.vpn-upload{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
-.vpn-upload input[type=text]{background:var(--surface);color:var(--text);border:1px solid var(--border);
-  padding:5px 10px;border-radius:5px;font-size:12px;outline:none}
-.vpn-configs{display:flex;flex-direction:column;gap:8px}
-.vpn-cfg{display:flex;justify-content:space-between;align-items:center;gap:12px;
-  background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
-.vpn-cfg.active{border-color:var(--green)}
-.vpn-cfg-main{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
-.vpn-cfg-name{font-weight:600}
-.vpn-cfg-meta{font-size:11px;color:var(--muted,#9aa)}
-.badge-active{font-size:10px;color:var(--green);border:1px solid var(--green);border-radius:4px;padding:1px 6px}
-.vpn-cfg-actions{display:flex;gap:6px;flex-shrink:0}
-.btn.sm{padding:3px 9px;font-size:11px}
-.btn.ghost{background:transparent}
-.btn.danger{border-color:var(--red);color:var(--red)}
-
-/* Leak check */
-.leak-result{margin-top:12px}
-.leak-grid{display:grid;grid-template-columns:160px 1fr;gap:7px 16px;align-items:center;max-width:560px}
-.pill{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;white-space:nowrap}
-.pill.ok{background:#14532d;color:var(--green)}
-.pill.warn{background:#450a0a;color:var(--red)}
-.pill.neutral{background:#1c2033;color:var(--muted)}
-
-/* Logs */
-pre.log{background:#090b10;border:1px solid var(--border);border-radius:6px;padding:12px 14px;
-  font-size:11px;font-family:'Cascadia Code','Fira Code',monospace;max-height:420px;
-  overflow-y:auto;color:#c0c6e0;white-space:pre-wrap;word-break:break-all;margin-top:12px}
-.log-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-
-/* Forms */
-.form-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
-.form-row input[type=text],.form-row input[type=password]{
-  background:var(--surface);border:1px solid var(--border);color:var(--text);
-  padding:7px 11px;border-radius:5px;font-size:13px;outline:none;min-width:160px}
-.form-row input:focus{border-color:var(--accent)}
-.form-row label{color:var(--muted);font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer}
-
-/* Messages */
-.msg{font-size:12px;padding:7px 11px;border-radius:5px;margin-top:6px;display:none}
-.msg.ok{background:#14532d;color:var(--green);display:block}
-.msg.err{background:#450a0a;color:var(--red);display:block}
-/* settings cards */
-.set-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 20px;margin-bottom:16px;max-width:760px}
-.set-card-title{font-size:14px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:10px}
-.set-ro{font-size:10px;font-weight:600;color:var(--muted);background:var(--bg);border:1px solid var(--border);padding:2px 7px;border-radius:6px;text-transform:uppercase;letter-spacing:.04em}
-.set-hint{font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.5}
-.set-grid{display:grid;grid-template-columns:180px 1fr;gap:10px 16px;align-items:center;max-width:560px}
-.set-grid label{font-size:13px;color:var(--muted2)}
-.set-grid input[type=text],.set-grid input[type=number],.set-grid select{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:13px;outline:none;width:100%}
-.set-grid input:focus,.set-grid select:focus{border-color:var(--accent)}
-.set-toggle{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--text);cursor:pointer}
-/* connection rows */
-.conn-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
-.conn-row:last-of-type{border-bottom:none}
-.conn-name{font-weight:600;font-size:13px;min-width:90px}
-.conn-fields{display:flex;gap:8px;flex:1;min-width:240px;flex-wrap:wrap}
-.conn-fields input{flex:1;min-width:160px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:13px;outline:none}
-.conn-fields input:focus{border-color:var(--accent)}
-.conn-result{font-size:12px;font-weight:600;min-width:80px}
-.conn-result.ok{color:var(--green)}
-.conn-result.err{color:var(--red)}
-.conn-result.testing{color:var(--blue)}
-
-/* Muted empty state */
-.empty{color:var(--muted);font-size:13px;padding:12px 0}
-
-/* Service row */
-.svc-row{display:flex;align-items:center;gap:10px;padding:9px 0;
-  border-bottom:1px solid var(--border)}
-.svc-row:last-child{border-bottom:none}
-.svc-name{font-weight:500;min-width:160px}
-.svc-bind{font-family:monospace;font-size:11px;color:var(--blue);flex:1}
-.svc-since{font-size:11px;color:var(--muted);max-width:180px;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap}
-
-/* Toast */
-/* tasks */
-.task-category{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;
-  letter-spacing:.06em;padding:14px 0 8px;border-bottom:1px solid var(--border);margin-bottom:4px}
-.task-row{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)}
-.task-row:last-child{border-bottom:none}
-.task-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
-.task-dot.idle{background:var(--green);box-shadow:0 0 5px var(--green)}
-.task-dot.running{background:var(--blue);box-shadow:0 0 5px var(--blue);animation:tpulse 1s infinite}
-.task-dot.error{background:var(--red);box-shadow:0 0 5px var(--red)}
-.task-dot.never{background:var(--muted)}
-@keyframes tpulse{0%,100%{opacity:1}50%{opacity:.3}}
-.task-name{font-weight:600;font-size:13px;min-width:180px}
-.task-desc{font-size:12px;color:var(--muted);flex:1}
-.task-meta{font-size:11px;color:var(--muted);font-family:monospace;min-width:120px;text-align:right}
-.task-err{font-size:11px;color:var(--red);margin-top:3px;grid-column:2/-1}
-.task-interval{font-size:11px;color:var(--muted2);background:var(--bg);
-  border:1px solid var(--border);padding:2px 7px;border-radius:5px;white-space:nowrap}
-
-#toast{position:fixed;bottom:20px;right:20px;background:var(--surface);
-  border:1px solid var(--border);border-radius:var(--r-md);padding:10px 16px;font-size:13px;
-  box-shadow:0 10px 30px rgba(0,0,0,.5);
-  opacity:0;transition:opacity .25s;pointer-events:none;z-index:99}
-#toast.show{opacity:1}
-
-@media (prefers-reduced-motion: reduce){
-  *,*::before,*::after{animation-duration:.001ms !important;transition-duration:.001ms !important}
-}
-
-/* ── Responsive: phones / tablets ────────────────────────────────────────── */
-@media (max-width: 820px){
-  header{padding:calc(11px + var(--sat)) max(14px,var(--sar)) 11px max(14px,var(--sal));flex-wrap:wrap}
-  .header-right{gap:6px}
-  a.search-link,a.logout{padding:7px 11px}            /* ≥40px tap target */
-  /* sidebar → horizontal, scrollable tab strip under the header */
-  .layout{flex-direction:column;min-height:0}
-  .sidebar{width:100%;display:flex;flex-direction:row;overflow-x:auto;overflow-y:hidden;
-    border-right:none;border-bottom:1px solid var(--border);padding:8px max(10px,var(--sal));
-    gap:6px;position:sticky;top:0;z-index:40;-webkit-overflow-scrolling:touch;scrollbar-width:none}
-  .sidebar::-webkit-scrollbar{display:none}
-  .nav-item{flex:0 0 auto;border-left:none;border:1px solid var(--border);border-radius:999px;
-    padding:8px 14px;white-space:nowrap;min-height:40px}
-  .nav-item.active{border-left:none;background:var(--accent-soft);border-color:rgba(139,108,255,.35);color:var(--text)}
-  .content{padding:18px 16px calc(22px + var(--sab))}
-  .section-header{flex-wrap:wrap;gap:10px}
-  /* key/value & settings grids stack so labels aren't crushed */
-  .kv,.set-grid,.leak-grid{grid-template-columns:1fr;gap:3px 0;max-width:none}
-  .kv-label,.set-grid label,.leak-grid>div:nth-child(odd){color:var(--muted);font-size:11px;margin-top:8px}
-  .set-card{padding:16px;max-width:none}
-  /* wide admin tables scroll horizontally instead of overflowing the viewport */
-  table{display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch}
-  .svc-name,.task-name,.task-meta{min-width:0}
-  .svc-row,.task-row{flex-wrap:wrap}
-  #toast{right:12px;left:12px;bottom:calc(16px + var(--sab))}
-}
-</style>
+<link rel="stylesheet" href="../shared/theme.css">
+<link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
+
+<a class="skip-link" href="#content">Skip to content</a>
+
 <header>
-  <h1>🎬 <span class="brand">JellyFreedom</span></h1>
-  <span class="sep">|</span>
-  <span>Dashboard</span>
-  <span class="header-user" id="header-user"></span>
+  <div class="logo">
+    <svg class="logo-mark" viewBox="0 0 24 24" aria-hidden="true">
+      <defs><linearGradient id="jf-logo" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#aa5cc3"/><stop offset="1" stop-color="#00a4dc"/>
+      </linearGradient></defs>
+      <circle cx="12" cy="12" r="10" fill="url(#jf-logo)"/>
+      <path d="M10 8.2 16.5 12 10 15.8z" fill="#0a0b10"/>
+    </svg>
+    <span class="logo-text"><span class="grad">Jelly</span>Freedom</span>
+  </div>
+  <span class="header-tag">Dashboard</span>
+
   <div class="header-right">
-    <a class="search-link" href="/">← Search</a>
-    <a class="logout" href="/dashboard/logout">Logout</a>
+    <div class="health-wrap">
+      <button type="button" class="health-dot" id="health-dot"
+        aria-label="Stack health" aria-expanded="false" aria-haspopup="dialog"></button>
+      <div class="popover" id="health-popover" role="dialog" aria-label="Stack health" hidden></div>
+    </div>
+    <a class="header-btn" href="/">
+      <svg class="ic" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
+      Back to app</a>
+    <a class="header-btn logout" href="/dashboard/logout">
+      <svg class="ic" aria-hidden="true"><use href="#i-power"></use></svg>
+      Sign out</a>
   </div>
 </header>
 
+<div class="warn-strip" id="vpn-strip" hidden></div>
+
+<!-- Self-update banner. Markup is injected by dashboard/modules/update.js; it
+     stays empty and hidden unless GET /api/update/check reports one. -->
+<div class="update-strip" id="update-banner" hidden></div>
+
 <div class="layout">
-  <nav class="sidebar">
-    <div class="nav-item active" data-section="health" onclick="showSection('health')">
-      <span class="nav-icon">◉</span> Health
-    </div>
-    <div class="nav-item" data-section="vpn" onclick="showSection('vpn')">
-      <span class="nav-icon">⛨</span> VPN
-    </div>
-    <div class="nav-item" data-section="logs" onclick="showSection('logs')">
-      <span class="nav-icon">≡</span> Logs
-    </div>
-    <div class="nav-item" data-section="users" onclick="showSection('users')">
-      <span class="nav-icon">⊙</span> Users
-    </div>
-    <div class="nav-item" data-section="tasks" onclick="showSection('tasks')">
-      <span class="nav-icon">⏱</span> Tasks
-    </div>
-    <div class="nav-item" data-section="settings" onclick="showSection('settings')">
-      <span class="nav-icon">⚙</span> Settings
-    </div>
+  <nav class="sidebar" aria-label="Dashboard sections">
+    <button type="button" class="nav-item" data-section="setup">
+      <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-check"></use></svg></span>
+      Setup</button>
+    <button type="button" class="nav-item" data-section="health">
+      <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-activity"></use></svg></span>
+      Health</button>
+    <button type="button" class="nav-item" data-section="vpn">
+      <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-shield"></use></svg></span>
+      VPN</button>
+    <button type="button" class="nav-item" data-section="logs">
+      <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-list"></use></svg></span>
+      Logs</button>
+    <button type="button" class="nav-item" data-section="users">
+      <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-users"></use></svg></span>
+      Users</button>
+    <button type="button" class="nav-item" data-section="tasks">
+      <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-clock"></use></svg></span>
+      Tasks</button>
+    <button type="button" class="nav-item" data-section="settings">
+      <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-settings"></use></svg></span>
+      Settings</button>
   </nav>
 
-  <main class="content">
+  <main class="content" id="content">
 
-    <!-- ── Health ────────────────────────────────────────────────── -->
-    <section id="section-health" class="section active">
+    <!-- ── Setup checklist ───────────────────────────────────────────────── -->
+    <section id="section-setup" class="section">
       <div class="section-header">
-        <h2>Health</h2>
-        <button class="btn" onclick="restartAll()">Restart Stack</button>
+        <h2>Setup</h2>
+        <button class="btn" type="button" data-checklist-refresh="1">Re-check</button>
       </div>
-      <div id="services-body"><div class="empty">Loading…</div></div>
+      <p class="section-lead">Everything JellyFreedom needs in order to find, fetch and play a
+        title. Each row links to the place that fixes it.</p>
+      <div id="checklist-body"></div>
     </section>
 
-    <!-- ── VPN ───────────────────────────────────────────────────── -->
+    <!-- ── Health ────────────────────────────────────────────────────────── -->
+    <section id="section-health" class="section">
+      <div class="section-header">
+        <h2>Health</h2>
+        <div class="header-actions">
+          <button class="btn" type="button" data-services-refresh="1">Refresh</button>
+          <button class="btn danger" type="button" data-restart-all="1">Restart stack</button>
+        </div>
+      </div>
+      <div id="restart-banner" hidden></div>
+      <div id="services-body"></div>
+    </section>
+
+    <!-- ── VPN ───────────────────────────────────────────────────────────── -->
     <section id="section-vpn" class="section">
       <div class="section-header">
         <h2>VPN</h2>
-        <button class="btn" onclick="fetchStatus()">Refresh</button>
+        <button class="btn" type="button" data-vpn-refresh="1">Refresh</button>
       </div>
-      <div id="vpn-body"><div class="empty">Loading…</div></div>
+      <div id="vpn-body"></div>
 
       <div class="subsection">
-        <div class="sub-title">Configurations</div>
-        <p class="hint">Upload a WireGuard <code>.conf</code> from any provider or self-hosted (a torrent/P2P-friendly server). Uploading does <b>not</b> activate it — click <b>Activate</b> to switch the live tunnel (briefly restarts torrent traffic).</p>
+        <h3 class="sub-title">Configurations</h3>
+        <p class="hint">Upload a WireGuard <code>.conf</code> from any provider or a self-hosted
+          peer — prefer a torrent/P2P-friendly server, or torrents connect but never transfer.
+          Uploading does <b>not</b> activate it; click <b>Activate</b> to switch the live tunnel
+          (this briefly interrupts torrent traffic).</p>
         <div class="vpn-upload">
+          <label class="sr-only" for="vpn-file">WireGuard config file</label>
           <input type="file" id="vpn-file" accept=".conf,text/plain">
+          <label class="sr-only" for="vpn-name">Config name</label>
           <input type="text" id="vpn-name" placeholder="name (optional)">
-          <button class="btn" onclick="uploadVpnConfig()">Upload</button>
+          <button class="btn" type="button" data-vpn-upload="1">Upload</button>
         </div>
-        <div id="vpn-configs" class="vpn-configs"><div class="empty">Loading…</div></div>
+        <div id="vpn-configs" class="vpn-configs"></div>
       </div>
 
       <div class="subsection">
-        <div class="sub-title">Leak Check</div>
-        <button class="btn" id="leak-btn" onclick="runLeakCheck()">Run Check</button>
+        <h3 class="sub-title">Leak check</h3>
+        <button class="btn" type="button" id="leak-btn" data-leak-run="1">Run check</button>
         <div id="leak-result" class="leak-result"></div>
       </div>
     </section>
 
-    <!-- ── Logs ──────────────────────────────────────────────────── -->
+    <!-- ── Logs ──────────────────────────────────────────────────────────── -->
     <section id="section-logs" class="section">
       <div class="section-header"><h2>Logs</h2></div>
       <div class="log-controls">
+        <label class="sr-only" for="log-svc">Service</label>
         <select id="log-svc">
           <option value="jellyfin">jellyfin</option>
           <option value="vpntorrent-netns">vpntorrent-netns</option>
@@ -331,95 +144,108 @@ pre.log{background:#090b10;border:1px solid var(--border);border-radius:6px;padd
           <option value="flaresolverr">flaresolverr</option>
           <option value="jellyfreedom">jellyfreedom</option>
         </select>
+        <label class="sr-only" for="log-n">Line count</label>
         <select id="log-n">
           <option value="40">40 lines</option>
           <option value="80" selected>80 lines</option>
           <option value="200">200 lines</option>
         </select>
-        <button class="btn" onclick="fetchLogs()">Load</button>
-        <button class="btn" id="auto-btn" onclick="toggleAutoLog(this)">Auto</button>
+        <button class="btn" type="button" data-log-load="1">Load</button>
+        <button class="btn" type="button" data-log-auto="1" aria-pressed="false">Auto</button>
       </div>
-      <pre class="log" id="log-output">Select a service and click Load.</pre>
+      <pre class="log" id="log-output" tabindex="0">Select a service and click Load.</pre>
     </section>
 
-    <!-- ── Users ─────────────────────────────────────────────────── -->
+    <!-- ── Users ─────────────────────────────────────────────────────────── -->
     <section id="section-users" class="section">
       <div class="section-header">
         <h2>Users</h2>
-        <button class="btn" onclick="fetchUsers()">Refresh</button>
+        <button class="btn" type="button" data-users-refresh="1">Refresh</button>
       </div>
-      <div id="users-body"><div class="empty">Loading…</div></div>
+      <div id="users-body"></div>
 
       <div class="subsection">
-        <div class="sub-title">Add local user</div>
+        <h3 class="sub-title">Add a local user</h3>
         <div class="form-row">
+          <label class="sr-only" for="new-username">Username</label>
           <input type="text" id="new-username" placeholder="Username" autocomplete="off">
-          <input type="password" id="new-password" placeholder="Password (min 8 chars)" autocomplete="new-password">
+          <label class="sr-only" for="new-password">Password</label>
+          <input type="password" id="new-password" placeholder="Password (min 8 characters)"
+            autocomplete="new-password">
           <label><input type="checkbox" id="new-is-admin"> Admin</label>
-          <button class="btn primary" onclick="createUser()">Add User</button>
+          <button class="btn primary" type="button" data-user-create="1">Add user</button>
         </div>
         <div class="msg" id="create-msg"></div>
       </div>
 
       <div class="subsection">
-        <div class="sub-title">Import from Jellyfin</div>
-        <button class="btn" id="jf-load-btn" onclick="loadJellyfinUsers()">Load Jellyfin users</button>
-        <div id="jf-users-body" style="margin-top:14px"></div>
+        <h3 class="sub-title">Import from Jellyfin</h3>
+        <button class="btn" type="button" id="jf-load-btn" data-jf-load="1">Load Jellyfin users</button>
+        <div id="jf-users-body" class="jf-users-body"></div>
       </div>
     </section>
 
-    <!-- ── Tasks ─────────────────────────────────────────────────── -->
+    <!-- ── Tasks ─────────────────────────────────────────────────────────── -->
     <section id="section-tasks" class="section">
       <div class="section-header">
         <h2>Tasks</h2>
-        <button class="btn" onclick="fetchTasks()">Refresh</button>
+        <button class="btn" type="button" data-tasks-refresh="1">Refresh</button>
       </div>
-      <div id="tasks-body"><div class="empty">Loading…</div></div>
+      <div id="tasks-body"></div>
     </section>
 
-    <!-- ── Settings ──────────────────────────────────────────────── -->
+    <!-- ── Settings ──────────────────────────────────────────────────────── -->
     <section id="section-settings" class="section">
       <div class="section-header">
         <h2>Settings</h2>
-        <button class="btn" onclick="fetchSettings()">Reload</button>
+        <button class="btn" type="button" data-settings-reload="1">Reload</button>
       </div>
 
-      <!-- Connections -->
       <div class="set-card">
-        <div class="set-card-title">Connections</div>
-        <p class="set-hint">External services this instance uses. Keys are stored on the server, never baked into the app. Leave a key field blank to keep the current one. Use Test before saving.</p>
-        <div id="conn-forms"><div class="empty">Loading…</div></div>
+        <h3 class="set-card-title">Connections</h3>
+        <p class="set-hint">External services this instance uses. Keys are stored on the server,
+          never baked into the app. Leave a key field blank to keep the current one.
+          Use <b>Test</b> before saving.</p>
+        <div id="conn-forms"></div>
       </div>
 
-      <!-- Quality & Releases -->
       <div class="set-card">
-        <div class="set-card-title">Quality &amp; Releases</div>
+        <h3 class="set-card-title">Quality &amp; releases</h3>
         <p class="set-hint">How releases are chosen. Applies live to new requests and re-requests.</p>
-        <div id="quality-form"><div class="empty">Loading…</div></div>
+        <div id="quality-form"></div>
       </div>
 
-      <!-- Streaming & Cache -->
       <div class="set-card">
-        <div class="set-card-title">Streaming &amp; Cache</div>
+        <h3 class="set-card-title">Streaming &amp; cache</h3>
         <p class="set-hint">TorrServer cache profile. Applied to TorrServer immediately on save.</p>
-        <div id="cache-form"><div class="empty">Loading…</div></div>
+        <div id="cache-form"></div>
       </div>
 
-      <!-- Libraries (read-only) -->
       <div class="set-card">
-        <div class="set-card-title">Libraries <span class="set-ro">read-only · config.yaml</span></div>
-        <div id="libraries-list"><div class="empty">Loading…</div></div>
+        <h3 class="set-card-title">Libraries <span class="set-ro">read-only · config.yaml</span></h3>
+        <div id="libraries-list"></div>
       </div>
 
-      <!-- Account -->
       <div class="set-card">
-        <div class="set-card-title">Account</div>
-        <div class="sub-title">Change password</div>
+        <h3 class="set-card-title">Jellyfin webhook <span class="set-ro">read-only</span></h3>
+        <p class="set-hint">Jellyfin tells JellyFreedom when playback stops, so the torrent can be
+          dropped and its cache freed. Without it, torrents keep seeding after everyone stops
+          watching. Add a <b>Webhook</b> in Jellyfin (Dashboard &rarr; Plugins) using the values
+          below, sending the <b>Playback Stop</b> event.</p>
+        <div id="webhook-info"></div>
+      </div>
+
+      <div class="set-card">
+        <h3 class="set-card-title">Account</h3>
+        <h4 class="sub-title">Change password</h4>
         <div class="form-row">
+          <label class="sr-only" for="pw-current">Current password</label>
           <input type="password" id="pw-current" placeholder="Current password" autocomplete="current-password">
+          <label class="sr-only" for="pw-new">New password</label>
           <input type="password" id="pw-new" placeholder="New password" autocomplete="new-password">
+          <label class="sr-only" for="pw-new2">Confirm new password</label>
           <input type="password" id="pw-new2" placeholder="Confirm new password" autocomplete="new-password">
-          <button class="btn primary" onclick="changePassword()">Update</button>
+          <button class="btn primary" type="button" data-change-password="1">Update</button>
         </div>
         <div class="msg" id="pw-msg"></div>
       </div>
@@ -428,641 +254,15 @@ pre.log{background:#090b10;border:1px solid var(--border);border-radius:6px;padd
   </main>
 </div>
 
-<div id="toast"></div>
-
-<script>
-'use strict';
-
-let autoLogTimer = null;
-
-// ── Navigation ──────────────────────────────────────────────────────────────
-function showSection(id) {
-  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.getElementById('section-' + id).classList.add('active');
-  document.querySelector(`[data-section="${id}"]`).classList.add('active');
-  if (id === 'users') fetchUsers();
-  if (id === 'tasks') fetchTasks();
-  if (id === 'settings') fetchSettings();
-  if (id === 'vpn') fetchVpnConfigs();
-}
-
-// ── API ─────────────────────────────────────────────────────────────────────
-async function apiFetch(path, opts) {
-  const r = await fetch(path, opts);
-  if (r.status === 401) { location.href = '/dashboard/login'; return null; }
-  if (r.status === 403) { toast('Forbidden', false); return null; }
-  if (!r.ok) {
-    const e = await r.json().catch(() => ({error: r.statusText}));
-    throw new Error(e.error || r.statusText);
-  }
-  return r.json();
-}
-
-function toast(msg, ok = true) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.style.borderColor = ok ? 'var(--green)' : 'var(--red)';
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 3000);
-}
-
-function showMsg(el, msg, type) {
-  el.textContent = msg;
-  el.className = 'msg ' + type;
-}
-
-function fmt(b) {
-  if (!b) return '0 B';
-  if (b < 1024) return b + ' B';
-  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
-  if (b < 1073741824) return (b/1048576).toFixed(1) + ' MB';
-  return (b/1073741824).toFixed(2) + ' GB';
-}
-
-function esc(s) {
-  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-// ── Health ──────────────────────────────────────────────────────────────────
-async function fetchStatus() {
-  const data = await apiFetch('/api/status').catch(() => null);
-  if (!data) return;
-  renderServices(data.services || []);
-  renderVPN(data.vpn || {});
-}
-
-function renderServices(services) {
-  if (!services.length) {
-    document.getElementById('services-body').innerHTML = '<div class="empty">No services</div>';
-    return;
-  }
-  let html = '';
-  for (const s of services) {
-    const dot = s.active === 'active' ? 'active' : s.active === 'failed' ? 'failed' : s.active === 'inactive' ? 'inactive' : 'unknown';
-    const since = (s.since||'').replace(/CEST|CET|UTC/g,'').trim();
-    html += `<div class="svc-row">
-      <span class="dot ${dot}"></span>
-      <span class="svc-name">${esc(s.name)}</span>
-      <span class="badge ${dot}">${s.sub||s.active}</span>
-      <span class="svc-bind">${esc(s.bind||'')}</span>
-      <span class="svc-since">${esc(since)}</span>
-      <button class="btn sm" onclick="restart('${esc(s.name)}')">Restart</button>
-    </div>`;
-  }
-  document.getElementById('services-body').innerHTML = html;
-}
-
-async function restart(svc) {
-  try {
-    await apiFetch(`/api/services/${svc}/restart`, {method:'POST'});
-    toast(`Restarted ${svc}`);
-    setTimeout(fetchStatus, 2000);
-  } catch(e) { toast(e.message, false); }
-}
-
-async function restartAll() {
-  if (!confirm('Restart entire stack?')) return;
-  for (const s of ['vpntorrent-netns','torrserver-netns','prowlarr','flaresolverr','jellyfin','jellyfreedom']) {
-    try { await apiFetch(`/api/services/${s}/restart`, {method:'POST'}); } catch(_) {}
-    await new Promise(r => setTimeout(r, 500));
-  }
-  toast('Stack restart initiated');
-  setTimeout(fetchStatus, 4000);
-}
-
-// ── VPN ─────────────────────────────────────────────────────────────────────
-function renderVPN(v) {
-  const cc = v.connected ? 'ok' : 'err';
-  let html = `<div class="kv">
-    <span class="kv-label">Status</span>
-    <span class="kv-val ${cc}">${v.connected ? '✓ Connected' : '✗ Disconnected'}</span>
-    <span class="kv-label">Interface</span><span class="kv-val">${esc(v.interface||'—')}</span>
-    <span class="kv-label">Endpoint</span><span class="kv-val">${esc(v.endpoint||'—')}</span>
-    <span class="kv-label">Handshake</span><span class="kv-val">${esc(v.handshake_age||'—')}</span>
-    <span class="kv-label">Transfer</span>
-    <span class="kv-val">↓ ${fmt(v.rx_bytes)} &nbsp;↑ ${fmt(v.tx_bytes)}</span>
-  </div>`;
-  document.getElementById('vpn-body').innerHTML = html;
-}
-
-// ── VPN configurations (upload / activate / delete / download) ──────────────
-async function fetchVpnConfigs() {
-  const box = document.getElementById('vpn-configs');
-  if (!box) return;
-  try {
-    const list = await apiFetch('/api/vpn/configs');
-    if (!list || !list.length) { box.innerHTML = '<div class="empty">No uploaded configs yet.</div>'; return; }
-    box.innerHTML = list.map(c => `
-      <div class="vpn-cfg ${c.active ? 'active' : ''}">
-        <div class="vpn-cfg-main">
-          <span class="vpn-cfg-name">${esc(c.name)}</span>
-          ${c.active ? '<span class="badge-active">● ACTIVE</span>' : ''}
-          <span class="vpn-cfg-meta">${esc(c.endpoint || '')}${c.uploaded ? ' · ' + esc(c.uploaded) : ''}</span>
-        </div>
-        <div class="vpn-cfg-actions">
-          ${c.active ? '' : `<button class="btn sm" onclick="activateVpnConfig('${esc(c.name)}')">Activate</button>`}
-          <button class="btn sm ghost" onclick="downloadVpnConfig('${esc(c.name)}')">Download</button>
-          ${c.active ? '' : `<button class="btn sm danger" onclick="deleteVpnConfig('${esc(c.name)}')">Delete</button>`}
-        </div>
-      </div>`).join('');
-  } catch(e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
-}
-
-async function uploadVpnConfig() {
-  const fileEl = document.getElementById('vpn-file');
-  const nameEl = document.getElementById('vpn-name');
-  const f = fileEl.files[0];
-  if (!f) { toast('Choose a .conf file first', false); return; }
-  const content = await f.text();
-  const name = (nameEl.value.trim() || f.name.replace(/\.conf$/i, ''));
-  try {
-    await apiFetch('/api/vpn/configs', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, content})});
-    toast(`Uploaded ${name}`);
-    fileEl.value = ''; nameEl.value = '';
-    fetchVpnConfigs();
-  } catch(e) { toast(e.message, false); }
-}
-
-async function activateVpnConfig(name) {
-  if (!confirm(`Activate "${name}"? This switches the live VPN tunnel and briefly interrupts torrent traffic.`)) return;
-  toast(`Activating ${name}… (restarting tunnel)`);
-  try {
-    await apiFetch(`/api/vpn/configs/${encodeURIComponent(name)}/activate`, {method:'POST'});
-    toast(`Activated ${name}`);
-    setTimeout(() => { fetchStatus(); fetchVpnConfigs(); }, 6000);
-  } catch(e) { toast(e.message, false); }
-}
-
-async function deleteVpnConfig(name) {
-  if (!confirm(`Delete "${name}"? (the .conf is removed from the server)`)) return;
-  try {
-    await apiFetch(`/api/vpn/configs/${encodeURIComponent(name)}`, {method:'DELETE'});
-    toast(`Deleted ${name}`);
-    fetchVpnConfigs();
-  } catch(e) { toast(e.message, false); }
-}
-
-function downloadVpnConfig(name) {
-  // cookie-authenticated GET → browser downloads the .conf (contains the private key)
-  window.location = `/api/vpn/configs/${encodeURIComponent(name)}/download`;
-}
-
-// ── Leak check ───────────────────────────────────────────────────────────────
-async function runLeakCheck() {
-  const btn = document.getElementById('leak-btn');
-  const result = document.getElementById('leak-result');
-  btn.disabled = true;
-  btn.textContent = 'Checking…';
-  result.innerHTML = '<div class="empty">Running — takes ~10s…</div>';
-  try {
-    const d = await apiFetch('/api/leak');
-    if (!d) return;
-    const pill = (ok, yes, no) => `<span class="pill ${ok?'ok':'warn'}">${ok ? yes : no}</span>`;
-    const since = d.checked_at ? new Date(d.checked_at*1000).toLocaleTimeString() : '';
-    let ipRows = '';
-    if (d.vpn_ipv4) {
-      ipRows = `<span class="kv-label">IPv4</span><span class="kv-val" style="display:flex;gap:8px;align-items:center">
-        <code>${esc(d.host_ipv4)}</code>→<code>${esc(d.vpn_ipv4)}</code>
-        ${pill(!d.leaked, '✓ Different', '✗ SAME — LEAKED')}
-      </span>`;
-    } else {
-      const hasTraffic = d.wg_rx_bytes > 0 || d.wg_tx_bytes > 0;
-      ipRows = `<span class="kv-label">Host IPv4</span><span class="kv-val"><code>${esc(d.host_ipv4)||'—'}</code></span>
-        <span class="kv-label">VPN IPv4</span><span class="kv-val" style="color:var(--muted);font-size:11px">not checked (add curl to sudoers)</span>
-        <span class="kv-label">Routing proof</span><span class="kv-val">
-          ${pill(hasTraffic, `↓ ${fmt(d.wg_rx_bytes)} / ↑ ${fmt(d.wg_tx_bytes)} via WG`, 'No traffic through WG')}
-        </span>`;
-    }
-    result.innerHTML = `<div class="leak-grid">
-      ${ipRows}
-      <span class="kv-label">Kill switch</span>
-      <span class="kv-val">${pill(d.kill_switch_ok, '✓ Default → wg0 only', '✗ Default route not via wg0')}</span>
-      <span class="kv-label">WireGuard</span>
-      <span class="kv-val" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        ${pill(d.wg_connected, '✓ Connected', '✗ Disconnected')}
-        ${d.wg_handshake ? `<span style="color:var(--muted);font-size:11px">handshake ${esc(d.wg_handshake)}</span>` : ''}
-      </span>
-      <span class="kv-label">IPv6 / veth</span>
-      <span class="kv-val">${pill(!d.veth_has_ipv6, '✓ Disabled', '⚠ Link-local on veth')}</span>
-      <span class="kv-label">ip6tables</span>
-      <span class="kv-val" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        ${d.ip6tables_ok
-          ? `<span class="pill ok">✓ OUTPUT DROP</span>`
-          : `<span class="pill neutral">Not auto-verified</span>`}
-        ${d.ip6tables_note ? `<span style="color:var(--muted);font-size:11px">${esc(d.ip6tables_note)}</span>` : ''}
-      </span>
+<noscript>
+  <div class="callout err" style="margin:24px">
+    <div class="callout-body">
+      <div class="callout-title">The dashboard needs JavaScript</div>
+      <p>Enable JavaScript to manage this JellyFreedom instance.</p>
     </div>
-    <div style="margin-top:10px;font-size:11px;color:var(--muted)">Checked at ${since}</div>`;
-  } catch(e) {
-    result.innerHTML = `<div class="empty" style="color:var(--red)">Check failed: ${esc(e.message)}</div>`;
-  } finally {
-    btn.textContent = 'Run Check';
-    btn.disabled = false;
-  }
-}
+  </div>
+</noscript>
 
-// ── Logs ─────────────────────────────────────────────────────────────────────
-async function fetchLogs() {
-  const svc = document.getElementById('log-svc').value;
-  const n = document.getElementById('log-n').value;
-  const data = await apiFetch(`/api/logs?svc=${svc}&n=${n}`).catch(() => null);
-  if (!data) return;
-  const pre = document.getElementById('log-output');
-  pre.textContent = (data.lines || []).join('\n');
-  pre.scrollTop = pre.scrollHeight;
-}
-
-function toggleAutoLog(btn) {
-  if (autoLogTimer) {
-    clearInterval(autoLogTimer);
-    autoLogTimer = null;
-    btn.textContent = 'Auto';
-    btn.style.cssText = '';
-  } else {
-    fetchLogs();
-    autoLogTimer = setInterval(fetchLogs, 5000);
-    btn.textContent = 'Auto ●';
-    btn.style.background = 'var(--green)';
-    btn.style.color = '#000';
-    btn.style.borderColor = 'var(--green)';
-  }
-}
-
-// ── Users ────────────────────────────────────────────────────────────────────
-async function fetchUsers() {
-  const data = await apiFetch('/api/users').catch(() => null);
-  if (!data) return;
-  if (!data.length) {
-    document.getElementById('users-body').innerHTML = '<div class="empty">No users yet</div>';
-    return;
-  }
-  let html = `<table>
-    <thead><tr>
-      <th>Username</th><th>Source</th><th>Role</th><th>Created</th><th></th>
-    </tr></thead><tbody>`;
-  for (const u of data) {
-    const created = u.created_at ? new Date(u.created_at).toLocaleDateString() : '—';
-    html += `<tr>
-      <td><strong>${esc(u.username)}</strong></td>
-      <td><span class="badge ${u.source}">${esc(u.source)}</span></td>
-      <td>${u.is_admin ? '<span class="badge admin">admin</span>' : '<span style="color:var(--muted);font-size:12px">user</span>'}</td>
-      <td style="color:var(--muted);font-size:12px">${created}</td>
-      <td style="display:flex;gap:6px;justify-content:flex-end">
-        <button class="btn sm" onclick="toggleAdmin(${u.id}, ${u.is_admin}, '${esc(u.username)}')">${u.is_admin ? 'Remove admin' : 'Make admin'}</button>
-        <button class="btn sm danger" onclick="deleteUser(${u.id}, '${esc(u.username)}')">Delete</button>
-      </td>
-    </tr>`;
-  }
-  html += '</tbody></table>';
-  document.getElementById('users-body').innerHTML = html;
-}
-
-async function createUser() {
-  const username = document.getElementById('new-username').value.trim();
-  const password = document.getElementById('new-password').value;
-  const isAdmin = document.getElementById('new-is-admin').checked;
-  const msg = document.getElementById('create-msg');
-  if (!username || password.length < 8) {
-    showMsg(msg, 'Username required and password must be ≥8 characters', 'err');
-    return;
-  }
-  try {
-    await apiFetch('/api/users', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({username, password, is_admin: isAdmin}),
-    });
-    showMsg(msg, `User "${username}" created`, 'ok');
-    document.getElementById('new-username').value = '';
-    document.getElementById('new-password').value = '';
-    document.getElementById('new-is-admin').checked = false;
-    fetchUsers();
-  } catch(e) { showMsg(msg, e.message, 'err'); }
-}
-
-async function toggleAdmin(id, current, name) {
-  try {
-    await apiFetch(`/api/users/${id}`, {
-      method: 'PATCH',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({is_admin: !current}),
-    });
-    toast(`${name}: ${current ? 'admin removed' : 'made admin'}`);
-    fetchUsers();
-  } catch(e) { toast(e.message, false); }
-}
-
-async function deleteUser(id, name) {
-  if (!confirm(`Delete user "${name}"? This cannot be undone.`)) return;
-  try {
-    await apiFetch(`/api/users/${id}`, {method: 'DELETE'});
-    toast(`Deleted ${name}`);
-    fetchUsers();
-  } catch(e) { toast(e.message, false); }
-}
-
-async function loadJellyfinUsers() {
-  const btn = document.getElementById('jf-load-btn');
-  const body = document.getElementById('jf-users-body');
-  btn.disabled = true;
-  btn.textContent = 'Loading…';
-  try {
-    const users = await apiFetch('/api/jellyfin/users');
-    if (!users || !users.length) {
-      body.innerHTML = '<div class="empty">No Jellyfin users found</div>';
-      return;
-    }
-    let html = `<table><thead><tr><th>Jellyfin user</th><th></th></tr></thead><tbody>`;
-    for (const u of users) {
-      if (u.imported) {
-        html += `<tr>
-          <td>${esc(u.name)}</td>
-          <td><span style="color:var(--muted);font-size:12px">already imported</span></td>
-        </tr>`;
-      } else {
-        html += `<tr>
-          <td>${esc(u.name)}</td>
-          <td><button class="btn sm primary" onclick="importUser('${esc(u.id)}','${esc(u.name)}')">Import</button></td>
-        </tr>`;
-      }
-    }
-    html += '</tbody></table>';
-    body.innerHTML = html;
-  } catch(e) {
-    body.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Load Jellyfin users';
-  }
-}
-
-async function importUser(jellyfinUserID, name) {
-  try {
-    await apiFetch('/api/users/import', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({jellyfin_user_id: jellyfinUserID, username: name}),
-    });
-    toast(`Imported ${name}`);
-    fetchUsers();
-    loadJellyfinUsers();
-  } catch(e) { toast(e.message, false); }
-}
-
-// ── Tasks ─────────────────────────────────────────────────────────────────────
-let tasksTimer = null;
-
-async function fetchTasks() {
-  const data = await apiFetch('/api/tasks').catch(() => null);
-  if (!data) return;
-  if (!data.length) {
-    document.getElementById('tasks-body').innerHTML = '<div class="empty">No tasks registered</div>';
-    return;
-  }
-  // Group by category
-  const cats = {};
-  for (const t of data) {
-    (cats[t.category] = cats[t.category] || []).push(t);
-  }
-  const order = ['library', 'metadata', 'system'];
-  const catNames = {library: 'Library', metadata: 'Metadata', system: 'System'};
-  let html = '';
-  for (const cat of order) {
-    if (!cats[cat]) continue;
-    html += `<div class="task-category">${catNames[cat] || cat}</div>`;
-    for (const t of cats[cat]) html += renderTaskRow(t);
-  }
-  // Any uncategorised
-  for (const cat of Object.keys(cats)) {
-    if (order.includes(cat)) continue;
-    html += `<div class="task-category">${esc(cat)}</div>`;
-    for (const t of cats[cat]) html += renderTaskRow(t);
-  }
-  document.getElementById('tasks-body').innerHTML = html;
-}
-
-function renderTaskRow(t) {
-  const dot = t.status === 'running' ? 'running' : t.status === 'error' ? 'error'
-    : t.status === 'never' ? 'never' : 'idle';
-  const last = t.last_run ? relTime(t.last_run) : 'never';
-  const next = t.next_run ? relTime(t.next_run) : (t.interval && t.interval.includes('manual') ? 'manual' : '—');
-  const dur = t.last_duration ? ` · ${t.last_duration}` : '';
-  const running = t.status === 'running';
-  return `<div class="task-row">
-    <span class="task-dot ${dot}"></span>
-    <div style="flex:1;min-width:0">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span class="task-name">${esc(t.name)}</span>
-        <span class="task-interval">${esc(t.interval || 'manual')}</span>
-      </div>
-      <div class="task-desc">${esc(t.description)}</div>
-      ${t.last_error ? `<div class="task-err">⚠ ${esc(t.last_error)}</div>` : ''}
-    </div>
-    <div class="task-meta">
-      last: ${last}${dur}<br>next: ${next}<br>runs: ${t.run_count}
-    </div>
-    <button class="btn sm" ${running ? 'disabled' : ''} onclick="runTask('${esc(t.name)}')">${running ? 'Running…' : 'Run now'}</button>
-  </div>`;
-}
-
-async function runTask(name) {
-  try {
-    await apiFetch(`/api/tasks/${encodeURIComponent(name)}/run`, {method: 'POST'});
-    toast(`Triggered ${name}`);
-    setTimeout(fetchTasks, 600);
-    // Poll a few times to catch completion
-    let n = 0;
-    const poll = setInterval(() => { fetchTasks(); if (++n >= 6) clearInterval(poll); }, 2000);
-  } catch(e) { toast(e.message, false); }
-}
-
-function relTime(iso) {
-  const then = new Date(iso).getTime();
-  const now = Date.now();
-  const diff = Math.round((now - then) / 1000); // seconds, positive = past
-  const abs = Math.abs(diff);
-  const fmt = (n, u) => `${n}${u}`;
-  let s;
-  if (abs < 60) s = fmt(abs, 's');
-  else if (abs < 3600) s = fmt(Math.round(abs/60), 'm');
-  else if (abs < 86400) s = fmt(Math.round(abs/3600), 'h');
-  else s = fmt(Math.round(abs/86400), 'd');
-  return diff >= 0 ? `${s} ago` : `in ${s}`;
-}
-
-// ── Settings ──────────────────────────────────────────────────────────────────
-async function fetchSettings() {
-  const data = await apiFetch('/api/settings').catch(() => null);
-  if (!data) return;
-  renderConnections(data.connections || {});
-  renderQuality(data.quality || {});
-  renderCache(data.cache || {});
-  renderLibraries(data.libraries || []);
-}
-
-function renderConnections(c) {
-  const keyField = (id, set) =>
-    `<input type="password" id="${id}" placeholder="${set ? '•••••••• (set — leave blank to keep)' : 'API key'}" autocomplete="off">`;
-  document.getElementById('conn-forms').innerHTML = `
-    <div class="conn-row">
-      <div class="conn-name">TMDB</div>
-      <div class="conn-fields">
-        ${keyField('tmdb-key', c.tmdb && c.tmdb.key_set)}
-      </div>
-      <button class="btn sm" onclick="testConn('tmdb')">Test</button>
-      <span class="conn-result" id="test-tmdb"></span>
-    </div>
-    <div class="conn-row">
-      <div class="conn-name">Prowlarr</div>
-      <div class="conn-fields">
-        <input type="text" id="prowlarr-url" placeholder="http://127.0.0.1:9696" value="${esc((c.prowlarr&&c.prowlarr.url)||'')}">
-        ${keyField('prowlarr-key', c.prowlarr && c.prowlarr.key_set)}
-      </div>
-      <button class="btn sm" onclick="testConn('prowlarr')">Test</button>
-      <span class="conn-result" id="test-prowlarr"></span>
-    </div>
-    <div class="conn-row">
-      <div class="conn-name">Jellyfin</div>
-      <div class="conn-fields">
-        <input type="text" id="jellyfin-url" placeholder="http://127.0.0.1:8096" value="${esc((c.jellyfin&&c.jellyfin.url)||'')}">
-        ${keyField('jellyfin-key', c.jellyfin && c.jellyfin.key_set)}
-      </div>
-      <button class="btn sm" onclick="testConn('jellyfin')">Test</button>
-      <span class="conn-result" id="test-jellyfin"></span>
-    </div>
-    <div class="conn-row">
-      <div class="conn-name">TorrServer</div>
-      <div class="conn-fields">
-        <input type="text" id="torrserver-url" placeholder="http://10.42.0.2:8090" value="${esc((c.torrserver&&c.torrserver.url)||'')}">
-      </div>
-      <button class="btn sm" onclick="testConn('torrserver')">Test</button>
-      <span class="conn-result" id="test-torrserver"></span>
-    </div>
-    <div style="margin-top:12px"><button class="btn primary" onclick="saveConnections()">Save connections</button>
-      <span class="msg" id="conn-msg" style="display:none"></span></div>`;
-}
-
-async function testConn(service) {
-  const el = document.getElementById('test-' + service);
-  el.textContent = 'testing…'; el.className = 'conn-result testing';
-  const body = {service};
-  if (service !== 'tmdb') body.url = (document.getElementById(service + '-url')||{}).value || '';
-  if (service !== 'torrserver') body.key = (document.getElementById(service + '-key')||{}).value || '';
-  try {
-    const d = await apiFetch('/api/settings/connections/test', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    el.textContent = d.message;
-    el.className = 'conn-result ' + (d.ok ? 'ok' : 'err');
-  } catch(e) { el.textContent = e.message; el.className = 'conn-result err'; }
-}
-
-async function saveConnections() {
-  const body = {
-    tmdb_key: val('tmdb-key'),
-    prowlarr_url: val('prowlarr-url'), prowlarr_key: val('prowlarr-key'),
-    jellyfin_url: val('jellyfin-url'), jellyfin_key: val('jellyfin-key'),
-    torrserver_url: val('torrserver-url'),
-  };
-  const msg = document.getElementById('conn-msg');
-  try {
-    await apiFetch('/api/settings/connections', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    showMsg(msg, 'Connections saved & applied', 'ok');
-    toast('Connections saved');
-    setTimeout(fetchSettings, 600);
-  } catch(e) { showMsg(msg, e.message, 'err'); }
-}
-
-function renderQuality(q) {
-  document.getElementById('quality-form').innerHTML = `
-    <div class="set-grid">
-      <label>Min seeders</label><input type="number" id="q-min-seeders" value="${q.min_seeders||0}">
-      <label>Max size (GB)</label><input type="number" id="q-max-size" value="${q.max_size_gb||0}">
-      <label>Reject camera copies</label>
-        <label class="set-toggle"><input type="checkbox" id="q-reject-cam" ${q.reject_cam?'checked':''}> Skip CAM / TS / screener rips</label>
-      <label>Preferred video codecs</label><input type="text" id="q-video" value="${esc(q.video_codecs||'')}" placeholder="h264, h265, hevc">
-      <label>Preferred audio codecs</label><input type="text" id="q-audio" value="${esc(q.audio_codecs||'')}" placeholder="aac, ac3, eac3">
-      <label>Preferred containers</label><input type="text" id="q-containers" value="${esc(q.containers||'')}" placeholder="mp4, mkv">
-    </div>
-    <div style="margin-top:12px"><button class="btn primary" onclick="saveQuality()">Save quality settings</button>
-      <span class="msg" id="quality-msg" style="display:none"></span></div>`;
-}
-
-async function saveQuality() {
-  const body = {
-    min_seeders: parseInt(val('q-min-seeders'))||0,
-    max_size_gb: parseInt(val('q-max-size'))||0,
-    reject_cam: document.getElementById('q-reject-cam').checked,
-    video_codecs: val('q-video'), audio_codecs: val('q-audio'), containers: val('q-containers'),
-  };
-  const msg = document.getElementById('quality-msg');
-  try {
-    await apiFetch('/api/settings/quality', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    showMsg(msg, 'Saved — applies to new requests immediately', 'ok'); toast('Quality settings saved');
-  } catch(e) { showMsg(msg, e.message, 'err'); }
-}
-
-function renderCache(c) {
-  document.getElementById('cache-form').innerHTML = `
-    <div class="set-grid">
-      <label>Cache mode</label>
-        <select id="c-mode"><option value="ram" ${c.mode==='ram'?'selected':''}>RAM (fastest)</option><option value="disk" ${c.mode==='disk'?'selected':''}>Disk (low-RAM hosts)</option></select>
-      <label>Cache size (MB)</label><input type="number" id="c-size" value="${c.size_mb||0}">
-      <label>Disk path <span style="color:var(--muted)">(disk mode)</span></label><input type="text" id="c-path" value="${esc(c.path||'')}" placeholder="/srv/jellyfreedom/cache">
-      <label>Peer connections</label><input type="number" id="c-conns" value="${c.connections||0}">
-      <label>Disconnect timeout (s)</label><input type="number" id="c-disc" value="${c.disconnect_s||0}">
-      <label>Add-trackers mode</label>
-        <select id="c-retr"><option value="0" ${c.retrackers===0?'selected':''}>Off</option><option value="1" ${c.retrackers===1?'selected':''}>Add</option><option value="2" ${c.retrackers===2?'selected':''}>Replace</option></select>
-      <label>Upload limit (KB/s)</label><input type="number" id="c-up" value="${c.upload_kb||0}">
-    </div>
-    <div style="margin-top:12px"><button class="btn primary" onclick="saveCache()">Save & apply to TorrServer</button>
-      <span class="msg" id="cache-msg" style="display:none"></span></div>`;
-}
-
-async function saveCache() {
-  const body = {
-    mode: val('c-mode'), size_mb: parseInt(val('c-size'))||0, path: val('c-path'),
-    connections: parseInt(val('c-conns'))||0, disconnect_s: parseInt(val('c-disc'))||0,
-    retrackers: parseInt(val('c-retr'))||0, upload_kb: parseInt(val('c-up'))||0,
-  };
-  const msg = document.getElementById('cache-msg');
-  try {
-    await apiFetch('/api/settings/cache', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    showMsg(msg, 'Saved & applied to TorrServer', 'ok'); toast('Cache settings applied');
-  } catch(e) { showMsg(msg, e.message, 'err'); }
-}
-
-function renderLibraries(libs) {
-  if (!libs.length) { document.getElementById('libraries-list').innerHTML = '<div class="empty">None configured</div>'; return; }
-  document.getElementById('libraries-list').innerHTML = `<table><thead><tr><th>Name</th><th>Type</th><th>Path</th><th>Default</th></tr></thead><tbody>`
-    + libs.map(l => `<tr><td><strong>${esc(l.name)}</strong></td><td><span class="badge ${l.type==='tv'?'jellyfin':'local'}">${esc(l.type)}</span></td><td style="font-family:monospace;font-size:12px">${esc(l.path)}</td><td>${l.default?'✓':''}</td></tr>`).join('')
-    + '</tbody></table>';
-}
-
-function val(id) { const e = document.getElementById(id); return e ? e.value.trim() : ''; }
-
-async function changePassword() {
-  const cur = document.getElementById('pw-current').value;
-  const nw = document.getElementById('pw-new').value;
-  const nw2 = document.getElementById('pw-new2').value;
-  const msg = document.getElementById('pw-msg');
-  if (nw !== nw2) { showMsg(msg, 'Passwords do not match', 'err'); return; }
-  if (nw.length < 8) { showMsg(msg, 'New password must be at least 8 characters', 'err'); return; }
-  try {
-    await apiFetch('/api/auth/change-password', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({current: cur, new: nw}),
-    });
-    showMsg(msg, 'Password updated', 'ok');
-    document.getElementById('pw-current').value = '';
-    document.getElementById('pw-new').value = '';
-    document.getElementById('pw-new2').value = '';
-  } catch(e) { showMsg(msg, e.message, 'err'); }
-}
-
-// ── Init ──────────────────────────────────────────────────────────────────────
-fetchStatus();
-setInterval(fetchStatus, 30000);
-</script>
+<script type="module" src="dashboard.js"></script>
 </body>
 </html>

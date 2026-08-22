@@ -1,9 +1,10 @@
 # NOTE: .gitignore does NOT support trailing inline comments — a '#' is only a comment at the
 # START of a line. So every pattern below is on its own clean line.
 
-# ── Claude Code: local tooling + the internal design/discussion docs it maintains ──
-# These are dev notes, decisions, and personal context — NOT part of the release.
-# (INSTALL.md is the user-facing install guide and intentionally STAYS tracked.)
+# ── Claude Code / AI assistant local tooling ──
+# CLAUDE.md is the private agent brief and stays out of the published repo.
+# Everything under docs/ IS tracked and published: the user guides (install, first-run,
+# configuration, troubleshooting, security, faq) and the design docs under docs/dev/.
 .claude/
 .claude.json
 CLAUDE.local.md
@@ -11,10 +12,6 @@ CLAUDE.local.md
 .cursor/
 .aider*
 CLAUDE.md
-ARCHITECTURE.md
-DECISIONS.md
-BUILD_PLAN.md
-OPERATIONS.md
 
 # ── Secrets & local state — NEVER publish ──
 # config.yaml = live keys (ship release/config.sample.yaml); *.db = users/sessions;
@@ -45,6 +42,8 @@ askpass*
 # ── Build artifacts ──
 bin/
 dist/
+*.test
+coverage.out
 
 # ── Editor / OS noise ──
 *.swp

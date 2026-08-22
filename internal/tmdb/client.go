@@ -6,23 +6,45 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
-const baseURL = "https://api.themoviedb.org/3"
+// DefaultBaseURL is the public TMDB API root. It is a per-Client field rather than a
+// package constant so tests can point a Client at an httptest server.
+const DefaultBaseURL = "https://api.themoviedb.org/3"
 
 type Client struct {
 	mu         sync.RWMutex
 	apiKey     string
+	baseURL    string
 	httpClient *http.Client
 }
 
 func New(apiKey string) *Client {
 	return &Client{
-		apiKey: apiKey,
+		apiKey:     apiKey,
+		baseURL:    DefaultBaseURL,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+// SetBaseURL overrides the API root (tests only — production always uses DefaultBaseURL).
+func (c *Client) SetBaseURL(u string) {
+	c.mu.Lock()
+	c.baseURL = strings.TrimRight(u, "/")
+	c.mu.Unlock()
+}
+
+// base returns the current API root under a read lock.
+func (c *Client) base() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.baseURL == "" {
+		return DefaultBaseURL
+	}
+	return c.baseURL
 }
 
 // Configure updates the API key at runtime under a write lock.
@@ -55,20 +77,20 @@ type Result struct {
 
 type searchResponse struct {
 	Results []struct {
-		ID            int    `json:"id"`
-		MediaType     string `json:"media_type"`
-		Title         string `json:"title"`         // movie
-		Name          string `json:"name"`          // tv
-		ReleaseDate   string `json:"release_date"`  // movie
-		FirstAirDate  string `json:"first_air_date"` // tv
-		Overview      string `json:"overview"`
-		PosterPath    string `json:"poster_path"`
+		ID           int    `json:"id"`
+		MediaType    string `json:"media_type"`
+		Title        string `json:"title"`          // movie
+		Name         string `json:"name"`           // tv
+		ReleaseDate  string `json:"release_date"`   // movie
+		FirstAirDate string `json:"first_air_date"` // tv
+		Overview     string `json:"overview"`
+		PosterPath   string `json:"poster_path"`
 	} `json:"results"`
 }
 
 func (c *Client) Search(query string) ([]Result, error) {
 	u := fmt.Sprintf("%s/search/multi?api_key=%s&query=%s&include_adult=false",
-		baseURL, c.key(), url.QueryEscape(query))
+		c.base(), c.key(), url.QueryEscape(query))
 
 	resp, err := c.httpClient.Get(u)
 	if err != nil {
@@ -149,9 +171,9 @@ type tvDetails struct {
 func (c *Client) Details(tmdbID int, mediaType string) (*Details, error) {
 	var endpoint string
 	if mediaType == "movie" {
-		endpoint = fmt.Sprintf("%s/movie/%d?api_key=%s", baseURL, tmdbID, c.key())
+		endpoint = fmt.Sprintf("%s/movie/%d?api_key=%s", c.base(), tmdbID, c.key())
 	} else {
-		endpoint = fmt.Sprintf("%s/tv/%d?api_key=%s", baseURL, tmdbID, c.key())
+		endpoint = fmt.Sprintf("%s/tv/%d?api_key=%s", c.base(), tmdbID, c.key())
 	}
 
 	resp, err := c.httpClient.Get(endpoint)
@@ -227,7 +249,7 @@ type seasonFull struct {
 }
 
 func (c *Client) TVSeasons(tmdbID int) ([]Season, error) {
-	url := fmt.Sprintf("%s/tv/%d?api_key=%s", baseURL, tmdbID, c.key())
+	url := fmt.Sprintf("%s/tv/%d?api_key=%s", c.base(), tmdbID, c.key())
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("tmdb tv seasons: %w", err)
@@ -260,7 +282,7 @@ func (c *Client) TVSeasons(tmdbID int) ([]Season, error) {
 }
 
 func (c *Client) TVEpisodes(tmdbID, seasonNum int) ([]Episode, error) {
-	url := fmt.Sprintf("%s/tv/%d/season/%d?api_key=%s", baseURL, tmdbID, seasonNum, c.key())
+	url := fmt.Sprintf("%s/tv/%d/season/%d?api_key=%s", c.base(), tmdbID, seasonNum, c.key())
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("tmdb tv episodes: %w", err)
@@ -396,7 +418,7 @@ func mergeRelated(selfID int, capN int, tiers ...[]SimilarItem) []SimilarItem {
 
 // collectionParts fetches the movies in a TMDB collection (the franchise: sequels/prequels).
 func (c *Client) collectionParts(collID int, label string) []SimilarItem {
-	resp, err := c.httpClient.Get(fmt.Sprintf("%s/collection/%d?api_key=%s", baseURL, collID, c.key()))
+	resp, err := c.httpClient.Get(fmt.Sprintf("%s/collection/%d?api_key=%s", c.base(), collID, c.key()))
 	if err != nil {
 		return nil
 	}
@@ -406,10 +428,10 @@ func (c *Client) collectionParts(collID int, label string) []SimilarItem {
 	}
 	var coll struct {
 		Parts []struct {
-			ID          int     `json:"id"`
-			Title       string  `json:"title"`
-			PosterPath  string  `json:"poster_path"`
-			ReleaseDate string  `json:"release_date"`
+			ID          int    `json:"id"`
+			Title       string `json:"title"`
+			PosterPath  string `json:"poster_path"`
+			ReleaseDate string `json:"release_date"`
 		} `json:"parts"`
 	}
 	if json.NewDecoder(resp.Body).Decode(&coll) != nil {
@@ -431,7 +453,7 @@ func (c *Client) collectionParts(collID int, label string) []SimilarItem {
 // personTitles fetches a cast member's other notable titles (priority-3 "Starring …" tier),
 // most popular first, so the related list still surfaces the same faces when there's no franchise.
 func (c *Client) personTitles(personID int, label string) []SimilarItem {
-	resp, err := c.httpClient.Get(fmt.Sprintf("%s/person/%d/combined_credits?api_key=%s", baseURL, personID, c.key()))
+	resp, err := c.httpClient.Get(fmt.Sprintf("%s/person/%d/combined_credits?api_key=%s", c.base(), personID, c.key()))
 	if err != nil {
 		return nil
 	}
@@ -491,11 +513,11 @@ func (c *Client) RichDetails(tmdbID int, mediaType string) (*RichDetails, error)
 	if mediaType == "movie" {
 		endpoint = fmt.Sprintf(
 			"%s/movie/%d?api_key=%s&append_to_response=credits,similar,recommendations,belongs_to_collection,release_dates",
-			baseURL, tmdbID, c.key())
+			c.base(), tmdbID, c.key())
 	} else {
 		endpoint = fmt.Sprintf(
 			"%s/tv/%d?api_key=%s&append_to_response=credits,similar,recommendations",
-			baseURL, tmdbID, c.key())
+			c.base(), tmdbID, c.key())
 	}
 	resp, err := c.httpClient.Get(endpoint)
 	if err != nil {
@@ -526,8 +548,10 @@ func (c *Client) RichDetails(tmdbID int, mediaType string) (*RichDetails, error)
 			VoteAverage  float64 `json:"vote_average"`
 			Runtime      int     `json:"runtime"`
 			ReleaseDate  string  `json:"release_date"`
-			Genres       []struct{ Name string `json:"name"` } `json:"genres"`
-			Credits      struct {
+			Genres       []struct {
+				Name string `json:"name"`
+			} `json:"genres"`
+			Credits struct {
 				Cast []struct {
 					ID          int    `json:"id"`
 					Name        string `json:"name"`
@@ -535,8 +559,8 @@ func (c *Client) RichDetails(tmdbID int, mediaType string) (*RichDetails, error)
 					ProfilePath string `json:"profile_path"`
 				} `json:"cast"`
 			} `json:"credits"`
-			Similar         movieList `json:"similar"`
-			Recommendations movieList `json:"recommendations"`
+			Similar             movieList `json:"similar"`
+			Recommendations     movieList `json:"recommendations"`
 			BelongsToCollection *struct {
 				ID         int    `json:"id"`
 				Name       string `json:"name"`
@@ -623,8 +647,10 @@ func (c *Client) RichDetails(tmdbID int, mediaType string) (*RichDetails, error)
 			VoteAverage  float64 `json:"vote_average"`
 			FirstAirDate string  `json:"first_air_date"`
 			Status       string  `json:"status"`
-			Genres       []struct{ Name string `json:"name"` } `json:"genres"`
-			Credits      struct {
+			Genres       []struct {
+				Name string `json:"name"`
+			} `json:"genres"`
+			Credits struct {
 				Cast []struct {
 					ID          int    `json:"id"`
 					Name        string `json:"name"`
@@ -709,14 +735,14 @@ type BrowseResult struct {
 }
 
 func (c *Client) Trending() ([]BrowseResult, error) {
-	url := fmt.Sprintf("%s/trending/all/week?api_key=%s", baseURL, c.key())
+	url := fmt.Sprintf("%s/trending/all/week?api_key=%s", c.base(), c.key())
 	return c.browseGet(url, "")
 }
 
 // Discover fetches movies or TV shows filtered by genres, companies, or networks.
 // params is a map of Torznab query params, e.g. {"with_genres":"28","sort_by":"popularity.desc"}
 func (c *Client) Discover(mediaType string, params map[string]string) ([]BrowseResult, error) {
-	base := fmt.Sprintf("%s/discover/%s?api_key=%s", baseURL, mediaType, c.key())
+	base := fmt.Sprintf("%s/discover/%s?api_key=%s", c.base(), mediaType, c.key())
 	for k, v := range params {
 		base += "&" + k + "=" + v
 	}
@@ -789,7 +815,7 @@ type DatedRelease struct {
 
 // UpcomingMovies returns theatrically/digitally upcoming movies with their dates.
 func (c *Client) UpcomingMovies() ([]DatedRelease, error) {
-	u := fmt.Sprintf("%s/movie/upcoming?api_key=%s&region=US", baseURL, c.key())
+	u := fmt.Sprintf("%s/movie/upcoming?api_key=%s&region=US", c.base(), c.key())
 	resp, err := c.httpClient.Get(u)
 	if err != nil {
 		return nil, fmt.Errorf("tmdb upcoming: %w", err)
@@ -827,7 +853,7 @@ func (c *Client) UpcomingMovies() ([]DatedRelease, error) {
 // OnTheAirPremieres returns TV shows currently on the air, enriched (best-effort,
 // capped) with their next episode air date so they can be placed on the calendar.
 func (c *Client) OnTheAirPremieres(limit int) ([]DatedRelease, error) {
-	u := fmt.Sprintf("%s/tv/on_the_air?api_key=%s", baseURL, c.key())
+	u := fmt.Sprintf("%s/tv/on_the_air?api_key=%s", c.base(), c.key())
 	resp, err := c.httpClient.Get(u)
 	if err != nil {
 		return nil, fmt.Errorf("tmdb on_the_air: %w", err)
@@ -870,7 +896,7 @@ func (c *Client) OnTheAirPremieres(limit int) ([]DatedRelease, error) {
 
 // nextEpisode returns (air_date, "S..E..", poster_url) for a TV show's next episode.
 func (c *Client) nextEpisode(tmdbID int) (string, string, string) {
-	u := fmt.Sprintf("%s/tv/%d?api_key=%s", baseURL, tmdbID, c.key())
+	u := fmt.Sprintf("%s/tv/%d?api_key=%s", c.base(), tmdbID, c.key())
 	resp, err := c.httpClient.Get(u)
 	if err != nil {
 		return "", "", ""
@@ -880,7 +906,7 @@ func (c *Client) nextEpisode(tmdbID int) (string, string, string) {
 		return "", "", ""
 	}
 	var t struct {
-		PosterPath      string `json:"poster_path"`
+		PosterPath       string `json:"poster_path"`
 		NextEpisodeToAir *struct {
 			AirDate       string `json:"air_date"`
 			SeasonNumber  int    `json:"season_number"`

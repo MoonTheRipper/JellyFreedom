@@ -2,15 +2,44 @@
 Description=TorrServer (inside vpntorrent netns)
 After=vpntorrent-netns.service network-online.target
 Requires=vpntorrent-netns.service
+# BindsTo, not just Requires: a plain `systemctl restart vpntorrent-netns` DELETES and
+# recreates the namespace. With Requires= alone, TorrServer keeps its file handle on the old,
+# now-orphaned namespace — it looks healthy, has no VPN, and quietly cannot reach anything.
+# BindsTo makes systemd stop TorrServer whenever the namespace unit goes away, so the two
+# always move together. (vpntorrent-netns.service pulls it back up with Wants=, which is why
+# this is a coupling and not a restart loop: stop propagates down, start propagates up, and
+# neither triggers the other again.)
+BindsTo=vpntorrent-netns.service
+# A crash loop (bad data-dir permissions, a corrupt database) must not restart every 3s
+# forever: 5 failures inside 5 minutes and systemd gives up and leaves the unit failed,
+# where the dashboard and `systemctl status` can actually show it.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 User=torrserver
 # systemd enters the named netns before dropping to User=torrserver
 NetworkNamespacePath=/var/run/netns/vpntorrent
+# The namespace pins its own resolvers; `ip netns exec` applies /etc/netns/<ns>/resolv.conf
+# automatically but systemd's NetworkNamespacePath= does not, so bind it in by hand.
+BindReadOnlyPaths=/etc/netns/vpntorrent/resolv.conf:/etc/resolv.conf
 ExecStart=/usr/local/bin/torrserver --port 8090 --path /var/lib/torrserver
 Restart=on-failure
 RestartSec=3
+
+# --- Hardening -------------------------------------------------------------
+# TorrServer needs exactly two things: its data directory and the network namespace. Note
+# that all of these build a mount namespace, which composes fine with NetworkNamespacePath=
+# (a different namespace type) and with BindReadOnlyPaths= (systemd applies bind mounts
+# inside the same mount namespace, after ProtectSystem=).
+NoNewPrivileges=yes
+ProtectSystem=strict
+# The one writable path. If you change --path above, change this too.
+ReadWritePaths=/var/lib/torrserver
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
 
 [Install]
 WantedBy=multi-user.target

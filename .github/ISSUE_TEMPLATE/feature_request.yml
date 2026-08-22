@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest an improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check [`docs/dev/decisions.md`](../blob/main/docs/dev/decisions.md) and the
+        "Settled constraints" section of
+        [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) first. Docker support, paid debrid
+        as the primary path, a rewrite in another language, and Radarr/Sonarr-driven
+        availability are settled decisions and will be closed.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation you are in, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried or considered instead?
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: This does not require Docker.
+          required: true
+        - label: This does not require a paid debrid service.
+          required: true
+        - label: I have read docs/dev/decisions.md and this does not reverse a decision recorded there.
+          required: true

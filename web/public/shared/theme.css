@@ -1,0 +1,222 @@
+/* ==========================================================================
+   JellyFreedom — shared design tokens + primitives.
+   ONE copy, loaded by the public app, the dashboard and the auth pages so all
+   three read as the same product. Page-specific rules live in app.css /
+   dashboard.css / auth.css.
+   Dark-only is deliberate for a media app.
+   ========================================================================== */
+
+:root{
+  --bg:#0a0b10;
+  --surface:#13151f;
+  --surface2:#1a1d2a;
+  --sidebar:#111420;
+  --border:#252836;
+  --border-strong:#333850;
+
+  --text:#e6e8f3;
+  /* --muted / --muted2 are used for BODY text, so both must clear WCAG AA
+     (4.5:1) on --bg and on --surface. Measured: muted 6.3:1, muted2 8.9:1. */
+  --muted:#8a90b2;
+  --muted2:#aab0d2;
+
+  --green:#4ade80;--red:#f87171;--yellow:#fbbf24;--blue:#60a5fa;--purple:#a78bfa;
+
+  /* brand — matches the purple->cyan favicon */
+  --brand-1:#aa5cc3;--brand-2:#00a4dc;
+  --grad:linear-gradient(135deg,#aa5cc3 0%,#7c5cff 45%,#00a4dc 100%);
+  --accent:#8b6cff;--accent-h:#7857ff;--accent-soft:rgba(139,108,255,.14);
+  --overlay:rgba(0,0,0,.7);
+
+  --r-sm:8px;--r-md:12px;--r-lg:16px;--r-xl:22px;
+  --sh-1:0 1px 2px rgba(0,0,0,.4);
+  --sh-2:0 6px 20px rgba(0,0,0,.45);
+  --sh-3:0 18px 50px rgba(0,0,0,.6);
+  --glow:0 0 0 1px rgba(139,108,255,.35),0 8px 30px rgba(124,92,255,.25);
+
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Inter,Roboto,system-ui,sans-serif;
+  --mono:ui-monospace,'Cascadia Code','Fira Code',Menlo,Consolas,monospace;
+
+  /* notch / home-bar safe areas */
+  --sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);
+  --sal:env(safe-area-inset-left,0px);--sar:env(safe-area-inset-right,0px);
+}
+
+/* ── Reset ───────────────────────────────────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--font);
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+a{color:inherit;text-decoration:none}
+button{font-family:inherit;cursor:pointer;color:inherit}
+img{display:block}
+code,pre{font-family:var(--mono)}
+
+/* ── Focus: one visible ring everywhere, keyboard + D-pad only ────────────── */
+:focus{outline:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+/* TV remotes and some browsers only ever emit :focus — make that visible too
+   for anything we made focusable by hand. */
+[tabindex]:focus,[role="button"]:focus{outline:2px solid var(--accent);outline-offset:2px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* ── Icons (SVG sprite injected by shared/icons.js) ───────────────────────── */
+.ic{width:1em;height:1em;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round;vertical-align:-.125em}
+.ic-fill{fill:currentColor;stroke:none}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  background:var(--surface);border:1px solid var(--border);color:var(--text);
+  padding:7px 14px;border-radius:var(--r-sm);cursor:pointer;font-size:13px;
+  font-weight:600;white-space:nowrap;transition:background .12s,border-color .12s,color .12s}
+.btn:hover{background:var(--surface2);border-color:var(--border-strong)}
+.btn.primary{background:var(--grad);border-color:transparent;color:#fff;
+  box-shadow:0 4px 14px rgba(124,92,255,.25)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.danger:hover{background:#450a0a;border-color:#7f1d1d;color:var(--red)}
+.btn.ghost{background:transparent}
+.btn.sm{padding:4px 10px;font-size:11px}
+.btn:disabled{opacity:.45;cursor:default}
+.btn:disabled:hover{background:var(--surface);border-color:var(--border)}
+
+/* ── Badges / dots / pills ───────────────────────────────────────────────── */
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:2px 7px;
+  border-radius:10px;font-weight:700;white-space:nowrap}
+.badge.active,.badge.ok{background:#14532d;color:var(--green)}
+.badge.failed,.badge.error{background:#450a0a;color:var(--red)}
+.badge.inactive,.badge.stale{background:#1c1f2e;color:var(--muted)}
+.badge.unknown,.badge.warn{background:#3d2a00;color:var(--yellow)}
+.badge.local{background:#1e3a5f;color:var(--blue)}
+.badge.jellyfin{background:#3b1f5e;color:var(--purple)}
+.badge.admin{background:#3d2510;color:var(--yellow)}
+.badge.movie{background:rgba(30,58,95,.85);color:var(--blue)}
+.badge.tv{background:rgba(59,31,94,.85);color:var(--purple)}
+
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
+.dot.active,.dot.ok{background:var(--green);box-shadow:0 0 5px var(--green)}
+.dot.failed,.dot.err{background:var(--red);box-shadow:0 0 5px var(--red)}
+.dot.inactive{background:var(--muted)}
+.dot.unknown,.dot.degraded{background:var(--yellow);box-shadow:0 0 5px var(--yellow)}
+
+.pill{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;white-space:nowrap}
+.pill.ok{background:#14532d;color:var(--green)}
+.pill.warn{background:#450a0a;color:var(--red)}
+.pill.neutral{background:#1c2033;color:var(--muted)}
+
+/* ── Callouts: the one banner style used for setup / errors / warnings ───── */
+.callout{display:flex;gap:11px;align-items:flex-start;border-radius:var(--r-md);
+  padding:13px 15px;font-size:13px;line-height:1.55;margin-bottom:14px;
+  border:1px solid var(--border);background:var(--surface)}
+.callout .ic{width:17px;height:17px;margin-top:2px}
+.callout-body{flex:1;min-width:0}
+.callout-title{font-weight:700;margin-bottom:3px;color:var(--text)}
+.callout p{color:var(--muted2)}
+.callout-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.callout.warn{border-color:rgba(251,191,36,.4);background:rgba(120,53,15,.16)}
+.callout.warn .ic{color:var(--yellow)}
+.callout.err{border-color:rgba(248,113,113,.4);background:rgba(127,29,29,.2)}
+.callout.err .ic{color:var(--red)}
+.callout.info{border-color:rgba(96,165,250,.35);background:rgba(30,58,95,.22)}
+.callout.info .ic{color:var(--blue)}
+.callout.good{border-color:rgba(74,222,128,.35);background:rgba(20,83,45,.2)}
+.callout.good .ic{color:var(--green)}
+
+/* Bulleted list inside a callout (setup banner, restart failures). */
+.setup-list{margin:10px 0 0;padding-left:18px;font-size:13px;color:var(--muted2);line-height:1.6}
+.setup-list li{margin-bottom:5px}
+.setup-list strong{color:var(--text)}
+
+/* Inline form/status message */
+.msg{font-size:12px;padding:7px 11px;border-radius:5px;margin-top:6px;display:none}
+.msg.ok{background:#14532d;color:var(--green);display:block}
+.msg.err{background:#450a0a;color:var(--red);display:block}
+
+/* ── Empty / error / loading states ──────────────────────────────────────── */
+.empty{color:var(--muted);font-size:13px;padding:12px 0}
+.empty-state{text-align:center;padding:60px 20px;color:var(--muted)}
+.empty-state .ic{width:42px;height:42px;margin-bottom:12px;color:var(--border-strong)}
+.empty-state p{font-size:15px}
+.empty-state .sub{font-size:13px;margin-top:6px;color:var(--muted)}
+.loading{text-align:center;color:var(--muted);padding:40px;font-size:14px}
+
+/* Skeleton shimmer — used instead of "Loading…" wherever a shape is known. */
+.skeleton{background:linear-gradient(90deg,var(--surface) 25%,var(--surface2) 50%,var(--surface) 75%);
+  background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:var(--r-sm)}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.sk-line{height:11px;margin:7px 0}
+.sk-row{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;
+  border:1px solid var(--border);border-radius:10px;margin-bottom:8px}
+
+/* ── Toast stack ─────────────────────────────────────────────────────────── */
+#toast-stack{position:fixed;bottom:22px;right:22px;z-index:400;display:flex;
+  flex-direction:column-reverse;gap:8px;align-items:flex-end;pointer-events:none;
+  max-width:min(340px,calc(100vw - 24px))}
+.toast{display:flex;align-items:flex-start;gap:9px;background:var(--surface);
+  border:1px solid var(--border);border-left-width:3px;border-radius:10px;
+  padding:11px 15px;font-size:13px;color:var(--text);box-shadow:var(--sh-2);
+  pointer-events:auto;opacity:0;transform:translateY(6px);
+  transition:opacity .22s,transform .22s}
+.toast.show{opacity:1;transform:none}
+.toast.ok{border-left-color:var(--green)}
+.toast.err{border-left-color:var(--red)}
+.toast .ic{width:16px;height:16px;margin-top:1px}
+.toast.ok .ic{color:var(--green)}
+.toast.err .ic{color:var(--red)}
+.toast-text{flex:1;min-width:0}
+.toast-action{background:none;border:none;color:var(--accent);font-size:12px;
+  font-weight:700;padding:0;white-space:nowrap;text-decoration:underline}
+
+/* ── Stage stepper (queue progress) ──────────────────────────────────────── */
+.stepper{display:flex;align-items:center;gap:4px;margin-top:7px;flex-wrap:wrap}
+.step-node{display:flex;align-items:center;gap:4px;font-size:10px;font-weight:600;
+  color:var(--muted);white-space:nowrap}
+.step-node .pip{width:7px;height:7px;border-radius:50%;background:var(--border-strong)}
+.step-node.done{color:var(--muted2)}
+.step-node.done .pip{background:var(--green)}
+.step-node.now{color:var(--blue)}
+.step-node.now .pip{background:var(--blue);animation:pulse 1s infinite}
+.step-node.fail{color:var(--red)}
+.step-node.fail .pip{background:var(--red)}
+.step-sep{width:9px;height:1px;background:var(--border-strong);flex-shrink:0}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* ── Popover (health dot) ────────────────────────────────────────────────── */
+.popover{position:absolute;z-index:120;background:var(--surface);
+  border:1px solid var(--border-strong);border-radius:var(--r-md);
+  box-shadow:var(--sh-3);padding:14px 16px;min-width:230px;font-size:13px}
+.popover h4{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.06em;margin-bottom:10px}
+.pop-row{display:flex;align-items:center;gap:9px;padding:5px 0}
+.pop-row .name{flex:1;color:var(--text)}
+.pop-row .state{font-size:11px;font-weight:700}
+.pop-row .state.ok{color:var(--green)}
+.pop-row .state.bad{color:var(--red)}
+.pop-row .state.unknown{color:var(--muted)}
+
+/* Persistent warning strip (VPN down) */
+.warn-strip{display:flex;align-items:center;gap:9px;padding:9px max(24px,var(--sal));
+  background:rgba(127,29,29,.35);border-bottom:1px solid rgba(248,113,113,.4);
+  font-size:13px;font-weight:600;color:#fecaca}
+.warn-strip .ic{width:16px;height:16px;color:var(--red)}
+.warn-strip[hidden]{display:none}
+
+/* ── Forms ───────────────────────────────────────────────────────────────── */
+input,select,textarea{font-family:inherit}
+input[type=text],input[type=password],input[type=number],input[type=search],select{
+  background:var(--surface);border:1px solid var(--border);color:var(--text);
+  padding:8px 11px;border-radius:var(--r-sm);font-size:13px;outline:none;
+  transition:border-color .15s,box-shadow .15s}
+input:focus-visible,select:focus-visible,textarea:focus-visible{
+  border-color:var(--accent);outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
+
+/* ── Motion preferences ──────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;scroll-behavior:auto !important}
+}
+
+@media (max-width: 760px){
+  #toast-stack{right:12px;left:12px;bottom:calc(16px + var(--sab));max-width:none;align-items:stretch}
+}
