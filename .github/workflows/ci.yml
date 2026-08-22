@@ -310,10 +310,31 @@ jobs:
           if [ "$state" != "active" ]; then
             echo "::error::flaresolverr is '$state', expected active"; exit 1
           fi
-          resp="$(curl -fsS -m 90 -X POST "$FLARESOLVERR/v1" \
-                   -H 'Content-Type: application/json' \
-                   -d '{"cmd":"request.get","url":"https://example.com","maxTimeout":60000}')" || {
-            echo "::error::FlareSolverr /v1 request.get failed outright"; exit 1; }
+          # Retry. The invariant under test is "FlareSolverr CAN solve a request", not
+          # "the first attempt always wins". It drives a real Chrome, and a solve issued
+          # immediately after the installer's own probe can lose a race for the browser on a
+          # constrained runner — observed on ubuntu-22.04, where the installer's probe
+          # succeeded and this assertion failed one second later on the same box. Retrying
+          # keeps the regression (a browser that can never solve still fails all attempts)
+          # without failing the build on a flake.
+          resp=""
+          for attempt in 1 2 3; do
+            if resp="$(curl -fsS -m 90 -X POST "$FLARESOLVERR/v1" \
+                       -H 'Content-Type: application/json' \
+                       -d '{"cmd":"request.get","url":"https://example.com","maxTimeout":60000}')" \
+               && echo "$resp" | jq -e '.status == "ok"' >/dev/null 2>&1; then
+              echo "solve succeeded on attempt $attempt"
+              break
+            fi
+            echo "attempt $attempt did not solve; retrying after a settle delay"
+            echo "$resp" | head -c 300; echo
+            resp=""
+            sleep 15
+          done
+          [ -n "$resp" ] || {
+            echo "::error::FlareSolverr could not solve a request in 3 attempts"
+            journalctl -u flaresolverr -n 60 --no-pager | tail -30 || true
+            exit 1; }
           echo "$resp" | head -c 800; echo
           echo "$resp" | jq -e '.status == "ok"' > /dev/null \
             || { echo "::error::FlareSolverr did not return status=ok — it is listening but not solving"; exit 1; }
