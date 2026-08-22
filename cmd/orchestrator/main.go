@@ -1036,6 +1036,23 @@ func main() {
 	const resolveDeadline = 90 * time.Second
 
 	playHandler := func(w http.ResponseWriter, r *http.Request, mediaType string, tmdbID, season, episode int) {
+		// Log every playback attempt and its outcome.
+		//
+		// This used to log ONLY on rejection or error, so a user watching `journalctl -u
+		// jellyfreedom` while pressing play in Jellyfin saw an empty screen whether playback
+		// worked or not — reported as "nothing comes up and the logs are also empty", which
+		// made the problem impossible to diagnose from the outside. A successful play is the
+		// single most useful line this service can emit.
+		playStart := time.Now()
+		slog.Info("play: request",
+			"type", mediaType, "tmdb", tmdbID, "s", season, "e", episode,
+			"remote", r.RemoteAddr, "range", r.Header.Get("Range"), "ua", r.UserAgent())
+		defer func() {
+			slog.Info("play: finished",
+				"type", mediaType, "tmdb", tmdbID, "s", season, "e", episode,
+				"took", time.Since(playStart).Round(time.Millisecond).String())
+		}()
+
 		// Capability check. /play cannot require a session (Jellyfin fetches .strm URLs
 		// anonymously), so possession of the HMAC tag in the URL — which only a .strm this
 		// server wrote can contain — is the credential. Enforcement is switched on only
