@@ -252,7 +252,7 @@ jobs:
 
       - name: Wait for services to settle
         run: |
-          wait_http() {   # wait_http <name> <url> <seconds>
+          settle_http() {   # settle_http <name> <url> <seconds> — non-fatal warm-up
             local name="$1" url="$2" deadline=$(( SECONDS + $3 )) code
             while [ "$SECONDS" -lt "$deadline" ]; do
               code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$url" || true)"
@@ -264,15 +264,20 @@ jobs:
             echo "::warning::$name never answered at $url within $3s"
             return 1
           }
-          wait_http orchestrator "$ORCHESTRATOR/healthz" 60          || true
-          wait_http jellyfin     "$JELLYFIN/System/Info/Public" 120  || true
-          wait_http prowlarr     "$PROWLARR/ping" 120                || true
+          # NOTE: settle_* is the NON-FATAL warm-up (|| true) — it gives slow services a head
+          # start so the real assertions are not the first thing to touch them. It is
+          # deliberately named differently from wait_http in .github/scripts/wait-for.sh,
+          # which ASSERTS and takes (url, timeout, jq-filter). Two same-named helpers with
+          # different signatures in one workflow is a trap.
+          settle_http orchestrator "$ORCHESTRATOR/healthz" 60          || true
+          settle_http jellyfin     "$JELLYFIN/System/Info/Public" 120  || true
+          settle_http prowlarr     "$PROWLARR/ping" 120                || true
           # FlareSolverr fetches a chromedriver on first start — it is the slowest.
           # Skipped entirely on arm64, where it is deliberately not installed.
           if [ "${{ matrix.arch }}" = "amd64" ]; then
-            wait_http flaresolverr "$FLARESOLVERR/" 240              || true
+            settle_http flaresolverr "$FLARESOLVERR/" 240            || true
           fi
-          wait_http torrserver   "$TORRSERVER/echo" 90               || true
+          settle_http torrserver   "$TORRSERVER/echo" 90             || true
 
       - name: Unit states
         run: |
@@ -338,7 +343,7 @@ jobs:
               # An honest degraded report is a PASS: the contract is accuracy, not perfection.
               # The rest of the stack must still be healthy.
               echo "OK: reported degraded honestly rather than claiming success"
-              curl -fsS -m 20 "$ORCH/healthz" | jq -e '.status == "ok"' >/dev/null \
+              curl -fsS -m 20 "$ORCHESTRATOR/healthz" | jq -e '.status == "ok"' >/dev/null \
                 || { echo "::error::orchestrator unhealthy alongside a degraded FlareSolverr"; exit 1; }
               ;;
             *)
