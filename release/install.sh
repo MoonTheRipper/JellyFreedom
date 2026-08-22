@@ -335,7 +335,7 @@ fi
 
 # Persist the uninstaller and the control CLI. The one-liner deletes its temp dir on exit, so
 # anything not copied here leaves the user with no way to remove or repair the install.
-x# Root-owned and argument-free: it is reachable through NOPASSWD sudo, so the service user
+# Root-owned and argument-free: it is reachable through NOPASSWD sudo, so the service user
 # must not be able to modify it (APP_DIR is root-owned for the same reason).
 if [ -f "$SRC/jf-update" ]; then
   xinstall -o root -g root -m 755 "$SRC/jf-update" "$APP_DIR/jf-update"
@@ -491,12 +491,12 @@ fs_use_snap(){
 }
 # fs_probe — the gate. 0 only when a REAL page fetch succeeds.
 fs_probe(){
-  local i resp restarts0 restarts
+  local resp restarts0 restarts
   # A crash-looping service will never answer, so waiting the full window for each browser
   # would spend ~10 minutes cycling a chain that cannot succeed. Watch systemd's restart
   # counter and give up as soon as it is clearly looping.
   restarts0="$(systemctl show -p NRestarts --value flaresolverr.service 2>/dev/null || echo 0)"
-  for i in $(seq 1 18); do
+  for _ in $(seq 1 18); do
     [ "$(curl -4 -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8191/health 2>/dev/null)" = "200" ] && break
     restarts="$(systemctl show -p NRestarts --value flaresolverr.service 2>/dev/null || echo 0)"
     if [ "$(( ${restarts:-0} - ${restarts0:-0} ))" -ge 3 ]; then
@@ -1067,12 +1067,12 @@ fi
 # ==========================================================================================
 autowire(){
   [ -n "$D" ] && return 0
-  local pw_cfg=/var/lib/prowlarr/config.xml pw_key="" i
+  local pw_cfg=/var/lib/prowlarr/config.xml pw_key=""
 
   # Prowlarr writes its config on first start; give it a moment on a fresh install.
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    [ -f "$pw_cfg" ] && break
-    sleep 2
+  local waited=0
+  while [ ! -f "$pw_cfg" ] && [ "$waited" -lt 20 ]; do
+    sleep 2; waited=$((waited + 2))
   done
   [ -f "$pw_cfg" ] || return 0
   pw_key="$(sed -n 's:.*<ApiKey>\([^<]*\)</ApiKey>.*:\1:p' "$pw_cfg" | head -1)"
