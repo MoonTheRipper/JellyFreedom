@@ -53,7 +53,8 @@ registered falls through to `RequireAdmin`** — the default is closed.
 - TMDB read-through: `GET /api/tmdb/{id}/full`, `.../seasons`, `.../seasons/{n}/episodes`,
   `GET /api/browse/trending`, `GET /api/browse/discover`
 - Library and queue reads: `GET /api/libraries`, `GET /api/library`,
-  `GET /api/library/status`, `GET /api/queue`, `GET /api/queue/count`,
+  `GET /api/library/status`, `GET /api/queue`, `GET /api/queue/groups`,
+  `GET /api/queue/count`,
   `GET /api/subscriptions`, `GET /api/calendar`
 - `GET /api/releases` — readable anonymously, but **magnet links are stripped** for callers
   without a session, and anonymous use is rate-limited to 20 searches per minute per

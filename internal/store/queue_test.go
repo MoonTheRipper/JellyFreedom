@@ -2,6 +2,7 @@ package store
 
 import (
 	"testing"
+	"time"
 )
 
 func enqueue(t *testing.T, s *Store, owner string, tmdb, season, ep int) int64 {
@@ -416,5 +417,300 @@ func TestRequeueWithMagnet(t *testing.T) {
 	}
 	if len(all) != 1 {
 		t.Fatalf("queue holds %d rows, want 1", len(all))
+	}
+}
+
+// ── The grouped queue tree ────────────────────────────────────────────────────
+
+func enqueueMovie(t *testing.T, s *Store, owner string, tmdb int, title string) int64 {
+	t.Helper()
+	id, err := s.Enqueue(&QueueItem{
+		TMDBID: tmdb, MediaType: "movie", Title: title, RequestedBy: owner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func setQueueStatus(t *testing.T, s *Store, id int64, status string) {
+	t.Helper()
+	item, err := s.GetQueueItem(id)
+	if err != nil || item == nil {
+		t.Fatalf("GetQueueItem(%d): %v %v", id, item, err)
+	}
+	item.Status = status
+	if err := s.UpdateQueue(item); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func findGroup(t *testing.T, groups []QueueShowGroup, tmdb int) QueueShowGroup {
+	t.Helper()
+	for _, g := range groups {
+		if g.TMDBID == tmdb {
+			return g
+		}
+	}
+	t.Fatalf("no group for tmdb %d in %+v", tmdb, groups)
+	return QueueShowGroup{}
+}
+
+// TestListQueueGroupsRollsUpShowsAndMovies: the shape the queue page renders. A show is
+// one entry with its seasons nested underneath it; a movie is one entry with none.
+func TestListQueueGroupsRollsUpShowsAndMovies(t *testing.T) {
+	s := newTestStore(t)
+	for _, ep := range []int{1, 2, 3} {
+		enqueue(t, s, "alice", 42, 1, ep)
+	}
+	for _, ep := range []int{1, 2} {
+		enqueue(t, s, "alice", 42, 2, ep)
+	}
+	enqueue(t, s, "alice", 7, 1, 1)
+	enqueueMovie(t, s, "alice", 99, "Inception")
+
+	g, err := s.ListQueueGroups("alice", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Total != 7 || g.Active != 7 {
+		t.Errorf("total/active = %d/%d, want 7/7", g.Total, g.Active)
+	}
+	if len(g.Shows) != 2 {
+		t.Fatalf("shows = %d, want 2", len(g.Shows))
+	}
+	if len(g.Movies) != 1 {
+		t.Fatalf("movies = %d, want 1", len(g.Movies))
+	}
+
+	show := findGroup(t, g.Shows, 42)
+	if show.Counts.Total != 5 || show.Counts.Pending != 5 {
+		t.Errorf("show counts = %+v, want 5 pending of 5", show.Counts)
+	}
+	if len(show.Seasons) != 2 {
+		t.Fatalf("seasons = %d, want 2", len(show.Seasons))
+	}
+	// Seasons read 1, 2 — ascending — even though the query orders groups newest-first.
+	if show.Seasons[0].Season != 1 || show.Seasons[1].Season != 2 {
+		t.Errorf("season order = %d,%d, want 1,2", show.Seasons[0].Season, show.Seasons[1].Season)
+	}
+	if show.Seasons[0].Counts.Total != 3 || show.Seasons[1].Counts.Total != 2 {
+		t.Errorf("season totals = %d,%d, want 3,2",
+			show.Seasons[0].Counts.Total, show.Seasons[1].Counts.Total)
+	}
+
+	movie := findGroup(t, g.Movies, 99)
+	if movie.Title != "Inception" {
+		t.Errorf("movie title = %q, want Inception", movie.Title)
+	}
+	if movie.Counts.Total != 1 {
+		t.Errorf("movie counts = %+v, want 1 row", movie.Counts)
+	}
+	// Never nil: the UI iterates this without a guard.
+	if movie.Seasons == nil || len(movie.Seasons) != 0 {
+		t.Errorf("movie seasons = %+v, want an empty non-nil slice", movie.Seasons)
+	}
+}
+
+// TestListQueueGroupsCountsEveryStatus: the histogram is the whole point of the grouped
+// view — a season ring showing "3 of 5 done" is drawn from these numbers.
+func TestListQueueGroupsCountsEveryStatus(t *testing.T) {
+	s := newTestStore(t)
+	for i, status := range []string{"pending", "processing", "done", "failed", "cancelled"} {
+		id := enqueue(t, s, "alice", 42, 1, i+1)
+		setQueueStatus(t, s, id, status)
+	}
+
+	g, err := s.ListQueueGroups("alice", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := QueueCounts{Pending: 1, Processing: 1, Done: 1, Failed: 1, Cancelled: 1, Total: 5, Active: 2}
+	show := findGroup(t, g.Shows, 42)
+	if show.Counts != want {
+		t.Errorf("show counts = %+v, want %+v", show.Counts, want)
+	}
+	if show.Seasons[0].Counts != want {
+		t.Errorf("season counts = %+v, want %+v", show.Seasons[0].Counts, want)
+	}
+	if g.Total != 5 || g.Active != 2 {
+		t.Errorf("overall total/active = %d/%d, want 5/2", g.Total, g.Active)
+	}
+	if g.Counts != want {
+		t.Errorf("overall counts = %+v, want %+v", g.Counts, want)
+	}
+	// Newest must be a real instant. MAX(created_at) is an expression, so the driver
+	// hands it back as TEXT rather than as the time.Time a plain DATETIME column gives;
+	// if that parse ever regresses this is the zero time and every group sorts last.
+	if show.Newest.IsZero() {
+		t.Fatal("Newest is the zero time: MAX(created_at) was not parsed")
+	}
+	if d := time.Since(show.Newest); d > time.Hour || d < -time.Hour {
+		t.Errorf("Newest = %v, %v away from now — wrong timezone or layout", show.Newest, d)
+	}
+}
+
+// TestListQueueGroupsSeeRowsTheFlatListCannot is the regression test for the user's
+// actual complaint ("I do not see the list of complete shows and series"). The flat
+// list is capped at 100 newest rows, so a queue larger than that can hide whole titles
+// from it. The grouped view must account for every row regardless.
+func TestListQueueGroupsSeeRowsTheFlatListCannot(t *testing.T) {
+	s := newTestStore(t)
+	enqueueMovie(t, s, "alice", 99, "Buried")
+	for ep := 1; ep <= 150; ep++ {
+		enqueue(t, s, "alice", 42, 1, ep)
+	}
+
+	flat, err := s.ListQueue("alice", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flat) != queueListLimit {
+		t.Fatalf("flat list = %d rows, want the %d-row cap", len(flat), queueListLimit)
+	}
+
+	g, err := s.ListQueueGroups("alice", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Total != 151 {
+		t.Errorf("grouped total = %d, want all 151 rows counted", g.Total)
+	}
+	// 151 rows collapse to two groups: one show (one season) and one movie.
+	if len(g.Shows) != 1 || len(g.Movies) != 1 {
+		t.Fatalf("groups = %d shows / %d movies, want 1/1", len(g.Shows), len(g.Movies))
+	}
+	if show := findGroup(t, g.Shows, 42); show.Counts.Total != 150 {
+		t.Errorf("show total = %d, want 150", show.Counts.Total)
+	}
+	if movie := findGroup(t, g.Movies, 99); movie.Title != "Buried" {
+		t.Errorf("movie title = %q, want Buried", movie.Title)
+	}
+}
+
+// TestListQueueGroupsPrefersAPopulatedPoster: title and poster_url are denormalised
+// copies, and MAX picks a real string over the ” an older row may carry.
+func TestListQueueGroupsPrefersAPopulatedPoster(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.Enqueue(&QueueItem{
+		TMDBID: 42, MediaType: "tv", Title: "Show", Season: 1, Episode: 1, RequestedBy: "alice",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Enqueue(&QueueItem{
+		TMDBID: 42, MediaType: "tv", Title: "Show", Season: 1, Episode: 2, RequestedBy: "alice",
+		PosterURL: "https://image.tmdb.org/p/poster.jpg",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := s.ListQueueGroups("alice", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	show := findGroup(t, g.Shows, 42)
+	if show.PosterURL != "https://image.tmdb.org/p/poster.jpg" {
+		t.Errorf("poster = %q, want the populated one", show.PosterURL)
+	}
+	if show.Title != "Show" {
+		t.Errorf("title = %q, want Show", show.Title)
+	}
+}
+
+// ── Scoped queue fetches ──────────────────────────────────────────────────────
+
+// TestListQueueFilteredScopesToOneSeason: expanding a season in the tree fetches that
+// season's leaf rows — all of them, in episode order, past the flat list's cap.
+func TestListQueueFilteredScopesToOneSeason(t *testing.T) {
+	s := newTestStore(t)
+	for ep := 1; ep <= 120; ep++ {
+		enqueue(t, s, "alice", 42, 1, ep)
+	}
+	for ep := 1; ep <= 3; ep++ {
+		enqueue(t, s, "alice", 42, 2, ep)
+	}
+	enqueue(t, s, "alice", 7, 1, 1)
+
+	rows, err := s.ListQueueFiltered("alice", false, QueueFilter{
+		TMDBID: 42, MediaType: "tv", Season: 1, SeasonSet: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 120 > queueListLimit: a season must not be truncated by the flat list's cap.
+	if len(rows) != 120 {
+		t.Fatalf("scoped rows = %d, want all 120 of the season", len(rows))
+	}
+	for i, row := range rows {
+		if row.TMDBID != 42 || row.Season != 1 {
+			t.Fatalf("row %d escaped the scope: tmdb %d season %d", i, row.TMDBID, row.Season)
+		}
+		if row.Episode != i+1 {
+			t.Fatalf("row %d is episode %d, want episode order", i, row.Episode)
+		}
+	}
+}
+
+// TestListQueueFilterSeasonZeroIsARealSeason: season 0 is a value (movies carry it, and
+// so do TV specials), so it cannot double as "unset" — that is what SeasonSet is for.
+func TestListQueueFilterSeasonZeroIsARealSeason(t *testing.T) {
+	s := newTestStore(t)
+	enqueue(t, s, "alice", 42, 0, 1) // a special
+	enqueue(t, s, "alice", 42, 1, 1)
+
+	all, err := s.ListQueueFiltered("alice", false, QueueFilter{TMDBID: 42})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("unset season filtered anyway: got %d rows, want 2", len(all))
+	}
+	specials, err := s.ListQueueFiltered("alice", false, QueueFilter{TMDBID: 42, Season: 0, SeasonSet: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(specials) != 1 || specials[0].Season != 0 {
+		t.Fatalf("season 0 fetch = %d rows, want the one special", len(specials))
+	}
+}
+
+// TestListQueueFilterActiveOnly: the tree's "in flight" view drops finished rows.
+func TestListQueueFilterActiveOnly(t *testing.T) {
+	s := newTestStore(t)
+	pending := enqueue(t, s, "alice", 42, 1, 1)
+	finished := enqueue(t, s, "alice", 42, 1, 2)
+	setQueueStatus(t, s, finished, "done")
+
+	rows, err := s.ListQueueFiltered("alice", false, QueueFilter{TMDBID: 42, ActiveOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != pending {
+		t.Fatalf("active-only = %+v, want just the pending row %d", rows, pending)
+	}
+}
+
+// TestListQueueUnfilteredIsUnchanged: the existing callers pass no filter and must get
+// exactly what they always got — the newest rows, capped, newest-first.
+func TestListQueueUnfilteredIsUnchanged(t *testing.T) {
+	s := newTestStore(t)
+	for ep := 1; ep <= 3; ep++ {
+		enqueue(t, s, "alice", 42, 1, ep)
+	}
+	plain, err := s.ListQueue("alice", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero, err := s.ListQueueFiltered("alice", false, QueueFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain) != 3 || len(zero) != len(plain) {
+		t.Fatalf("ListQueue = %d rows, zero filter = %d, want 3 and equal", len(plain), len(zero))
+	}
+	for i := range plain {
+		if plain[i].ID != zero[i].ID {
+			t.Fatalf("row %d differs: %d vs %d", i, plain[i].ID, zero[i].ID)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -322,6 +323,36 @@ func (s *Store) migrate() error {
              ON queue(tmdb_id,media_type,season,episode,requested_by)
              WHERE status IN ('pending','processing')`); err != nil {
 		return fmt.Errorf("create queue identity index: %w", err)
+	}
+	// The queue tree reads the whole visible queue in ONE aggregate over
+	// (tmdb_id, media_type, season) — ListQueueGroups — and then fetches a single
+	// title's or season's leaf rows back out — ListQueueFiltered. Before this index the
+	// table had no non-unique index at all, so both shapes were a full table scan, and
+	// the aggregate paid a temp b-tree on top to group its rows. That is cheap at the
+	// healthy 1,591 rows and grows with the table — and the table grows fastest exactly
+	// when something has gone wrong, which is when the queue page most needs to load.
+	//
+	// The column ORDER earns its keep twice. It matches the GROUP BY term order, so
+	// SQLite walks the index in group order and drops the temp b-tree for the GROUP BY
+	// entirely; and (tmdb_id,media_type,season) is a usable prefix for the scoped leaf
+	// query, which filters on precisely those. requested_by sits FOURTH rather than
+	// first on purpose: leading with it would index a single user's view well and leave
+	// the admin aggregate — which carries no requester predicate at all — back on a full
+	// scan. Fourth, it still narrows the leaf query and keeps status adjacent for the
+	// active-only filter.
+	//
+	// Measured on synthetic data at both shapes that matter. At the live one (894 rows,
+	// 28 shows and 54 movies) the aggregate is 3.2ms against 3.7ms unindexed — a wash,
+	// because at that size nothing is slow. At the flood shape (25,894 rows over the
+	// same ~80 titles) it is 40ms against 66ms, and the scoped leaf fetch is where the
+	// index really pays: 0.46ms against 3.4ms at 6,800 rows, and it only widens. Adding
+	// title/poster_url/created_at to make the index genuinely COVERING was tried and
+	// rejected — 60ms against 64ms at 29,800 rows, for a second copy of every title and
+	// poster URL on disk.
+	if _, err := s.db.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_queue_group
+             ON queue(tmdb_id,media_type,season,requested_by,status)`); err != nil {
+		return fmt.Errorf("create queue grouping index: %w", err)
 	}
 
 	// Reset interrupted queue items on restart.
@@ -978,17 +1009,96 @@ func (s *Store) GetQueueItem(id int64) (*QueueItem, error) {
 	return scanQueueItem(s.db.QueryRow(`SELECT `+queueCols+` FROM queue WHERE id=?`, id))
 }
 
+const (
+	// queueListLimit caps the flat, unscoped queue list. It is a DISPLAY cap and never
+	// a safety one — and it is worth being precise about what it does not do. When the
+	// duplicate-insert bug (see idx_queue_active_identity in migrate) put 26,187 rows
+	// in the table for a single movie, the newest hundred were all that movie, so none
+	// of the user's 28 shows could appear on the queue page at all. A cap on a flat
+	// newest-first list cannot survive a lopsided queue; the grouped tree below is the
+	// actual answer, because it summarises EVERY row — 894 of them on the live
+	// deployment, or 25,894 during the flood — in the same 82 titles either way.
+	queueListLimit = 100
+	// queueScopedLimit caps a fetch narrowed to one title. It can afford to be far
+	// higher because such a result is bounded by an episode count rather than by the
+	// size of the table.
+	queueScopedLimit = 500
+)
+
+// QueueFilter narrows ListQueueFiltered to one branch of the grouped tree, so the UI
+// can expand a single season and pull just that season's rows instead of the whole
+// queue. The zero value filters nothing and yields exactly the list the queue page has
+// always shown.
+type QueueFilter struct {
+	TMDBID    int    // 0 = any title
+	MediaType string // "" = any; otherwise "movie" | "tv"
+	// Season is consulted ONLY when SeasonSet is true. Season 0 is a REAL value — every
+	// movie row carries it and so do TV specials — so "no season filter" cannot be
+	// spelled as Season == 0 and needs the companion flag.
+	Season     int
+	SeasonSet  bool
+	ActiveOnly bool // pending|processing only
+}
+
+// scoped reports whether the filter pins a single title. That, and only that, bounds a
+// result by an episode count instead of by the size of the queue, which is what makes
+// the higher row limit safe. ActiveOnly alone does not qualify: a queue can hold any
+// number of pending rows.
+func (f QueueFilter) scoped() bool { return f.TMDBID != 0 }
+
 // ListQueue returns queue rows visible to the caller. requester=="" means ANONYMOUS,
 // which sees nothing — a queue row is a named person's viewing request.
 func (s *Store) ListQueue(requester string, isAdmin bool) ([]*QueueItem, error) {
-	if isAdmin {
-		return s.queryQueue(`SELECT ` + queueCols + ` FROM queue ORDER BY created_at DESC LIMIT 100`)
+	return s.ListQueueFiltered(requester, isAdmin, QueueFilter{})
+}
+
+// ListQueueFiltered is ListQueue with the grouped tree's filters applied. Both go
+// through this one body deliberately, so the visibility rule cannot drift between
+// them: ANONYMOUS (requester=="") sees nothing, a named user sees only their own rows,
+// an admin sees everything. A filter can only ever NARROW what the caller was already
+// allowed to see — passing a TMDBID never reaches another person's rows.
+func (s *Store) ListQueueFiltered(requester string, isAdmin bool, f QueueFilter) ([]*QueueItem, error) {
+	var (
+		where []string
+		args  []any
+	)
+	if !isAdmin {
+		if requester == "" {
+			return nil, nil
+		}
+		where = append(where, `requested_by=?`)
+		args = append(args, requester)
 	}
-	if requester == "" {
-		return nil, nil
+	if f.TMDBID != 0 {
+		where = append(where, `tmdb_id=?`)
+		args = append(args, f.TMDBID)
 	}
-	return s.queryQueue(
-		`SELECT `+queueCols+` FROM queue WHERE requested_by=? ORDER BY created_at DESC LIMIT 100`, requester)
+	if f.MediaType != "" {
+		where = append(where, `media_type=?`)
+		args = append(args, f.MediaType)
+	}
+	if f.SeasonSet {
+		where = append(where, `season=?`)
+		args = append(args, f.Season)
+	}
+	if f.ActiveOnly {
+		where = append(where, `status IN ('pending','processing')`)
+	}
+	q := `SELECT ` + queueCols + ` FROM queue`
+	if len(where) > 0 {
+		q += ` WHERE ` + strings.Join(where, ` AND `)
+	}
+	// Ordering follows the caller's intent. The unscoped list is a feed and stays
+	// newest-first exactly as before; a scoped fetch is one season being expanded in
+	// the tree, where the user expects episode order rather than request order.
+	if f.scoped() {
+		q += ` ORDER BY season, episode, created_at DESC LIMIT ?`
+		args = append(args, queueScopedLimit)
+	} else {
+		q += ` ORDER BY created_at DESC LIMIT ?`
+		args = append(args, queueListLimit)
+	}
+	return s.queryQueue(q, args...)
 }
 
 // ListAllQueue returns every queue row — the BACKGROUND JOB view, never an HTTP one.
@@ -1011,6 +1121,234 @@ func (s *Store) queryQueue(q string, args ...any) ([]*QueueItem, error) {
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// ── Queue: the grouped tree ───────────────────────────────────────────────────
+//
+// The queue page cannot be a flat list. The user runs 28 shows and 844 episodes; at
+// the peak of the duplicate-insert bug the table held 26,187 rows, and serving them
+// flat was 15.7MB of JSON. Ordering them newest-first and cutting at a hundred does
+// not help either — that is precisely how a single flooding movie hid every show the
+// user owned. So the aggregation happens HERE, in one GROUP BY, and what crosses the
+// wire is roughly one row per title-and-season no matter how large the table gets.
+//
+// JSON names are snake_case and LOCKED by the API contract (§1), same as Item and
+// QueueItem above.
+
+// QueueCounts is one group's status histogram. The five named buckets are the closed
+// set of queue statuses (see QueueItem.Status).
+type QueueCounts struct {
+	Pending    int `json:"pending"`
+	Processing int `json:"processing"`
+	Done       int `json:"done"`
+	Failed     int `json:"failed"`
+	Cancelled  int `json:"cancelled"`
+	// Total is COUNT(*) over the group and Active is pending+processing. Both are
+	// derived, and the store fills them in so the UI never has to sum five numbers to
+	// draw a progress ring. Total is deliberately the raw COUNT rather than the sum of
+	// the five buckets: should a row ever carry a status outside the closed set, the
+	// group's chips will visibly fail to add up instead of the row disappearing.
+	Total  int `json:"total"`
+	Active int `json:"active"`
+}
+
+func (c *QueueCounts) add(o QueueCounts) {
+	c.Pending += o.Pending
+	c.Processing += o.Processing
+	c.Done += o.Done
+	c.Failed += o.Failed
+	c.Cancelled += o.Cancelled
+	c.Total += o.Total
+	c.Active += o.Active
+}
+
+// QueueSeasonGroup is one season of one show: the second level of the tree.
+type QueueSeasonGroup struct {
+	Season int         `json:"season"`
+	Counts QueueCounts `json:"counts"`
+	Newest time.Time   `json:"newest"` // most recent created_at in the season
+}
+
+// QueueShowGroup is one title: a show with its seasons nested, or a movie with none.
+type QueueShowGroup struct {
+	TMDBID    int         `json:"tmdb_id"`
+	MediaType string      `json:"media_type"`
+	Title     string      `json:"title"`
+	PosterURL string      `json:"poster_url"`
+	Counts    QueueCounts `json:"counts"` // rolled up across every season
+	Newest    time.Time   `json:"newest"`
+	// Seasons is empty for a movie and never nil, so the UI can iterate it blind.
+	Seasons []QueueSeasonGroup `json:"seasons"`
+}
+
+// QueueGroups is the whole grouped view. Total and Active are Counts.Total and
+// Counts.Active hoisted to the top level for the page's summary line.
+type QueueGroups struct {
+	Total  int              `json:"total"`
+	Active int              `json:"active"`
+	Counts QueueCounts      `json:"counts"`
+	Shows  []QueueShowGroup `json:"shows"`
+	Movies []QueueShowGroup `json:"movies"`
+}
+
+// ListQueueGroups summarises every queue row visible to the caller as one entry per
+// movie and one per show, each show carrying its seasons. It is a single GROUP BY, so
+// its cost tracks the number of distinct titles rather than the number of rows, and it
+// makes ZERO TMDB calls: title and poster_url are already denormalised onto the queue
+// rows themselves.
+//
+// PRIVACY — the one line in here that must not be got wrong. This reads the very same
+// rows ListQueue does, and a queue row is a named person's viewing request: the list
+// of titles someone asked for is exactly the sort of thing they did not publish. So
+// the identical gate applies — ANONYMOUS (requester=="") sees nothing, a named user
+// sees only their own rows, an admin sees everything — and the requester predicate
+// goes INSIDE the aggregate. Filtering groups after the fact would be far too late:
+// the counts would already be everyone's, and a count is enough to reveal that
+// another user requested a title. A consequence worth knowing at the UI: a non-admin's
+// "8 of 12 done" counts only their own requests for that show, exactly as their flat
+// queue list only ever showed their own rows.
+func (s *Store) ListQueueGroups(requester string, isAdmin bool) (*QueueGroups, error) {
+	// Always a real object with real slices, even when the answer is "nothing" — the
+	// handler marshals this straight through and the UI iterates both lists blind.
+	groups := &QueueGroups{Shows: []QueueShowGroup{}, Movies: []QueueShowGroup{}}
+	if !isAdmin && requester == "" {
+		return groups, nil
+	}
+	q := `SELECT tmdb_id, media_type, season,
+                 MAX(title), MAX(poster_url), MAX(created_at), COUNT(*),
+                 SUM(status='pending'), SUM(status='processing'),
+                 SUM(status='done'), SUM(status='failed'), SUM(status='cancelled')
+          FROM queue`
+	var args []any
+	if !isAdmin {
+		q += ` WHERE requested_by=?`
+		args = append(args, requester)
+	}
+	// MAX(title) and MAX(poster_url) are not a heuristic. Both columns are DENORMALISED
+	// copies of one TMDB lookup, written identically onto every row of a title, so any
+	// row's value is the group's value and MAX simply picks one deterministically
+	// without a correlated subquery. Where the copies do differ it is because an older
+	// row predates the field being filled in, and MAX prefers a real string over '' —
+	// which is the value we wanted anyway. (For a TV row, title holds the SHOW title,
+	// not the episode title; every enqueue path writes it that way.)
+	//
+	// The GROUP BY term order matches idx_queue_group's leading columns, so SQLite walks
+	// the index in group order and never sorts ROWS. The one temp b-tree that remains
+	// sorts the finished GROUPS by recency — tens of them, not tens of thousands.
+	q += ` GROUP BY tmdb_id, media_type, season
+           ORDER BY MAX(created_at) DESC, tmdb_id, season`
+
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type groupKey struct {
+		mediaType string
+		tmdbID    int
+	}
+	// The map holds an INDEX into the slice, not a pointer into it: append reallocates
+	// the backing array and would leave every stored pointer writing into the old one.
+	index := make(map[groupKey]int)
+	for rows.Next() {
+		var (
+			tmdbID, season, total    int
+			mediaType, title, poster string
+			newestRaw                any
+			c                        QueueCounts
+		)
+		if err := rows.Scan(&tmdbID, &mediaType, &season, &title, &poster, &newestRaw, &total,
+			&c.Pending, &c.Processing, &c.Done, &c.Failed, &c.Cancelled); err != nil {
+			return nil, err
+		}
+		c.Total, c.Active = total, c.Pending+c.Processing
+		newest := sqliteTime(newestRaw)
+
+		// Anything that is not a movie is treated as a show, so a media_type this code
+		// has never heard of still surfaces in the tree rather than vanishing from it.
+		dst := &groups.Shows
+		if mediaType == "movie" {
+			dst = &groups.Movies
+		}
+		key := groupKey{mediaType, tmdbID}
+		i, ok := index[key]
+		if !ok {
+			*dst = append(*dst, QueueShowGroup{
+				TMDBID: tmdbID, MediaType: mediaType, Title: title, PosterURL: poster,
+				Seasons: []QueueSeasonGroup{},
+			})
+			i = len(*dst) - 1
+			index[key] = i
+		}
+		g := &(*dst)[i]
+		// A later season may carry the poster or title an earlier one was missing.
+		if g.Title == "" {
+			g.Title = title
+		}
+		if g.PosterURL == "" {
+			g.PosterURL = poster
+		}
+		g.Counts.add(c)
+		if newest.After(g.Newest) {
+			g.Newest = newest
+		}
+		// A movie's season column is 0 on every row, so its one group already IS the
+		// whole title and a nested season would just repeat it.
+		if mediaType != "movie" {
+			g.Seasons = append(g.Seasons, QueueSeasonGroup{Season: season, Counts: c, Newest: newest})
+		}
+		groups.Counts.add(c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Newest-first is right for the shows themselves — it is the order the flat queue
+	// used — but wrong inside one: a show's seasons read 1, 2, 3.
+	for i := range groups.Shows {
+		seasons := groups.Shows[i].Seasons
+		sort.Slice(seasons, func(a, b int) bool { return seasons[a].Season < seasons[b].Season })
+	}
+	groups.Total, groups.Active = groups.Counts.Total, groups.Counts.Active
+	return groups, nil
+}
+
+// sqliteTime converts a timestamp read through an `any` into a time.Time. The grouped
+// query has to scan MAX(created_at) that way rather than straight into a time.Time,
+// because the driver types a result column from its DECLARED type: `created_at` is
+// declared DATETIME and does arrive as a time.Time, but MAX(created_at) is an
+// EXPRESSION, has no declared type, and arrives as the raw TEXT SQLite stores. A
+// value that cannot be parsed comes back as the zero time, which sorts a group to the
+// bottom of the tree but never drops it — the counts matter more than the ordering.
+func sqliteTime(v any) time.Time {
+	switch t := v.(type) {
+	case time.Time:
+		return t
+	case string:
+		return parseSQLiteTimestamp(t)
+	case []byte:
+		return parseSQLiteTimestamp(string(t))
+	}
+	return time.Time{}
+}
+
+// sqliteTimeLayouts covers what actually lands in a DATETIME column here: CURRENT_TIMESTAMP
+// writes "2006-01-02 15:04:05" in UTC, while a Go time.Time bound as a parameter is
+// stored by the driver with an offset.
+var sqliteTimeLayouts = []string{
+	"2006-01-02 15:04:05",
+	"2006-01-02 15:04:05.999999999-07:00",
+	time.RFC3339Nano,
+	"2006-01-02",
+}
+
+func parseSQLiteTimestamp(s string) time.Time {
+	for _, layout := range sqliteTimeLayouts {
+		if t, err := time.ParseInLocation(layout, s, time.UTC); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // CancelQueueItem cancels a pending row. Returns the number of rows affected so the

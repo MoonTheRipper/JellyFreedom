@@ -474,9 +474,44 @@ func main() {
 	})))
 
 	// ── Queue API ───────────────────────────────────────────────────────────────
+	// The flat feed, now optionally scoped. Unscoped it keeps its old shape and its
+	// 100-row newest-first cap; scoped to a title (and optionally a season) it returns
+	// that title's leaf rows, so the tree UI can fetch one expanded season instead of
+	// hoping the episodes it wants happen to fall inside the newest 100 rows overall.
+	//
+	// That cap is why the queue page could not show the user's shows at all: with a
+	// duplicate flood at the head of the list, 100 rows covered three titles out of
+	// eighty. Scoping is the fix for the general case, not just the flood.
 	mux.Handle("GET /api/queue", api.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		viewer, username, isAdmin := viewerOf(r)
-		items, err := db.ListQueue(username, isAdmin)
+		q := r.URL.Query()
+		filter := store.QueueFilter{
+			MediaType:  q.Get("media_type"),
+			ActiveOnly: q.Get("active") == "1",
+		}
+		if v := q.Get("tmdb_id"); v != "" {
+			id, err := strconv.Atoi(v)
+			if err != nil || id < 0 {
+				jsonErr(w, "tmdb_id must be a positive integer", http.StatusBadRequest)
+				return
+			}
+			filter.TMDBID = id
+		}
+		// Season 0 is a real season (movies use it, and TV specials are season 0), so
+		// presence of the parameter is what marks it set — not its value.
+		if v := q.Get("season"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				jsonErr(w, "season must be a non-negative integer", http.StatusBadRequest)
+				return
+			}
+			filter.Season, filter.SeasonSet = n, true
+		}
+		if filter.MediaType != "" && filter.MediaType != "movie" && filter.MediaType != "tv" {
+			jsonErr(w, "media_type must be movie or tv", http.StatusBadRequest)
+			return
+		}
+		items, err := db.ListQueueFiltered(username, isAdmin, filter)
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read the queue", err)
 			return
@@ -535,6 +570,26 @@ func main() {
 
 	// Per-queue-item failure diagnosis (API contract §7): why did this fail, and which
 	// rule rejected each release the indexer returned.
+	// The tree feed: one row per (title) and per (title, season) with per-status counts,
+	// instead of every leaf row. Aggregating server-side is not an optimisation here, it
+	// is what makes the view possible at all — the flat feed is capped at 100 rows, and
+	// lifting the cap would have meant megabytes of JSON on a 4-second poll. This answers
+	// in ~100 groups no matter how many rows sit behind them.
+	//
+	// Visibility is enforced inside the GROUP BY (see store.ListQueueGroups): a count
+	// alone would leak that somebody else requested a title, so the predicate cannot live
+	// in the handler. Nothing in the response carries requested_by, a magnet or a strm
+	// path, so unlike the flat feed there is nothing here to redact.
+	mux.Handle("GET /api/queue/groups", api.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, username, isAdmin := viewerOf(r)
+		groups, err := db.ListQueueGroups(username, isAdmin)
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not read the queue", err)
+			return
+		}
+		jsonOK(w, groups)
+	})))
+
 	mux.Handle("GET /api/queue/{id}/diagnosis", api.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		if err != nil {

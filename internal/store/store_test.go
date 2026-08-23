@@ -292,6 +292,145 @@ func TestListQueueAndSubscriptionsVisibility(t *testing.T) {
 	}
 }
 
+// TestListQueueGroupsVisibility is TestListQueueAndSubscriptionsVisibility for the
+// grouped view, and it exists because the grouped view is the easier of the two to get
+// wrong. ListQueue's WHERE requested_by=? is right there in the query; an aggregate
+// invites you to group first and filter the groups afterwards, which would already
+// have leaked — the counts would be everyone's, and a count is enough to reveal that
+// somebody else requested a title. So this asserts both halves: the caller sees their
+// own rows, and NOTHING of anyone else's, right down to the numbers.
+func TestListQueueGroupsVisibility(t *testing.T) {
+	s := newTestStore(t)
+	// A movie only alice asked for, a movie only bob asked for, and a show they both
+	// asked for — which is the case that catches a leak in the counts rather than in
+	// the group list.
+	seed := []QueueItem{
+		{TMDBID: 1, MediaType: "movie", Title: "Alice Only", RequestedBy: "alice"},
+		{TMDBID: 2, MediaType: "movie", Title: "Bob Only", RequestedBy: "bob"},
+		{TMDBID: 5, MediaType: "tv", Title: "Shared Show", Season: 1, Episode: 1, RequestedBy: "alice"},
+		{TMDBID: 5, MediaType: "tv", Title: "Shared Show", Season: 1, Episode: 2, RequestedBy: "alice"},
+		{TMDBID: 5, MediaType: "tv", Title: "Shared Show", Season: 1, Episode: 1, RequestedBy: "bob"},
+		// A row with NO requester. requested_by defaults to '', so these exist — and
+		// they are why the anonymous case cannot be left to the WHERE clause: a query
+		// built as requested_by='' would MATCH this row and hand it to a passer-by.
+		{TMDBID: 3, MediaType: "movie", Title: "Ownerless", RequestedBy: ""},
+	}
+	for i := range seed {
+		if _, err := s.Enqueue(&seed[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cases := []struct {
+		name       string
+		viewer     string
+		isAdmin    bool
+		wantTotal  int
+		wantMovies []int // tmdb ids, and no others
+		wantShowN  int   // rows counted under the shared show
+	}{
+		// A queue row names a real person's viewing request, so an anonymous caller
+		// gets an empty view rather than everyone's.
+		{"anonymous sees nothing", "", false, 0, nil, 0},
+		{"owner sees only their own", "alice", false, 3, []int{1}, 2},
+		{"other user sees only their own", "bob", false, 2, []int{2}, 1},
+		{"unknown user sees nothing", "mallory", false, 0, nil, 0},
+		{"admin sees all", "root", true, 6, []int{1, 2, 3}, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g, err := s.ListQueueGroups(tc.viewer, tc.isAdmin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if g == nil {
+				t.Fatal("ListQueueGroups returned nil; the handler marshals this directly")
+			}
+			if g.Total != tc.wantTotal {
+				t.Errorf("total = %d, want %d", g.Total, tc.wantTotal)
+			}
+			if g.Active != tc.wantTotal {
+				t.Errorf("active = %d, want %d (every seeded row is pending)", g.Active, tc.wantTotal)
+			}
+			// Compared as a set: the group order is by recency, and the seeded rows
+			// share a timestamp, so asserting positions here would be asserting a
+			// tiebreak rather than the visibility rule this case is about.
+			got := map[int]bool{}
+			for _, m := range g.Movies {
+				got[m.TMDBID] = true
+			}
+			if len(got) != len(g.Movies) || len(g.Movies) != len(tc.wantMovies) {
+				t.Fatalf("movies = %+v, want tmdb ids %v", g.Movies, tc.wantMovies)
+			}
+			for _, want := range tc.wantMovies {
+				if !got[want] {
+					t.Errorf("movie tmdb %d missing from %v", want, keys2(got))
+				}
+			}
+			if tc.wantShowN == 0 {
+				if len(g.Shows) != 0 {
+					t.Fatalf("shows = %+v, want none", g.Shows)
+				}
+				return
+			}
+			if len(g.Shows) != 1 {
+				t.Fatalf("shows = %d, want 1", len(g.Shows))
+			}
+			show := g.Shows[0]
+			// The leak this guards: alice and bob both requested this show, so a
+			// missing predicate shows each of them the other's episode in the count.
+			if show.Counts.Total != tc.wantShowN {
+				t.Errorf("show counts = %+v, want %d rows", show.Counts, tc.wantShowN)
+			}
+			if len(show.Seasons) != 1 || show.Seasons[0].Counts.Total != tc.wantShowN {
+				t.Errorf("season counts = %+v, want %d rows", show.Seasons, tc.wantShowN)
+			}
+		})
+	}
+}
+
+// TestListQueueFilteredCannotWidenVisibility: a filter is a NARROWING device. Naming
+// another person's title in one must not reach their rows, and an anonymous caller
+// stays at nothing no matter how specific the filter is.
+func TestListQueueFilteredCannotWidenVisibility(t *testing.T) {
+	s := newTestStore(t)
+	seed := []QueueItem{
+		{TMDBID: 1, MediaType: "movie", Title: "Alice Only", RequestedBy: "alice"},
+		// Ownerless (requested_by defaults to ''), so "anonymous" must be an explicit
+		// early return and not a requested_by='' predicate that would match this row.
+		{TMDBID: 9, MediaType: "movie", Title: "Ownerless", RequestedBy: ""},
+	}
+	for i := range seed {
+		if _, err := s.Enqueue(&seed[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		viewer  string
+		isAdmin bool
+		tmdb    int
+		want    int
+	}{
+		{"another user naming the title explicitly", "bob", false, 1, 0},
+		{"anonymous naming the title explicitly", "", false, 1, 0},
+		{"anonymous naming an ownerless row", "", false, 9, 0},
+		{"the owner", "alice", false, 1, 1},
+		{"an admin", "root", true, 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := s.ListQueueFiltered(tc.viewer, tc.isAdmin, QueueFilter{TMDBID: tc.tmdb, MediaType: "movie"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != tc.want {
+				t.Fatalf("got %d rows, want %d", len(rows), tc.want)
+			}
+		})
+	}
+}
+
 func TestRedactedStripsSecrets(t *testing.T) {
 	it := Item{Magnet: "magnet:?xt=urn:btih:abc&tr=secret", StrmPath: "/srv/media/x.strm", RequestedBy: "alice", Title: "Keep"}
 	r := it.Redacted()
@@ -314,6 +453,14 @@ func TestRedactedStripsSecrets(t *testing.T) {
 
 func keys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func keys2(m map[int]bool) []int {
+	out := make([]int, 0, len(m))
 	for k := range m {
 		out = append(out, k)
 	}
