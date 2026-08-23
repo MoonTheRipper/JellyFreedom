@@ -200,6 +200,21 @@ guard. Each run:
    seconds apart escalate: bounce the tunnel via the helper (TorrServer stays up) → rebuild the
    whole namespace (and restart the port-forward keeper, which the rebuild orphaned) →
    persistent failure writes `down: needs new wireguard config` to `/run/vpntorrent-status`.
+4. **Asserts anonymity, not just reachability.** A run is only allowed to write `ok` once the
+   namespace's default route still leaves via `wg0-*` **and** the address it actually came out
+   on is not this machine's own public address. On positive evidence of a leak it stops
+   `torrserver-netns` and latches the reason in `/run/vpntorrent-status`; when the tunnel is
+   genuinely anonymous again a later run restarts it by itself.
+
+Step 4 exists because steps 1–3 cannot tell a tunnelled path from a leaking one — both answer
+"did bytes come back" identically. The probe already fetches `/cdn-cgi/trace`, whose body
+reports the caller's egress address; the earlier version discarded it with `-o /dev/null`. The
+host's own address is cached in `/run/vpntorrent-host-ip` for an hour, since it changes rarely
+and this runs every minute.
+
+An address that cannot be determined is never treated as a leak. Stopping the torrent stack
+because a lookup timed out would be an outage of its own, so the check acts only on positive
+evidence that the two addresses match.
 
 Bouncing the tunnel re-sanitises the active config, so it also picks up a config activated in
 the dashboard, including one pointing at a different server.

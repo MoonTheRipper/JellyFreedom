@@ -6,6 +6,9 @@
 #      after TWO consecutive failures (ignore transient blips), and skip the probe entirely while
 #      a stream is live (a live stream already proves the client works — no churn, no false restart).
 #  (3) VPN data path: probe two independent targets; on a real outage re-establish the tunnel.
+#  (4) ANONYMITY: assert the namespace's egress address is not the host's own, and that the
+#      default route still leaves via wg0. Reachability alone does not prove the traffic is
+#      tunnelled, and this script used to discard the very body that says where it came out.
 #
 # NOTE ON `set -e`: deliberately NOT used here. This script is a prober; a non-zero exit from
 # curl/grep/iptables is normal control flow and is what every branch below is testing for.
@@ -37,10 +40,74 @@ HELPER="$SCRIPT_DIR/jf-netns-helper"
 [ -x "$HELPER" ] || HELPER=/opt/vpntorrent/jf-netns-helper
 
 playback_active(){ curl -s --max-time 4 "$ORCH/api/playback/active" 2>/dev/null | grep -q '"active":true'; }
+# NS_EXIT_IP is set by probe() to the address the namespace actually came out on.
+# /cdn-cgi/trace reports the caller's egress IP in its body; the previous version threw
+# that away with -o /dev/null and asked only "did bytes come back", which a leaking setup
+# answers just as cheerfully as a tunnelled one.
+NS_EXIT_IP=""
+HOST_IP_CACHE=/run/vpntorrent-host-ip
+
 probe(){
-  ip netns exec "$NETNS" curl -s --max-time 8 -o /dev/null https://1.1.1.1/cdn-cgi/trace && return 0
-  ip netns exec "$NETNS" curl -s --max-time 8 -o /dev/null https://1.0.0.1/cdn-cgi/trace && return 0
+  local body url
+  for url in https://1.1.1.1/cdn-cgi/trace https://1.0.0.1/cdn-cgi/trace; do
+    body="$(ip netns exec "$NETNS" curl -s --max-time 8 "$url" 2>/dev/null)" || continue
+    [ -n "$body" ] || continue
+    NS_EXIT_IP="$(printf '%s' "$body" | sed -n 's/^ip=//p' | head -1 | tr -d '[:space:]')"
+    return 0
+  done
   return 1
+}
+
+# host_public_ip: the address THIS machine leaves on, i.e. what the ISP sees. Cached for an
+# hour — it changes rarely, and this runs every minute.
+host_public_ip(){
+  if [ -r "$HOST_IP_CACHE" ] && [ $(( $(date +%s) - $(stat -c %Y "$HOST_IP_CACHE" 2>/dev/null || echo 0) )) -lt 3600 ]; then
+    cat "$HOST_IP_CACHE"; return 0
+  fi
+  local ip
+  ip="$(curl -s --max-time 8 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | sed -n 's/^ip=//p' | head -1 | tr -d '[:space:]')"
+  [ -n "$ip" ] && printf '%s' "$ip" > "$HOST_IP_CACHE"
+  printf '%s' "$ip"
+}
+
+# default_route_is_tunnel: the kill switch in one line. If the namespace's default route is
+# not the WireGuard device, torrent traffic has somewhere else to go.
+default_route_is_tunnel(){
+  ip netns exec "$NETNS" ip route show default 2>/dev/null | grep -q 'dev wg0-'
+}
+
+# anonymity_ok: refuse to call a reachable tunnel healthy until it is also ANONYMOUS.
+# Returns 1 only on positive evidence of a leak — an unknown address is never treated as
+# one, because stopping the torrent stack on a failed lookup would be its own outage.
+anonymity_ok(){
+  if ! default_route_is_tunnel; then
+    logger -t vpntorrent-watchdog "KILL SWITCH: namespace default route is not wg0 — stopping torrserver"
+    echo "leak risk: default route left the tunnel; torrserver stopped" > "$STATUS"
+    systemctl stop torrserver-netns.service 2>/dev/null || true
+    return 1
+  fi
+  local host_ip
+  host_ip="$(host_public_ip)"
+  [ -n "$NS_EXIT_IP" ] && [ -n "$host_ip" ] || return 0   # cannot tell; do not act on a guess
+  if [ "$NS_EXIT_IP" = "$host_ip" ]; then
+    logger -t vpntorrent-watchdog "LEAK: namespace egress ($NS_EXIT_IP) is the host's own public address — stopping torrserver"
+    echo "LEAK: torrent traffic was exiting on this machine's own address; torrserver stopped" > "$STATUS"
+    systemctl stop torrserver-netns.service 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
+# resume_after_leak: a leak stop is latched in the status file, so once the tunnel is
+# genuinely anonymous again the stack comes back on its own rather than waiting for a human
+# who may not know it stopped.
+resume_after_leak(){
+  case "$(cat "$STATUS" 2>/dev/null)" in
+    LEAK:*|"leak risk:"*)
+      logger -t vpntorrent-watchdog "anonymity restored (egress $NS_EXIT_IP); restarting torrserver"
+      systemctl start torrserver-netns.service 2>/dev/null || true
+      ;;
+  esac
 }
 
 # (1) Heal the host NAT/forwarding the WG handshake rides on — an external flush (ufw reload,
@@ -78,9 +145,17 @@ fi
 
 # (3) VPN data path — two strikes 5s apart before acting (ignore momentary blips). A genuinely
 # down tunnel means any stream is already broken, so recovery here may restart freely.
-if probe; then echo "ok" > "$STATUS"; exit 0; fi
+if probe; then
+  anonymity_ok || exit 1
+  resume_after_leak
+  echo "ok" > "$STATUS"; exit 0
+fi
 sleep 5
-if probe; then echo "ok" > "$STATUS"; exit 0; fi
+if probe; then
+  anonymity_ok || exit 1
+  resume_after_leak
+  echo "ok" > "$STATUS"; exit 0
+fi
 
 logger -t vpntorrent-watchdog "tunnel has no data path; bouncing WireGuard"
 echo "down: bouncing wg" > "$STATUS"
@@ -94,7 +169,7 @@ else
   logger -t vpntorrent-watchdog "privileged helper missing at $HELPER — cannot bounce the tunnel; reinstall JellyFreedom"
 fi
 sleep 8
-if probe; then logger -t vpntorrent-watchdog "recovered via wg bounce"; echo "ok" > "$STATUS"; exit 0; fi
+if probe && anonymity_ok; then logger -t vpntorrent-watchdog "recovered via wg bounce"; resume_after_leak; echo "ok" > "$STATUS"; exit 0; fi
 
 logger -t vpntorrent-watchdog "wg bounce failed; full netns rebuild"
 systemctl stop torrserver-netns.service 2>/dev/null || true
@@ -102,7 +177,7 @@ systemctl restart vpntorrent-netns.service 2>/dev/null || true
 systemctl start torrserver-netns.service 2>/dev/null || true
 systemctl restart vpntorrent-portforward.service 2>/dev/null || true   # was orphaned by the netns restart
 sleep 10
-if probe; then logger -t vpntorrent-watchdog "recovered via full rebuild"; echo "ok" > "$STATUS"; exit 0; fi
+if probe && anonymity_ok; then logger -t vpntorrent-watchdog "recovered via full rebuild"; resume_after_leak; echo "ok" > "$STATUS"; exit 0; fi
 
 logger -t vpntorrent-watchdog "STILL DOWN after rebuild — VPN server likely rotated/unreachable; a new WireGuard config may be needed"
 echo "down: needs new wireguard config" > "$STATUS"
