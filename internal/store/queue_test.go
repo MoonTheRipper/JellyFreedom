@@ -87,7 +87,7 @@ func TestActiveQueueItemIdempotency(t *testing.T) {
 	s := newTestStore(t)
 	id := enqueue(t, s, "alice", 10, 2, 3)
 
-	active, err := s.ActiveQueueItem(10, "tv", 2, 3)
+	active, err := s.ActiveQueueItem(10, "tv", 2, 3, "alice")
 	if err != nil || active == nil {
 		t.Fatalf("ActiveQueueItem: %v %v", active, err)
 	}
@@ -96,7 +96,7 @@ func TestActiveQueueItemIdempotency(t *testing.T) {
 	}
 
 	// A different identity must NOT match.
-	other, err := s.ActiveQueueItem(10, "tv", 2, 4)
+	other, err := s.ActiveQueueItem(10, "tv", 2, 4, "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestActiveQueueItemIdempotency(t *testing.T) {
 	if err := s.UpdateQueue(active); err != nil {
 		t.Fatal(err)
 	}
-	done, err := s.ActiveQueueItem(10, "tv", 2, 3)
+	done, err := s.ActiveQueueItem(10, "tv", 2, 3, "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,14 @@ func TestClearTerminalQueueLeavesInFlightAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pendingID := enqueue(t, s, "alice", 20, 1, 1)
+	// bob's row, not alice's: idx_queue_active_identity permits only ONE in-flight row
+	// per (identity, requester), so a second alice row here would silently collapse into
+	// inFlightID and this case would re-assert the processing row instead of a pending
+	// one. ClearTerminalQueue is scoped by identity alone, so bob's row is still in range.
+	pendingID := enqueue(t, s, "bob", 20, 1, 1)
+	if pendingID == inFlightID {
+		t.Fatal("pending row collapsed into the in-flight row; this case proves nothing")
+	}
 
 	if err := s.ClearTerminalQueue(20, "tv", 1, 1); err != nil {
 		t.Fatal(err)
@@ -332,5 +339,82 @@ func TestSubscriptionOwnership(t *testing.T) {
 	exists, err := s.SubscriptionExists(2, 3)
 	if err != nil || !exists {
 		t.Fatalf("SubscriptionExists = %v, %v", exists, err)
+	}
+}
+
+// TestEnqueueIsIdempotentPerRequester: the storage layer itself must refuse a second
+// in-flight row for the same identity+requester, even if a caller skips the handler's
+// checks — this is the backstop for the magnet-override path that had none.
+func TestEnqueueIsIdempotentPerRequester(t *testing.T) {
+	s := newTestStore(t)
+	first := enqueue(t, s, "alice", 10, 2, 3)
+
+	again, err := s.Enqueue(&QueueItem{
+		TMDBID: 10, MediaType: "tv", Season: 2, Episode: 3,
+		RequestedBy: "alice", MagnetOverride: "magnet:?xt=urn:btih:deadbeef",
+	})
+	if err != nil {
+		t.Fatalf("second Enqueue: %v", err)
+	}
+	if again != first {
+		t.Fatalf("duplicate row created: got id %d, want the incumbent %d", again, first)
+	}
+	all, err := s.ListAllQueue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("queue holds %d rows, want 1", len(all))
+	}
+
+	// A different person requesting the same title keeps their OWN row, because
+	// ListQueue filters on requested_by and would otherwise hide bob's request.
+	bob, err := s.Enqueue(&QueueItem{
+		TMDBID: 10, MediaType: "tv", Season: 2, Episode: 3, RequestedBy: "bob",
+	})
+	if err != nil {
+		t.Fatalf("bob Enqueue: %v", err)
+	}
+	if bob == first {
+		t.Fatal("bob was handed alice's row")
+	}
+}
+
+// TestRequeueWithMagnet: re-picking a release repoints the in-flight row instead of
+// inserting a second one beside it.
+func TestRequeueWithMagnet(t *testing.T) {
+	s := newTestStore(t)
+	id := enqueue(t, s, "alice", 10, 2, 3)
+
+	item, err := s.GetQueueItem(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item.Status = "processing"
+	item.Stage = StagePicking
+	if err := s.UpdateQueue(item); err != nil {
+		t.Fatal(err)
+	}
+
+	const magnet = "magnet:?xt=urn:btih:cafebabe"
+	if err := s.RequeueWithMagnet(id, magnet); err != nil {
+		t.Fatalf("RequeueWithMagnet: %v", err)
+	}
+	got, err := s.GetQueueItem(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MagnetOverride != magnet {
+		t.Errorf("magnet = %q, want %q", got.MagnetOverride, magnet)
+	}
+	if got.Status != "pending" || got.Stage != StageQueued {
+		t.Errorf("status/stage = %q/%q, want pending/%s", got.Status, got.Stage, StageQueued)
+	}
+	all, err := s.ListAllQueue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("queue holds %d rows, want 1", len(all))
 	}
 }

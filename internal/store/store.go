@@ -290,6 +290,40 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	// One-time collapse of duplicate queue rows, then the constraint that makes them
+	// impossible. A magnet-override request used to bypass every idempotency check
+	// (POST /request), so a client that re-fired on each response could insert tens of
+	// thousands of identical rows for one title — the queue list, which is capped at 100
+	// rows ordered newest-first, then showed nothing but that one title. The DELETEs run
+	// before the index because CREATE UNIQUE INDEX fails outright while duplicates exist.
+	//
+	// Scope is (identity + requester), not identity alone: ListQueue filters on
+	// requested_by, so collapsing two people's requests for the same title into one row
+	// would erase the second person's request from their own queue. The flood came from a
+	// single account, so per-requester scoping closes it just as completely.
+	//
+	// In-flight rows keep the OLDEST per identity (it holds the queue position the user
+	// actually waited for); terminal rows keep the NEWEST per identity+status (the most
+	// recent outcome is the true one).
+	if _, err := s.db.Exec(
+		`DELETE FROM queue WHERE status IN ('pending','processing') AND id NOT IN (
+             SELECT MIN(id) FROM queue WHERE status IN ('pending','processing')
+             GROUP BY tmdb_id,media_type,season,episode,requested_by)`); err != nil {
+		return fmt.Errorf("collapse duplicate in-flight queue rows: %w", err)
+	}
+	if _, err := s.db.Exec(
+		`DELETE FROM queue WHERE status IN ('done','failed','cancelled') AND id NOT IN (
+             SELECT MAX(id) FROM queue WHERE status IN ('done','failed','cancelled')
+             GROUP BY tmdb_id,media_type,season,episode,status,requested_by)`); err != nil {
+		return fmt.Errorf("collapse duplicate terminal queue rows: %w", err)
+	}
+	if _, err := s.db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_active_identity
+             ON queue(tmdb_id,media_type,season,episode,requested_by)
+             WHERE status IN ('pending','processing')`); err != nil {
+		return fmt.Errorf("create queue identity index: %w", err)
+	}
+
 	// Reset interrupted queue items on restart.
 	if _, err := s.db.Exec(
 		`UPDATE queue SET status='pending', progress='', stage=? WHERE status='processing'`,
@@ -871,17 +905,44 @@ func scanQueueItem(sc scanner) (*QueueItem, error) {
 	return &item, nil
 }
 
+// Enqueue inserts a queue row, or returns the id of the in-flight row that already
+// covers this identity. The ON CONFLICT clause pairs with idx_queue_active_identity,
+// so a duplicate can never be created even if a caller skips the handler-level checks
+// — this is the backstop that the magnet-override path used to have no equivalent of.
 func (s *Store) Enqueue(item *QueueItem) (int64, error) {
 	res, err := s.db.Exec(
 		`INSERT INTO queue (tmdb_id,media_type,title,year,poster_url,season,episode,library_name,requested_by,magnet_override,stage)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT DO NOTHING`,
 		item.TMDBID, item.MediaType, item.Title, item.Year, item.PosterURL,
 		item.Season, item.Episode, item.LibraryName, item.RequestedBy, item.MagnetOverride, StageQueued,
 	)
 	if err != nil {
 		return 0, err
 	}
+	// DO NOTHING leaves LastInsertId pointing at some earlier insert, so it must never
+	// be trusted without checking that a row was actually written.
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		existing, err := s.ActiveQueueItem(item.TMDBID, item.MediaType, item.Season, item.Episode, item.RequestedBy)
+		if err != nil {
+			return 0, fmt.Errorf("read incumbent queue row: %w", err)
+		}
+		if existing != nil {
+			return existing.ID, nil
+		}
+		return 0, fmt.Errorf("queue insert conflicted but no in-flight row found for tmdb %d", item.TMDBID)
+	}
 	return res.LastInsertId()
+}
+
+// RequeueWithMagnet repoints an in-flight queue row at a different release and resets
+// it to pending, so "pick this exact release instead" re-resolves the row the user is
+// already watching rather than inserting a second one beside it.
+func (s *Store) RequeueWithMagnet(id int64, magnet string) error {
+	_, err := s.db.Exec(
+		`UPDATE queue SET magnet_override=?, status='pending', stage=?, progress='', error_msg='',
+             updated_at=CURRENT_TIMESTAMP WHERE id=?`, magnet, StageQueued, id)
+	return err
 }
 
 // NextPending atomically claims the next pending queue item by marking it processing.
@@ -1007,15 +1068,17 @@ func (s *Store) QueuePendingCount() (int, error) {
 	return n, err
 }
 
-// ActiveQueueItem returns the newest in-flight (pending|processing) queue row for an identity,
-// or nil if none. Used to make a repeat request idempotent — we hand back the existing row
-// instead of enqueuing a duplicate that would show up alongside the library entry.
-func (s *Store) ActiveQueueItem(tmdbID int, mediaType string, season, episode int) (*QueueItem, error) {
+// ActiveQueueItem returns the newest in-flight (pending|processing) queue row for an
+// identity AND requester, or nil if none. Used to make a repeat request idempotent — we
+// hand back the existing row instead of enqueuing a duplicate that would show up
+// alongside the library entry. Scoped by requester to match ListQueue's own filter.
+func (s *Store) ActiveQueueItem(tmdbID int, mediaType string, season, episode int, requester string) (*QueueItem, error) {
 	return scanQueueItem(s.db.QueryRow(
 		`SELECT `+queueCols+` FROM queue
-         WHERE tmdb_id=? AND media_type=? AND season=? AND episode=? AND status IN ('pending','processing')
+         WHERE tmdb_id=? AND media_type=? AND season=? AND episode=? AND requested_by=?
+           AND status IN ('pending','processing')
          ORDER BY created_at DESC LIMIT 1`,
-		tmdbID, mediaType, season, episode))
+		tmdbID, mediaType, season, episode, requester))
 }
 
 // ClearTerminalQueue deletes finished (done|failed|cancelled) queue rows for an identity.

@@ -784,33 +784,53 @@ func main() {
 		}
 		// Idempotency — keep the queue consistent with the library. A bare re-request (no
 		// explicit magnet override) for a title that's already available, or already in
-		// flight, must NOT spawn a duplicate queue row. An explicit magnet means the user is
-		// deliberately re-picking a release, so we always re-resolve in that case. Stale items
-		// fall through to a fresh enqueue (a re-request is how the user revives an expired one).
-		if req.Magnet == "" {
-			existing, err := db.GetByIdentity(req.TMDBID, req.MediaType, req.Season, req.Episode)
-			if err != nil {
-				httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)
-				return
+		// flight, must NOT spawn a duplicate queue row. Stale items fall through to a fresh
+		// enqueue (a re-request is how the user revives an expired one).
+		//
+		// The in-flight check runs for EVERY request, magnet or not. It used to be skipped
+		// whenever a magnet was supplied, on the reasoning that an explicit magnet means the
+		// user is deliberately re-picking — but "re-pick" is an instruction about WHICH release
+		// a request should use, not a licence to create a second request. With the check
+		// bypassed there was nothing at all between a repeating client and the INSERT: no
+		// unique constraint, no rate limit. One client that re-fired on each response put
+		// 19,430 identical rows in the queue in ten minutes, and the worker then spent a day
+		// re-resolving the same magnet every five seconds. A re-pick now repoints the row the
+		// user is already watching (RequeueWithMagnet) instead of enqueuing beside it.
+		existing, err := db.GetByIdentity(req.TMDBID, req.MediaType, req.Season, req.Episode)
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)
+			return
+		}
+		// A ready item short-circuits only for a bare re-request. With a magnet the user is
+		// deliberately swapping the release, so fall through and re-resolve.
+		if req.Magnet == "" && existing != nil && existing.Status == "ready" {
+			if err := db.ClearTerminalQueue(req.TMDBID, req.MediaType, req.Season, req.Episode); err != nil {
+				// Cosmetic only: a leftover terminal row shows a stale badge next to
+				// an item that is genuinely ready. Not worth failing the request.
+				slog.Warn("could not clear terminal queue rows", "tmdb", req.TMDBID, "err", err)
 			}
-			if existing != nil && existing.Status == "ready" {
-				if err := db.ClearTerminalQueue(req.TMDBID, req.MediaType, req.Season, req.Episode); err != nil {
-					// Cosmetic only: a leftover terminal row shows a stale badge next to
-					// an item that is genuinely ready. Not worth failing the request.
-					slog.Warn("could not clear terminal queue rows", "tmdb", req.TMDBID, "err", err)
+			jsonOK(w, map[string]any{"status": "ready", "already": true, "title": title, "year": req.Year})
+			return
+		}
+		active, err := db.ActiveQueueItem(req.TMDBID, req.MediaType, req.Season, req.Episode, requestedBy)
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not read the queue", err)
+			return
+		}
+		if active != nil {
+			status, stage := active.Status, active.Stage
+			// Same identity, different release: repoint the existing row rather than
+			// inserting a duplicate. Same release: nothing to do, just report the row back.
+			if req.Magnet != "" && req.Magnet != active.MagnetOverride {
+				if err := db.RequeueWithMagnet(active.ID, req.Magnet); err != nil {
+					httpFail(w, r, http.StatusInternalServerError, "could not update that request", err)
+					return
 				}
-				jsonOK(w, map[string]any{"status": "ready", "already": true, "title": title, "year": req.Year})
-				return
+				status, stage = "pending", store.StageQueued
+				slog.Info("re-pointed queue item at a new release", "id", active.ID, "title", title)
 			}
-			active, err := db.ActiveQueueItem(req.TMDBID, req.MediaType, req.Season, req.Episode)
-			if err != nil {
-				httpFail(w, r, http.StatusInternalServerError, "could not read the queue", err)
-				return
-			}
-			if active != nil {
-				jsonOK(w, map[string]any{"queue_id": active.ID, "status": active.Status, "stage": active.Stage, "already": true, "title": title, "year": req.Year})
-				return
-			}
+			jsonOK(w, map[string]any{"queue_id": active.ID, "status": status, "stage": stage, "already": true, "title": title, "year": req.Year})
+			return
 		}
 		// Supersede any finished (failed/cancelled/done) rows for this identity so the new
 		// request replaces them rather than piling up next to the library entry.
