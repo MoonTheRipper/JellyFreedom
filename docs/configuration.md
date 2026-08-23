@@ -187,7 +187,7 @@ picker:
 | `max_size_gb` | `20` | Upper bound on release size. A blunt instrument — prefer `max_mbps`, which measures the thing that actually matters. |
 | `reject_cam` | `true` | Sinks CAM, telesync and screener rips. Set false only if you genuinely want them. |
 | `target_resolution` | `1080p` | The resolution the picker aims for. Hitting it is worth +300; one rung down +150, two down nothing, three+ down a penalty. Going *above* target is worth only +100 — 4K looks better but costs bitrate you may not be able to stream. A typo here fails startup rather than being silently ignored. |
-| `require_direct_play` | `false` | When true, a release that would force your player to transcode is rejected outright rather than merely ranked lower. Worth turning on for Apple TV. |
+| `require_direct_play` | `false` | When true, a release **known** to force a transcode (AV1, DTS/DTS-HD, TrueHD/Atmos, an AVI container) is rejected outright rather than merely ranked lower. Worth turning on for Apple TV. A release whose codecs the title does not state is *not* rejected — see below. |
 | `max_mbps` | `0` (off) | Ceiling on **bitrate**, computed as size ÷ runtime. Dormant when TMDB does not know the runtime. |
 | `prefer_video_codecs` | `h264, h265` | Tie-breakers for **direct play**. A codec your client cannot direct-play means a video transcode, which is exactly what you do not want while pulling from a swarm. |
 | `prefer_audio_codecs` | `aac, ac3, eac3` | Same. DTS and TrueHD need a transcode on most clients. |
@@ -210,6 +210,14 @@ matter how good its format. But it no longer wins on its own.
 is the worst case in this architecture: ffmpeg reads ahead faster than the swarm delivers,
 so the ring buffer starves and playback stalls. On a 3rd-gen Apple TV 4K, DTS/TrueHD force
 an audio transcode and AV1 forces a full video transcode.
+
+**`direct_play` means "nothing known to force a transcode", not "confirmed direct play".**
+That distinction is not pedantry. Release titles state a container almost never and an
+audio codec about half the time — on a live search of 108 releases for one film, 106 had no
+parseable container. Demanding positive proof of all three fields made the flag false for
+every release, which would have made `require_direct_play` reject the entire swarm. The
+formats that actually break playback are nearly always named in the title, because they are
+selling points, so their *absence* is the reliable signal.
 
 Also editable in **Dashboard → Settings**, which overrides these on every subsequent start.
 

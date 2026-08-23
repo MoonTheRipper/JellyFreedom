@@ -266,20 +266,39 @@ func ReleaseQualityFor(releaseTitle, knownTitle string) string {
 // The exclusions are as important as the inclusions: DTS, DTS-HD, TrueHD and Atmos all
 // force an AUDIO transcode on an Apple TV, and AV1 forces a VIDEO transcode (the worst
 // case — a CPU-bound encode fed by a network stream).
+// These are the KNOWN-HOSTILE sets, not the known-good ones, and that direction is
+// load-bearing. Measured against a live Prowlarr search of 108 releases for one film:
+// the container was unparseable in 106 of them and the audio codec in 66, because a
+// release title states a container almost never ("Inception 2010 1080p BluRay x264"
+// carries no ".mkv") and states audio maybe half the time.
+//
+// So requiring all three fields to be positively known made IsDirectPlay false for all
+// 108 — a flag with one possible value, a +400 bonus that could never be paid, and a
+// require_direct_play filter that would have rejected every release in the swarm. That
+// is worse than useless; it is a switch that silently breaks the system when flipped.
+//
+// Judging "nothing here forces a transcode" is also the question actually being asked.
+// The decision at hand is whether to hand this file to an Apple TV, and an unlabelled
+// container is overwhelmingly mkv or mp4 in practice — whereas AV1 and DTS-HD, the
+// things that genuinely break, are nearly always stated in the title precisely because
+// they are selling points.
 var (
-	directPlayVideo     = map[string]bool{"h264": true, "h265": true, "hevc": true}
-	directPlayAudio     = map[string]bool{"aac": true, "ac3": true, "eac3": true}
-	directPlayContainer = map[string]bool{"mp4": true, "mkv": true}
+	transcodeVideo     = map[string]bool{"av1": true, "vp9": true, "mpeg2": true, "vc1": true}
+	transcodeAudio     = map[string]bool{"dts": true, "dts-hd": true, "dtshd": true, "truehd": true, "atmos": true, "flac": true, "pcm": true}
+	transcodeContainer = map[string]bool{"avi": true, "wmv": true, "mpg": true, "vob": true, "iso": true}
 )
 
-// IsDirectPlay reports whether the release's parsed codecs and container are all
-// Apple-TV-friendly. Unknown fields count as NOT direct play: the flag is a promise the
-// UI badges and the picker pays 400 points for, so it has to mean "we know", not
-// "nothing contradicted it".
+// IsDirectPlay reports whether anything about this release is KNOWN to force a
+// transcode on an Apple TV. An unparsed field does not block it — see the note above on
+// why the inverse rule made the flag constant.
+//
+// Read it as "no known transcode trigger", and note that is exactly the promise the UI
+// should badge: the alternative phrasing ("confirmed direct play") cannot be honestly
+// made from a release title alone.
 func IsDirectPlay(r indexer.Release) bool {
-	return directPlayVideo[r.VideoCodec] &&
-		directPlayAudio[r.AudioCodec] &&
-		directPlayContainer[r.Container]
+	return !transcodeVideo[r.VideoCodec] &&
+		!transcodeAudio[r.AudioCodec] &&
+		!transcodeContainer[r.Container]
 }
 
 // ── Resolution ────────────────────────────────────────────────────────────────

@@ -632,9 +632,21 @@ func TestIsDirectPlay(t *testing.T) {
 		// AV1 forces a VIDEO transcode — the worst case: a CPU-bound encode fed by a
 		// torrent stream out of a bounded ring buffer.
 		{"av1 forces a video transcode", indexer.Release{VideoCodec: "av1", AudioCodec: "aac", Container: "mkv"}, false},
-		{"unknown container is not a promise", indexer.Release{VideoCodec: "h264", AudioCodec: "aac"}, false},
-		{"unknown codecs are not a promise", indexer.Release{Container: "mkv"}, false},
-		{"nothing known at all", indexer.Release{}, false},
+		{"vc1/mpeg2 force a video transcode", indexer.Release{VideoCodec: "vc1", AudioCodec: "aac", Container: "mkv"}, false},
+		{"an avi container forces a remux at best", indexer.Release{VideoCodec: "h264", AudioCodec: "aac", Container: "avi"}, false},
+
+		// Unknown fields do NOT block. A release title states its container almost never
+		// and its audio codec about half the time — measured on a live search, 106 of 108
+		// releases had no parseable container. Treating unknown as hostile made this
+		// function return false for every release in that search: a constant, a +400
+		// bonus that could never be paid, and a require_direct_play filter that would
+		// have rejected the entire swarm. The things that genuinely break an Apple TV
+		// (AV1, DTS-HD, TrueHD) are nearly always named in the title, because they are
+		// selling points.
+		{"unknown container does not block", indexer.Release{VideoCodec: "h264", AudioCodec: "aac"}, true},
+		{"unknown codecs do not block", indexer.Release{Container: "mkv"}, true},
+		{"nothing known at all", indexer.Release{}, true},
+		{"a hostile field still blocks when the rest is unknown", indexer.Release{AudioCodec: "dts-hd"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
