@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -138,6 +139,71 @@ type resolveGroup struct {
 
 func newResolveGroup() *resolveGroup { return &resolveGroup{m: map[string]*sync.Mutex{}} }
 
+// resolveCooldown suppresses repeat SLOW resolves for an identity that just failed one.
+//
+// resolveGroup collapses CONCURRENT attempts, but not SEQUENTIAL ones, and the expensive
+// caller here is sequential: Jellyfin's ffprobe re-requests a .strm as soon as the last
+// attempt errors, with no backoff of its own. In this deployment that produced 7,813
+// probes of a single episode in five minutes, each one a full 90-second resolve budget —
+// an indexer search plus up to four TorrServer add/drop cycles — for a title that had no
+// playable release either time. 7,876 of 7,878 /play requests in the journal came from
+// libavformat rather than a player.
+//
+// A failure is therefore remembered briefly and served straight back. This is a cache of
+// the NEGATIVE result only: a success clears the entry immediately, so the moment a
+// release becomes resolvable the next play gets it. Keyed on the same play identity the
+// single-flight uses, so the two agree on what "the same title" means.
+type resolveCooldown struct {
+	mu  sync.Mutex
+	m   map[string]time.Time
+	ttl time.Duration
+}
+
+func newResolveCooldown(ttl time.Duration) *resolveCooldown {
+	return &resolveCooldown{m: map[string]time.Time{}, ttl: ttl}
+}
+
+// blocked reports whether this identity failed to resolve recently, and how long is left.
+func (c *resolveCooldown) blocked(key string) (time.Duration, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	until, ok := c.m[key]
+	if !ok {
+		return 0, false
+	}
+	left := time.Until(until)
+	if left <= 0 {
+		delete(c.m, key)
+		return 0, false
+	}
+	return left, true
+}
+
+// fail starts (or extends) the cooldown for an identity.
+func (c *resolveCooldown) fail(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m[key] = time.Now().Add(c.ttl)
+	// Opportunistic sweep: this map is keyed by title and only ever holds identities that
+	// failed within the TTL, so it stays small — but a long-lived process should not grow
+	// it without bound just because nobody asked about an old key again.
+	if len(c.m) > 512 {
+		now := time.Now()
+		for k, until := range c.m {
+			if until.Before(now) {
+				delete(c.m, k)
+			}
+		}
+	}
+}
+
+// succeed clears any cooldown, so a title that becomes playable is instantly playable.
+func (c *resolveCooldown) succeed(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.m, key)
+}
+
 // lock acquires the per-key mutex, honouring ctx while waiting. The returned release
 // func must be called if (and only if) ok is true.
 func (g *resolveGroup) lock(ctx context.Context, key string) (release func(), ok bool) {
@@ -163,4 +229,63 @@ func (g *resolveGroup) lock(ctx context.Context, key string) (release func(), ok
 		go func() { <-done; mu.Unlock() }()
 		return nil, false
 	}
+}
+
+// searchLimiter is a small fixed-window IP limiter for the anonymous release-search
+// endpoint. That endpoint drives a live Prowlarr query with a 150-second budget and had
+// no throttle of any kind, so an unauthenticated caller on the LAN or the tailnet could
+// pin the indexers indefinitely at no cost to themselves. The login limiter next door is
+// keyed on failed credentials and does not fit a read endpoint that legitimately succeeds
+// every time, hence a separate one.
+type searchLimiter struct {
+	mu     sync.Mutex
+	hits   map[string][]time.Time
+	window time.Duration
+	max    int
+}
+
+func newSearchLimiter(max int, window time.Duration) *searchLimiter {
+	return &searchLimiter{hits: map[string][]time.Time{}, window: window, max: max}
+}
+
+// allow records a hit for ip and reports whether it is within budget.
+func (l *searchLimiter) allow(ip string) bool {
+	now := time.Now()
+	cutoff := now.Add(-l.window)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	kept := l.hits[ip][:0]
+	for _, t := range l.hits[ip] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) >= l.max {
+		l.hits[ip] = kept
+		return false
+	}
+	l.hits[ip] = append(kept, now)
+
+	// Drop idle clients so the map does not accumulate one entry per address seen.
+	if len(l.hits) > 1024 {
+		for k, v := range l.hits {
+			if len(v) == 0 || v[len(v)-1].Before(cutoff) {
+				delete(l.hits, k)
+			}
+		}
+	}
+	return true
+}
+
+// clientIPOf keys the search limiter by peer address. X-Forwarded-For is deliberately NOT
+// honoured, matching internal/api's own limiter: this service is reached directly on the
+// LAN, and trusting a client-supplied header would let a caller mint a fresh bucket per
+// request simply by varying it.
+func clientIPOf(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }

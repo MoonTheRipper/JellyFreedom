@@ -54,7 +54,10 @@ registered falls through to `RequireAdmin`** — the default is closed.
   `GET /api/browse/trending`, `GET /api/browse/discover`
 - Library and queue reads: `GET /api/libraries`, `GET /api/library`,
   `GET /api/library/status`, `GET /api/queue`, `GET /api/queue/count`,
-  `GET /api/subscriptions`, `GET /api/calendar`, `GET /api/releases`
+  `GET /api/subscriptions`, `GET /api/calendar`
+- `GET /api/releases` — readable anonymously, but **magnet links are stripped** for callers
+  without a session, and anonymous use is rate-limited to 20 searches per minute per
+  address. See the note below.
 - Streaming: `GET /play/movie/{tmdb}`, `GET /play/tv/{tmdb}/{season}/{episode}`, and the
   legacy `GET /proxy/stream` — see *Streaming routes* below.
 - `POST /webhook/jellyfin` — session-less by necessity, but secret-gated. See below.
@@ -68,6 +71,17 @@ routes, and `POST /api/auth/change-password`.
 `GET /api/leak`, `/api/settings*`, `/api/vpn/configs*`, `/api/users*`, `/api/logs`,
 `/api/tasks`, `/api/services/{name}/restart`, `/api/vpn`, `/api/debug/releases`, and every
 unregistered `/api/` path.
+
+> **Fixed:** `GET /api/releases` was registered with no auth wrapper at all and returned
+> `picker.ScoredRelease`, which embeds `indexer.Release` and therefore its `magnet` field.
+> Every magnet a search turned up was readable by anyone who could reach port 1990 — and
+> the service listens on all interfaces, so that includes the whole LAN and any tailnet it
+> is joined to. The endpoint also drove a live Prowlarr query with a 150-second budget and
+> no throttle, which made it a free way to pin the indexers. It is now wrapped in
+> `OptionalAuth`: signed-in callers get magnets, anonymous callers get the same list with
+> `magnet` blanked, and anonymous searches are rate-limited per address. The web UI had
+> already been written against this contract — it shows "sign in to force this exact
+> release" when a magnet is absent — so only the server side was missing.
 
 > **Fixed:** `GET /api/status` and `GET /api/leak` used to be public. They return the host's
 > real public IPv4, the VPN exit IP, and the WireGuard peer public key — an unauthenticated

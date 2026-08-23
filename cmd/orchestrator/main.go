@@ -141,6 +141,9 @@ func main() {
 	worker := &queueWorker{
 		db: db, tmdb: tmdbClient, indexer: indexerClient, ts: tsClient, jf: jfClient, cfg: cfg,
 		resolves: newResolveGroup(),
+		// 60s is long enough to absorb a probe storm, short enough that a user who
+		// fixes the cause (starts the VPN, adds an indexer) is not left waiting.
+		cooldown: newResolveCooldown(60 * time.Second),
 	}
 	go worker.run(ctx)
 
@@ -1084,6 +1087,22 @@ func main() {
 			return
 		}
 
+		// A HEAD is a metadata question, never a stream. Go's ServeMux serves HEAD from a
+		// GET pattern, so without this a prober asking "does this exist and how big is it"
+		// ran the identical handler — including the 90-second slow resolve and the
+		// TorrServer add/drop cycle behind it. Answer from the library row if we have one
+		// and decline otherwise; nothing that actually plays media uses HEAD.
+		if r.Method == http.MethodHead {
+			if it, herr := db.GetByIdentity(tmdbID, mediaType, season, episode); herr == nil && it != nil && it.Status == "ready" {
+				w.Header().Set("Content-Type", "video/mp4")
+				w.Header().Set("Accept-Ranges", "bytes")
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			http.Error(w, "no cached release for this title", http.StatusServiceUnavailable)
+			return
+		}
+
 		// This item is now playing — stop any keep-warm loop for it; real playback takes over.
 		cancelWarm(tmdbID, season, episode)
 
@@ -1138,6 +1157,21 @@ func main() {
 		// Jellyfin probing the file while the player also requests it) does not multiply
 		// a 90-second search by the number of concurrent requests.
 		key := playIdentity(mediaType, tmdbID, season, episode)
+
+		// Did this identity just fail a slow resolve? Serve that answer back rather than
+		// paying for it again. Without this, a client that retries on error (Jellyfin's
+		// prober does, with no backoff) re-runs the full search-and-validate cycle for a
+		// title we established seconds ago has nothing playable behind it.
+		if left, blocked := worker.cooldown.blocked(key); blocked {
+			slog.Info("play: identity is in resolve cooldown after a recent failure",
+				"tmdb", tmdbID, "s", season, "e", episode,
+				"retry_in", left.Round(time.Second).String(), "ua", r.UserAgent())
+			w.Header().Set("Retry-After", strconv.Itoa(int(left.Seconds())+1))
+			http.Error(w, "no playable release was found for this title a moment ago — try again shortly",
+				http.StatusServiceUnavailable)
+			return
+		}
+
 		slowCtx, cancelSlow := context.WithTimeout(r.Context(), resolveDeadline)
 		defer cancelSlow()
 		release, ok := worker.resolves.lock(slowCtx, key)
@@ -1167,15 +1201,18 @@ func main() {
 		if err != nil {
 			if slowCtx.Err() != nil && r.Context().Err() == nil {
 				slog.Warn("play: resolve hit the deadline", "tmdb", tmdbID, "s", season, "e", episode)
+				worker.cooldown.fail(key)
 				http.Error(w, "could not find a playable release within the time limit — try again shortly",
 					http.StatusGatewayTimeout)
 				return
 			}
 			slog.Warn("play: resolve failed", "tmdb", tmdbID, "s", season, "e", episode, "err", err)
+			worker.cooldown.fail(key)
 			// A caller-visible reason, with no transport detail or upstream URL in it.
 			http.Error(w, "no playable release available right now", http.StatusBadGateway)
 			return
 		}
+		worker.cooldown.succeed(key)
 		worker.cacheResolved(res, item, mediaType, tmdbID, season, episode)
 		maybePreWarm(r, worker, mediaType, tmdbID, season, episode, res.lengthBytes)
 		streamProxy(w, r, res.hash, res.fileIndex)
@@ -1222,7 +1259,25 @@ func main() {
 		jsonOK(w, details)
 	})
 
-	mux.HandleFunc("GET /api/releases", func(w http.ResponseWriter, r *http.Request) {
+	// Anonymous callers may SEE the release list — the dashboard shows it before you sign
+	// in — but they must not receive magnet links, and they must not be able to drive an
+	// unbounded number of live indexer searches.
+	//
+	// Neither held before. The route was registered bare, and the response marshals
+	// picker.ScoredRelease, which embeds indexer.Release and therefore its `magnet` field:
+	// every magnet the search returned went to anyone who could reach port 1990, on a
+	// service that listens on all interfaces. The web UI already had a branch for the
+	// stripped case ("sign in to force this exact release") citing a contract clause that
+	// was never actually implemented anywhere — so the UI expected this behaviour and only
+	// the server was missing it.
+	releaseSearchLimiter := newSearchLimiter(20, time.Minute)
+	mux.Handle("GET /api/releases", api.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		signedIn := api.UserFromContext(r) != nil
+		if !signedIn && !releaseSearchLimiter.allow(clientIPOf(r)) {
+			w.Header().Set("Retry-After", "60")
+			jsonErr(w, "too many release searches — slow down or sign in", http.StatusTooManyRequests)
+			return
+		}
 		q := r.URL.Query()
 		tmdbID, err := strconv.Atoi(q.Get("tmdb_id"))
 		mediaType := q.Get("type")
@@ -1261,8 +1316,15 @@ func main() {
 			return
 		}
 		scored := picker.Score(releases, livePicker(cfg), details.Title, details.Year)
+		if !signedIn {
+			// Field-wise rather than a filtered struct copy, so a new field added to
+			// ScoredRelease later cannot silently become a second leak here.
+			for i := range scored {
+				scored[i].Magnet = ""
+			}
+		}
 		jsonOK(w, scored)
-	})
+	})))
 
 	// Remove — fully deletes an item from the library (user-initiated, not expiry).
 	// Accessible to any logged-in user so the media UI can remove items.
@@ -2219,6 +2281,7 @@ type queueWorker struct {
 	// resolves de-duplicates concurrent resolves of the SAME identity, so a client
 	// hammering refresh cannot multiply a 90-second search.
 	resolves *resolveGroup
+	cooldown *resolveCooldown
 }
 
 func (w *queueWorker) run(ctx context.Context) {
@@ -3104,6 +3167,39 @@ func taskSubscriptionCheck(ctx context.Context, db *store.Store, tmdbClient *tmd
 	}
 	today := time.Now().Format("2006-01-02")
 	enqueued, retired := 0, 0
+
+	// Episodes that failed recently are not retried on this pass.
+	//
+	// EpisodeActive treats only "ready in the library" and "pending/processing in the
+	// queue" as reasons to skip — a FAILED row does not block, and unlike /request/season
+	// this loop never clears terminal rows either. So an episode with no obtainable
+	// release was re-enqueued on every run, forever: one subscribed show in this
+	// deployment accumulated 501 failed rows for eight episodes, one per episode every six
+	// hours from June to August, each costing a full indexer search that had already
+	// failed a dozen times.
+	//
+	// A day's backoff keeps the self-healing property that matters (a release that appears
+	// is still picked up automatically, just within 24h instead of 6h) while cutting the
+	// wasted searches by 4x. Note this backs off on RECENCY, not on a failure count: the
+	// queue keeps only the newest terminal row per identity, so the count is not available
+	// to escalate on. If permanently-unobtainable episodes remain a problem, the next step
+	// is a persisted failure count with a widening backoff, not a longer fixed window.
+	const failedRetryBackoff = 24 * time.Hour
+	recentlyFailed := map[string]bool{}
+	if all, err := db.ListAllQueue(); err != nil {
+		// Non-fatal: without the map every episode is simply eligible, which is the old
+		// behaviour. Worth logging because it silently restores the wasteful path.
+		slog.Warn("subscription check: could not read the queue for failure backoff; "+
+			"recently-failed episodes will be retried this run", "err", err)
+	} else {
+		cutoff := time.Now().Add(-failedRetryBackoff)
+		for _, q := range all {
+			if q.Status == "failed" && q.UpdatedAt.After(cutoff) {
+				recentlyFailed[fmt.Sprintf("%d:%d:%d", q.TMDBID, q.Season, q.Episode)] = true
+			}
+		}
+	}
+	skippedFailed := 0
 	for _, sub := range subs {
 		select {
 		case <-ctx.Done():
@@ -3121,6 +3217,10 @@ func taskSubscriptionCheck(ctx context.Context, db *store.Store, tmdbClient *tmd
 		for _, ep := range episodes {
 			// Only episodes that have actually aired (air_date <= today).
 			if ep.AirDate == "" || ep.AirDate > today {
+				continue
+			}
+			if recentlyFailed[fmt.Sprintf("%d:%d:%d", sub.TMDBID, sub.Season, ep.Number)] {
+				skippedFailed++
 				continue
 			}
 			active, aerr := db.EpisodeActive(sub.TMDBID, sub.Season, ep.Number)
@@ -3161,7 +3261,8 @@ func taskSubscriptionCheck(ctx context.Context, db *store.Store, tmdbClient *tmd
 			retired++
 		}
 	}
-	slog.Info("subscription check complete", "subscriptions", len(subs), "enqueued", enqueued, "retired", retired)
+	slog.Info("subscription check complete", "subscriptions", len(subs), "enqueued", enqueued,
+		"retired", retired, "skipped_recently_failed", skippedFailed)
 	return nil
 }
 
