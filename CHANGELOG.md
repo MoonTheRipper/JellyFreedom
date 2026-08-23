@@ -9,6 +9,85 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-23
+
+A queue that could bury your whole library under one title, a Request button that had never
+worked for a signed-in user, and a picker that ignored resolution entirely.
+
+### Fixed
+- **The queue could fill with thousands of copies of one title.** A request carrying an
+  explicit magnet skipped every idempotency check, and nothing else stood in the way — the
+  queue table had no unique constraint and the endpoint no rate limit. One client re-firing
+  put 19,430 identical rows in a live queue in ten minutes, and the worker then spent a day
+  re-resolving the same magnet every five seconds: an indexer search, a TorrServer add and
+  drop, an identical `.strm` rewrite and a Jellyfin library scan, per row.
+- **Your shows could vanish from the queue page entirely.** The queue list is capped at 100
+  rows, newest first, so a burst of duplicates at the head of the list pushed every real
+  title out of view. Requesting a release is now idempotent regardless of magnet, a partial
+  unique index makes a duplicate unrepresentable, and re-picking a release repoints the row
+  you are already watching instead of adding one beside it.
+- **Request, Request Season, Subscribe and every Remove button did nothing when signed in.**
+  The sign-in guard ran its own callback, so each of these called back into itself until the
+  stack overflowed; because the callers are async the error surfaced as an unhandled
+  rejection and the button simply failed in silence.
+- **The wrong episode could be grabbed and cached as correct.** The episode matcher tested
+  `s1e5` as a substring, which also matches S1E50 through S1E59, and the same test chose the
+  file inside a season pack. Every file in a `Show.S01E01-E10.COMPLETE/` folder also matched
+  a request for E01, so the largest file in the pack was returned with confidence.
+- **The 2018 film *Cam* could never be picked.** The camera-rip filter ran against the whole
+  release title, film name included, so every release of it was scored as a cinema rip. The
+  same flaw hit `.ts` as a container and `TC` as a Traditional-Chinese tag.
+- **A per-library `reject_cam` setting was silently ignored** and the global value used.
+- **Airing seasons were labelled "Complete".** A season holding every *aired* episode of a
+  running show rendered as a finished one, leaving no signal when the next episode dropped.
+  "Complete" and "Up to date" are now different states, as are "aired but not acquired" and
+  "not out yet".
+- **Subscribed shows re-searched permanently unobtainable episodes every six hours, forever.**
+  A failed attempt did not block a retry and nothing cleared it; one show had accumulated 501
+  failed rows since June.
+- **"Clear finished" cleared at most 100 items** however many there were, because it deleted
+  row by row over one page of results.
+- **Signed-out visitors were shown the sign-in dialog on arrival.** The first "who am I"
+  request is expected to be unauthenticated; it was being treated as a session expiring.
+- Release titles no longer have words mangled during matching — "Ghosts" was being reduced to
+  "ghos" and "Cutthroat Island" to "throat island" — and `DD+`-style audio written as `DDP`
+  is now recognised.
+
+### Added
+- **The queue and the library are now trees: show → season → episode.** Seasons load on
+  demand, so an episode is reachable whether or not it falls inside the newest hundred rows.
+  Anything needing attention sorts to the top, and "jump to active" goes straight to the
+  episode being worked on. Failed outranks in-progress at every level, because a season with
+  failures needs a person even while other episodes are still fetching.
+- **Resolution and direct play are now ranking signals.** Neither was scored at all, and the
+  codec, audio and container bonuses combined were worth less than a single step on the
+  seeder ladder — so a 480p release with many seeders beat a 1080p one with fewer, every
+  time. New picker settings: `target_resolution` (default 1080p), `require_direct_play`
+  (default off) and `max_mbps`, which bounds *bitrate* rather than raw size. A 60 GB remux
+  and a 4 GB WEB-DL of the same film are 65 Mbps and 4.5 Mbps; only one of them streams.
+- The VPN watchdog now checks that torrent traffic is **anonymous**, not merely working. It
+  reads the address the tunnel actually exits on and refuses to report healthy if that is
+  this machine's own public address or the default route has left the tunnel — stopping
+  TorrServer if so, and restarting it once anonymity returns.
+
+### Security
+- `GET /api/releases` was unauthenticated and returned magnet links and info hashes to
+  anyone who could reach the port — on a service that listens on all interfaces. It now
+  strips both for callers without a session and rate-limits anonymous searches. The two
+  fields go together: a bare info hash is a working magnet for anything the DHT can find.
+- `/play` ran the full 90-second resolver for metadata probes, and repeated a failed resolve
+  without limit — one episode was probed 7,813 times in five minutes. Probes are answered
+  from the library or declined, and a failed resolve is remembered briefly.
+
+### Upgrading
+The database migration **deletes duplicate queue rows**, keeping the oldest in-flight row per
+title and the most recent outcome per title. On the deployment this was found on, that took
+the queue from 26,187 rows to 1,591. Back up `/var/lib/jellyfreedom/jellyfreedom.db` first if
+you want the history.
+
+Automatic picks will change. Resolution and direct play now carry real weight, so a
+well-seeded low-resolution release that used to win will often lose to a better one.
+
 ## [0.4.2] - 2026-08-22
 
 ### Fixed
@@ -274,7 +353,11 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.4.2...v0.5.0
+[0.4.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.2.1...v0.4.0
 [0.2.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/MoonTheRipper/JellyFreedom/releases/tag/v0.1.0
