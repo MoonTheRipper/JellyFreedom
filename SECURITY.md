@@ -66,7 +66,9 @@ registered falls through to `RequireAdmin`** — the default is closed.
 - `POST /api/auth/login` — see *Sessions and login* below.
 
 **Session required (`RequireAuth`):** `POST /request`, `POST /request/season`, the queue
-cancel/delete/diagnosis routes, subscription create/delete, the `POST /api/library/.../drop`
+cancel/delete/diagnosis routes, `DELETE /api/queue/finished` (bulk clear — an admin clears
+everyone's terminal rows, a signed-in user only their own, and in-flight rows are never
+touched), subscription create/delete, the `POST /api/library/.../drop`
 routes, and `POST /api/auth/change-password`.
 
 **Admin session required (`RequireAdmin`):** the dashboard, `GET /api/status`,

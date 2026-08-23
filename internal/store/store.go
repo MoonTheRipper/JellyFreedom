@@ -1379,6 +1379,38 @@ func (s *Store) CancelQueueItem(id int64, requester string, isAdmin bool) (int64
 }
 
 // DeleteQueueItem removes a finished row. Returns rows affected (see CancelQueueItem).
+// DeleteFinishedQueue removes every terminal (done|failed|cancelled) row the caller is
+// allowed to remove, and reports how many went.
+//
+// The UI's "clear finished" used to delete row-by-row over whatever the flat feed had
+// handed it — at most 100 rows — so against 1,245 finished items it cleared 8% per press
+// and looked broken. Doing it in one statement also means one transaction rather than a
+// hundred sequential round trips.
+//
+// The ownership rule matches DeleteQueueItem exactly: an admin clears everything, a
+// signed-in user clears only their own, and an anonymous caller clears nothing. In-flight
+// rows are never touched, so this cannot cancel work by accident.
+func (s *Store) DeleteFinishedQueue(requester string, isAdmin bool) (int64, error) {
+	var (
+		res sql.Result
+		err error
+	)
+	if isAdmin {
+		res, err = s.db.Exec(`DELETE FROM queue WHERE status IN ('done','failed','cancelled')`)
+	} else {
+		if requester == "" {
+			return 0, nil
+		}
+		res, err = s.db.Exec(
+			`DELETE FROM queue WHERE requested_by=? AND status IN ('done','failed','cancelled')`,
+			requester)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (s *Store) DeleteQueueItem(id int64, requester string, isAdmin bool) (int64, error) {
 	var (
 		res sql.Result

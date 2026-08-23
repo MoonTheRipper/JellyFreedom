@@ -714,3 +714,85 @@ func TestListQueueUnfilteredIsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// TestDeleteFinishedQueueRespectsOwnership: the bulk clear must obey exactly the same
+// rule as the per-row delete — an anonymous caller clears nothing, a user clears only
+// their own, an admin clears everyone's — and it must never touch in-flight work.
+func TestDeleteFinishedQueueRespectsOwnership(t *testing.T) {
+	seed := func(t *testing.T) *Store {
+		t.Helper()
+		s := newTestStore(t)
+		// alice: one done, one failed, one still pending.
+		for i, st := range []string{"done", "failed"} {
+			id := enqueue(t, s, "alice", 50, 1, i+1)
+			it, _ := s.GetQueueItem(id)
+			it.Status = st
+			if err := s.UpdateQueue(it); err != nil {
+				t.Fatal(err)
+			}
+		}
+		enqueue(t, s, "alice", 50, 1, 9)
+		// bob: one done.
+		id := enqueue(t, s, "bob", 51, 1, 1)
+		it, _ := s.GetQueueItem(id)
+		it.Status = "done"
+		if err := s.UpdateQueue(it); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	t.Run("anonymous clears nothing", func(t *testing.T) {
+		s := seed(t)
+		n, err := s.DeleteFinishedQueue("", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("an anonymous caller removed %d rows", n)
+		}
+	})
+
+	t.Run("a user clears only their own", func(t *testing.T) {
+		s := seed(t)
+		n, err := s.DeleteFinishedQueue("alice", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 2 {
+			t.Fatalf("removed %d rows, want alice's 2 terminal rows", n)
+		}
+		all, _ := s.ListAllQueue()
+		// alice's pending row and bob's done row must both survive.
+		var pending, bobs int
+		for _, q := range all {
+			if q.Status == "pending" {
+				pending++
+			}
+			if q.RequestedBy == "bob" {
+				bobs++
+			}
+		}
+		if pending != 1 {
+			t.Errorf("in-flight rows surviving = %d, want 1", pending)
+		}
+		if bobs != 1 {
+			t.Errorf("bob's rows surviving = %d, want 1", bobs)
+		}
+	})
+
+	t.Run("an admin clears everyone's", func(t *testing.T) {
+		s := seed(t)
+		n, err := s.DeleteFinishedQueue("root", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 3 {
+			t.Fatalf("removed %d rows, want all 3 terminal rows", n)
+		}
+		all, _ := s.ListAllQueue()
+		if len(all) != 1 || all[0].Status != "pending" {
+			t.Fatalf("in-flight work was destroyed: %+v", all)
+		}
+	})
+}

@@ -996,24 +996,32 @@ async function doJump(tmdbId, mediaType) {
 function clearFinished() { requireLogin(() => doClearFinished()); }
 
 async function doClearFinished() {
-  const finished = state.queueItems.filter(i => ['done', 'failed', 'cancelled'].includes(i.status));
-  if (!finished.length) { toast('Nothing to clear'); return; }
-  // There is no bulk-delete endpoint, so this can only clear the rows the flat
-  // feed handed us — at most 100. Say so up front rather than reporting
-  // "Cleared 100" against a headline of 1,245 and looking broken.
+  const local = state.queueItems.filter(i => ['done', 'failed', 'cancelled'].includes(i.status));
   const agg = state.queueGroups;
+  // The aggregate knows the real total; the flat feed only ever sees its own page.
   const all = agg ? num(agg.counts.done) + num(agg.counts.failed) + num(agg.counts.cancelled)
-    : finished.length;
-  const more = all > finished.length
-    ? `\n\nThis pass removes ${finished.length} of ${all}. Run it again to continue.` : '';
-  if (!confirm(`Clear ${finished.length} finished item${finished.length === 1 ? '' : 's'} from the queue?${more}`)) return;
-  let failed = 0;
-  for (const i of finished) {
-    try { await apiFetch(`/api/queue/${encodeURIComponent(i.id)}`, {method: 'DELETE'}); }
-    catch (_) { failed++; }
+    : local.length;
+  if (!all) { toast('Nothing to clear'); return; }
+  if (!confirm(`Clear ${all} finished item${all === 1 ? '' : 's'} from the queue?`)) return;
+
+  // One bulk call. This used to delete row-by-row over the flat feed, so against 1,245
+  // finished items it cleared at most 100 per press and read as broken. Fall back to the
+  // old loop when the endpoint is absent, so a newer UI against an older orchestrator
+  // still does something useful rather than failing outright.
+  let removed;
+  try {
+    const d = await apiFetch('/api/queue/finished', {method: 'DELETE'});
+    removed = num(d && d.removed);
+  } catch (e) {
+    if (e.status !== 404 && e.status !== 405) { toast(e.message, {ok: false}); return; }
+    let failed = 0;
+    for (const i of local) {
+      try { await apiFetch(`/api/queue/${encodeURIComponent(i.id)}`, {method: 'DELETE'}); }
+      catch (_) { failed++; }
+    }
+    removed = local.length - failed;
   }
-  if (failed) toast(`Cleared ${finished.length - failed}, ${failed} could not be removed`, {ok: false});
-  else toast(`Cleared ${finished.length} item${finished.length === 1 ? '' : 's'}`);
+  toast(`Cleared ${removed} item${removed === 1 ? '' : 's'}`);
   await pollQueue();
   render(true);
   emit('queue-cleared');

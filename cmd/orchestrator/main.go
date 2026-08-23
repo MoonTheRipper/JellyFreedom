@@ -590,6 +590,19 @@ func main() {
 		jsonOK(w, groups)
 	})))
 
+	// Bulk clear, so "clear finished" is one call instead of a hundred. RequireAuth
+	// rather than OptionalAuth: this deletes, and an anonymous caller owns no rows.
+	mux.Handle("DELETE /api/queue/finished", api.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, username, isAdmin := viewerOf(r)
+		n, err := db.DeleteFinishedQueue(username, isAdmin)
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not clear the queue", err)
+			return
+		}
+		slog.Info("cleared finished queue rows", "count", n, "by", username, "admin", isAdmin)
+		jsonOK(w, map[string]any{"removed": n})
+	})))
+
 	mux.Handle("GET /api/queue/{id}/diagnosis", api.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		if err != nil {
