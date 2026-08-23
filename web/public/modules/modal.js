@@ -615,8 +615,16 @@ function fallbackCopy(url) {
 
 /* ── Requesting ──────────────────────────────────────────────────────────── */
 
-async function requestIt() {
-  if (!requireLogin(() => requestIt())) return;
+/* requireLogin RUNS its callback immediately when the user is already signed in
+   (auth.js:47). Passing the guarded function itself made these recurse into
+   themselves until the stack blew, and because they are async the RangeError
+   surfaced as an unhandled rejection — so for a SIGNED-IN user the Request,
+   Request Season and Subscribe buttons threw and did nothing visible. Guard and
+   work are now separate functions. See the same note in library.js. */
+
+function requestIt() { requireLogin(() => doRequestIt()); }
+
+async function doRequestIt() {
   const btn = el('req-btn');
   if (!btn) return;
   btn.disabled = true;
@@ -671,8 +679,9 @@ async function requestIt() {
   setTimeout(() => loadMyLibrary().catch(() => {}), 8000);
 }
 
-async function requestSeason(n, total) {
-  if (!requireLogin(() => requestSeason(n, total))) return;
+function requestSeason(n, total) { requireLogin(() => doRequestSeason(n, total)); }
+
+async function doRequestSeason(n, total) {
   const btn = document.getElementById('sreq-' + n);
   const restore = btn ? btn.innerHTML : '';
   if (btn) { btn.disabled = true; btn.textContent = 'Queuing…'; }
@@ -715,8 +724,9 @@ async function requestSeason(n, total) {
   refreshSeasons();
 }
 
-async function toggleSubscription(season) {
-  if (!requireLogin(() => toggleSubscription(season))) return;
+function toggleSubscription(season) { requireLogin(() => doToggleSubscription(season)); }
+
+async function doToggleSubscription(season) {
   const d = ctx.details || {};
   const title = d.title || ctx.item.title || '';
   const existing = findSub(ctx.item.tmdb_id, season);

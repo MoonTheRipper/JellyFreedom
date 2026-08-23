@@ -675,3 +675,70 @@ select.lib-picker{flex:1}
   .search-submit span{display:none}
   .search-submit{padding:13px 16px}
 }
+
+/* ── Release search wait state ────────────────────────────────────────────
+   Searching indexers was measured at 43s against a real Prowlarr with 16
+   indexers. A bare shimmer that long reads as a hung UI, so the wait states
+   what it is doing and counts up. .ic.spin previously existed only in the
+   dashboard stylesheet, so the glyph here never actually span.              */
+.ic.spin{animation:jf-spin 1.1s linear infinite}
+@keyframes jf-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.ic.spin{animation:none}}
+
+.rel-wait{padding:14px 16px;border:1px solid var(--line);border-radius:var(--r-md);
+  background:var(--surface-2);margin-bottom:10px}
+.rel-wait-head{display:flex;align-items:center;gap:10px;font-weight:600;color:var(--text)}
+.rel-wait-secs{color:var(--muted2);font-variant-numeric:tabular-nums}
+.rel-wait-note{margin:6px 0 0;color:var(--muted2);font-size:.86rem;line-height:1.45}
+
+/* ── Queue tree: show → season → episode ──────────────────────────────────
+   The queue page used to list every SEASON at the top level, because that is
+   the finest grouping the flat 100-row feed could support. A show with ten
+   seasons in flight was ten unrelated sibling rows. Level 1 is now the title,
+   level 2 the season (the existing .season-group, reused verbatim), level 3
+   the episodes — fetched only when a season is opened.                      */
+.show-group{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  margin-bottom:8px;overflow:hidden}
+.show-row{display:flex;align-items:center;gap:8px;padding-right:12px}
+.show-group-head{display:flex;align-items:center;gap:12px;padding:12px 14px;cursor:pointer;
+  flex:1;min-width:0}
+.show-group-head:hover{background:var(--surface2)}
+.show-group-head:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:0}
+/* CHILD combinator, not a descendant one: .show-group.open also contains every
+   nested season head, and a descendant selector rotated their chevrons too. */
+.show-group.open > .show-row .sg-chevron{transform:rotate(90deg)}
+.show-seasons{border-top:1px solid var(--border);padding:8px 10px 10px;
+  background:rgba(0,0,0,.16);display:flex;flex-direction:column;gap:6px}
+.show-seasons .season-group{margin-bottom:0;background:var(--surface2)}
+.show-seasons .season-group-head{padding:9px 12px}
+.show-hidden{display:flex;align-items:center;gap:7px;padding:8px 4px 2px;
+  color:var(--muted);font-size:12px}
+.show-jump{flex-shrink:0}
+@media (max-width:620px){
+  .show-jump span{display:none}
+  .show-row{padding-right:8px}
+}
+
+/* Rolled-up status. Precedence is failed → working → done → empty (see ROLLUP
+   in queue.js): a season with failures needs a human even while other episodes
+   are still fetching, and a blue "in progress" chip on top of it is how a
+   four-figure pile of failures went unnoticed. Colour is never the only
+   signal — the glyph comes from the same RING_ICON map — and the label is
+   real text, so a screen reader and a washed-out TV panel both get the state. */
+.qr-chip{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:999px;
+  font-size:10px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;
+  color:var(--muted2);background:rgba(255,255,255,.05);border:1px solid var(--border);
+  white-space:nowrap}
+.qr-chip .ic{color:var(--qr);width:12px;height:12px}
+.qr-chip.qr-failed{color:var(--red);background:#450a0a;border-color:#7f1d1d}
+.qr-chip.qr-working{color:var(--text)}
+.qr-chip.qr-done{color:var(--green)}
+
+/* Level 3 is fetched on expand, so a season has a real wait state. .ic.spin and
+   @keyframes jf-spin are defined once, above — do not add a second set.      */
+.sg-wait{display:flex;align-items:center;gap:8px;padding:10px 2px;
+  color:var(--muted2);font-size:12px}
+.sg-wait-err{padding:8px 0}
+/* The episode the machine is on, findable without reading every row. */
+.sg-ep.now{background:rgba(96,165,250,.08);border-radius:6px;margin:0 -8px;padding:7px 8px}
+.sg-ep.now .sg-ep-name{color:var(--text)}

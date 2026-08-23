@@ -193,8 +193,24 @@ function renderLibCard(item) {
 
 /* ── Removal operations (also used from the modal) ───────────────────────── */
 
-export async function removeLibItem(hash, title) {
-  if (!requireLogin(() => removeLibItem(hash, title))) return false;
+/* requireLogin RUNS its callback immediately when the user is already signed in
+   (auth.js:47), so passing the guarded function itself as the callback made each
+   of these call straight back into itself: requireLogin -> removeX -> requireLogin
+   -> ... until the stack blew. Because they are async, the RangeError surfaced as
+   an unhandled rejection, so for a SIGNED-IN user every Remove button threw and
+   did nothing visible. Signed-out was no better: the callback is replayed after a
+   successful login, and the replay recursed the same way.
+
+   Split guard from work. `state.user` is checked directly rather than reusing
+   requireLogin's return value, because these must still hand back a promise —
+   removeEpisode's result drives refreshEpisodeList() in modal.js. */
+
+export function removeLibItem(hash, title) {
+  if (!state.user) { requireLogin(() => doRemoveLibItem(hash, title)); return Promise.resolve(false); }
+  return doRemoveLibItem(hash, title);
+}
+
+async function doRemoveLibItem(hash, title) {
   if (!confirm(`Remove “${title}” from your library?`)) return false;
   try {
     await apiFetch(`/api/library/${encodeURIComponent(hash)}/drop`, {method: 'POST'});
@@ -209,8 +225,12 @@ export async function removeLibItem(hash, title) {
   return true;
 }
 
-export async function removeSeries(tmdbId, title) {
-  if (!requireLogin(() => removeSeries(tmdbId, title))) return false;
+export function removeSeries(tmdbId, title) {
+  if (!state.user) { requireLogin(() => doRemoveSeries(tmdbId, title)); return Promise.resolve(false); }
+  return doRemoveSeries(tmdbId, title);
+}
+
+async function doRemoveSeries(tmdbId, title) {
   if (!confirm(`Remove the entire series “${title}” from your library? You can re-request it afterward.`)) return false;
   let d;
   try {
@@ -227,8 +247,12 @@ export async function removeSeries(tmdbId, title) {
   return true;
 }
 
-export async function removeSeason(tmdbId, season) {
-  if (!requireLogin(() => removeSeason(tmdbId, season))) return false;
+export function removeSeason(tmdbId, season) {
+  if (!state.user) { requireLogin(() => doRemoveSeason(tmdbId, season)); return Promise.resolve(false); }
+  return doRemoveSeason(tmdbId, season);
+}
+
+async function doRemoveSeason(tmdbId, season) {
   if (!confirm(`Remove all of Season ${season} from your library?`)) return false;
   let d;
   try {
@@ -248,8 +272,12 @@ export async function removeSeason(tmdbId, season) {
   return true;
 }
 
-export async function removeEpisode(tmdbId, season, episode) {
-  if (!requireLogin(() => removeEpisode(tmdbId, season, episode))) return false;
+export function removeEpisode(tmdbId, season, episode) {
+  if (!state.user) { requireLogin(() => doRemoveEpisode(tmdbId, season, episode)); return Promise.resolve(false); }
+  return doRemoveEpisode(tmdbId, season, episode);
+}
+
+async function doRemoveEpisode(tmdbId, season, episode) {
   const lbl = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
   if (!confirm(`Remove ${lbl} from your library?`)) return false;
   try {
