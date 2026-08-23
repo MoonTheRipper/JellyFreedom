@@ -1374,8 +1374,16 @@ func main() {
 		if !signedIn {
 			// Field-wise rather than a filtered struct copy, so a new field added to
 			// ScoredRelease later cannot silently become a second leak here.
+			//
+			// info_hash goes with the magnet. Stripping one and keeping the other would
+			// be theatre: magnet:?xt=urn:btih:<hash> is a working magnet on its own for
+			// anything the DHT can find peers for, which is exactly the well-seeded
+			// releases this list ranks highest. The web UI reads info_hash only off
+			// LIBRARY items (library.js, modal.js), never off a release row, so nothing
+			// in the anonymous view needs it.
 			for i := range scored {
 				scored[i].Magnet = ""
+				scored[i].InfoHash = ""
 			}
 		}
 		jsonOK(w, scored)

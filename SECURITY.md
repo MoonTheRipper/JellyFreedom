@@ -56,7 +56,8 @@ registered falls through to `RequireAdmin`** — the default is closed.
   `GET /api/library/status`, `GET /api/queue`, `GET /api/queue/groups`,
   `GET /api/queue/count`,
   `GET /api/subscriptions`, `GET /api/calendar`
-- `GET /api/releases` — readable anonymously, but **magnet links are stripped** for callers
+- `GET /api/releases` — readable anonymously, but **magnet links and info hashes are
+  stripped** for callers
   without a session, and anonymous use is rate-limited to 20 searches per minute per
   address. See the note below.
 - Streaming: `GET /play/movie/{tmdb}`, `GET /play/tv/{tmdb}/{season}/{episode}`, and the
@@ -80,7 +81,9 @@ unregistered `/api/` path.
 > is joined to. The endpoint also drove a live Prowlarr query with a 150-second budget and
 > no throttle, which made it a free way to pin the indexers. It is now wrapped in
 > `OptionalAuth`: signed-in callers get magnets, anonymous callers get the same list with
-> `magnet` blanked, and anonymous searches are rate-limited per address. The web UI had
+> `magnet` **and `info_hash`** blanked, and anonymous searches are rate-limited per
+> address. Both fields go together — `magnet:?xt=urn:btih:<hash>` is a working magnet on
+> its own for anything the DHT can find peers for, so stripping only one would be theatre. The web UI had
 > already been written against this contract — it shows "sign in to force this exact
 > release" when a magnet is absent — so only the server side was missing.
 
