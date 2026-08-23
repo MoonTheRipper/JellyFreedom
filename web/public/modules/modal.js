@@ -13,8 +13,9 @@
 
 import {apiFetch, esc, num, toast, errorState, sequencer, isAbort, safeUrl} from '../shared/api.js';
 import {icon} from '../shared/icons.js';
-import {state, loadMyLibrary, loadSubscriptions, findSub, on,
-  episodeStatus, seasonRingStatus, seasonProgress, RING_COLOR, RING_ICON} from './state.js';
+import {state, loadMyLibrary, loadSubscriptions, findSub, on, episodeStatus,
+  seasonCounts, rollupCounts, cachedEpisodes, noteSeasons, noteEpisodes, loadQueueSeason,
+  EP_LABEL, EP_TAG, RING_COLOR, RING_ICON} from './state.js';
 import {openDialog, closeDialog, isDialogOpen, focusFirst} from './dialog.js';
 import {requireLogin} from './auth.js';
 import {navItem, closeModalRoute, syncHash} from './router.js';
@@ -22,8 +23,24 @@ import {removeSeries, removeSeason, removeEpisode, removeLibItem} from './librar
 import {pollQueue} from './queue.js';
 import * as picker from './releases.js';
 
-const EP_LABEL = {ready: 'Ready', stale: 'Expired', pending: 'Queued',
-  processing: 'Fetching', failed: 'Failed', none: ''};
+/**
+ * SEASON_ROLL words the rolled-up season states. It is the same table
+ * library.js renders on its tree, so a season says the same thing in both
+ * places — and `airing` and `complete` are deliberately NOT the same entry.
+ * A season where you hold all seven episodes that have aired of a running
+ * ten-episode season used to render as a disabled "✓ Complete" button, which
+ * is how the eighth episode went unnoticed.
+ */
+const SEASON_ROLL = {
+  failed:   {ring: 'failed',     label: 'Needs attention'},
+  working:  {ring: 'processing', label: 'In progress'},
+  stale:    {ring: 'stale',      label: 'Expired'},
+  partial:  {ring: 'missing',    label: 'Missing episodes'},
+  unknown:  {ring: 'none',       label: 'Not checked'},
+  airing:   {ring: 'unaired',    label: 'Up to date'},
+  complete: {ring: 'ready',      label: 'Complete'},
+  empty:    {ring: 'none',       label: 'Nothing yet'},
+};
 
 const seasonsSeq = sequencer();
 const epsSeq = sequencer();
@@ -336,7 +353,11 @@ async function refreshSeasons() {
     return;
   }
   if (!seasonsSeq.isCurrent(token)) return;
-  renderSeasons(Array.isArray(seasons) ? seasons : []);
+  const list = Array.isArray(seasons) ? seasons : [];
+  // One cache, two consumers: the library tree's rollups read the same season
+  // list, so opening a show here saves the tree a round-trip and vice versa.
+  noteSeasons(ctx.item.tmdb_id, list);
+  renderSeasons(list);
 }
 
 function renderSeasons(seasons) {
@@ -365,21 +386,51 @@ function renderSeasons(seasons) {
   for (const s of seasons) {
     const sn = num(s.season_number);
     const total = num(s.episode_count);
-    const p = seasonProgress(tmdbId, sn, total);
-    const ring = seasonRingStatus(tmdbId, sn);
-    const pip = ring !== 'none'
-      ? `<span class="season-pip" style="background:${RING_COLOR[ring]}" aria-hidden="true"></span>` : '';
+    // cachedEpisodes is populated the moment this season has been opened once
+    // (here or on the library tree). With it every episode is classified and
+    // the rollup is exact; without it the unclassified remainder is reported
+    // as "not checked" rather than guessed at.
+    const c = seasonCounts(tmdbId, sn, {episodes: cachedEpisodes(tmdbId, sn), episodeCount: total});
+    const roll = rollupCounts(c);
+    const R = SEASON_ROLL[roll] || SEASON_ROLL.empty;
+    const active = num(c.processing) + num(c.pending);
+    const pip = roll !== 'empty'
+      ? `<span class="season-pip" style="background:${RING_COLOR[R.ring]}" aria-hidden="true"></span>` : '';
+    // The button below states the finished states in its own words, so the
+    // chip would just say it twice in a 120px column. It is kept for every
+    // state the button does NOT name.
+    const btnSpeaks = roll === 'complete' || roll === 'airing' ||
+      (num(c.total) - num(c.ready) - active <= 0 && active > 0);
+    const chip = btnSpeaks ? ''
+      : `<div class="season-roll"><span class="qr-chip qr-${esc(roll)}" style="--qr:${esc(RING_COLOR[R.ring])}"
+        >${icon(RING_ICON[R.ring])} ${esc(R.label)}</span></div>`;
 
-    const remaining = Math.max(0, total - p.ready - p.pending);
+    // What "Request Remaining" will actually enqueue. store.EpisodeActive skips
+    // only episodes that are READY or in flight, so stale and failed ones are
+    // re-enqueued and the number has to include them — it describes what the
+    // click does, not what we wish it did.
+    const remaining = Math.max(0, total - num(c.ready) - active);
+    const held = num(c.ready) + num(c.stale) + active + num(c.failed);
     let btn;
-    if (total > 0 && p.ready === total) {
+    if (roll === 'complete') {
       btn = `<button class="season-req-btn done" type="button" disabled>${icon('check')} Complete</button>`;
-    } else if (remaining === 0 && p.pending > 0) {
+    } else if (roll === 'airing') {
+      // NOT "Complete": every episode that has aired is in the library, and
+      // the rest have not been broadcast. Requesting them would only pile up
+      // failures for releases that cannot exist yet — that is what the bell
+      // beside this button is for.
+      const n = num(c.unaired);
+      btn = `<button class="season-req-btn uptodate" type="button" disabled
+        title="Every episode that has aired is in your library. ${n} more ${n === 1 ? 'has' : 'have'} not been broadcast yet."
+        >${icon('calendar')} Up to date</button>`;
+    } else if (remaining === 0 && active > 0) {
       btn = `<button class="season-req-btn queued" type="button" disabled>${icon('clock')} Queued</button>`;
     } else {
-      const label = p.requested === 0 ? 'Request All' : `Request Remaining (${remaining || '?'})`;
+      const label = held === 0 ? 'Request All' : `Request Remaining (${remaining || '?'})`;
+      const note = num(c.unaired)
+        ? ` title="${num(c.unaired)} of these have not aired yet."` : '';
       btn = `<button class="season-req-btn" type="button" id="sreq-${sn}" data-mact="request-season"
-        data-season="${sn}" data-total="${total}">${icon('download')} ${esc(label)}</button>`;
+        data-season="${sn}" data-total="${total}"${note}>${icon('download')} ${esc(label)}</button>`;
     }
 
     const sub = findSub(tmdbId, sn);
@@ -390,17 +441,18 @@ function renderSeasons(seasons) {
         title="${sub ? 'Unsubscribe' : 'Auto-grab new episodes'}">
         ${icon(sub ? 'bell' : 'bell-off')} ${sub ? 'Subscribed' : 'Subscribe'}</button>`;
     }
-    const seasonRemove = ((p.ready + p.stale) > 0 && state.user)
+    const seasonRemove = ((num(c.ready) + num(c.stale)) > 0 && state.user)
       ? `<button class="season-remove-btn" type="button" data-mact="remove-season"
           data-season="${sn}">${icon('trash')} Remove season</button>` : '';
 
     html += `<div class="season-item">
       <button class="season-btn${ctx.season === sn ? ' active' : ''}" type="button"
         data-mact="select-season" data-season="${sn}"
-        aria-expanded="${ctx.season === sn}" aria-controls="eps-area">
-        ${pip}Season ${sn}<span class="season-sub-count">${p.ready}/${total || '?'} ready</span>
+        aria-expanded="${ctx.season === sn}" aria-controls="eps-area"
+        aria-label="Season ${sn}, ${esc(R.label)}, ${num(c.ready)} of ${total || '?'} in Jellyfin">
+        ${pip}Season ${sn}<span class="season-sub-count">${num(c.ready)}/${total || '?'} ready</span>
       </button>
-      ${btn}${bell}${seasonRemove}
+      ${chip}${btn}${bell}${seasonRemove}
     </div>`;
   }
   html += `</div><div id="eps-area"></div>`;
@@ -451,7 +503,18 @@ async function selectSeason(n, autoEpisode) {
   }
   if (!epsSeq.isCurrent(token)) return;
   ctx.episodes = Array.isArray(eps) ? eps : [];
+  // The air dates land in the shared cache here, which is what lets a season
+  // anywhere in the app tell "aired, not acquired" from "not out yet".
+  noteEpisodes(ctx.item.tmdb_id, n, ctx.episodes);
   renderEpisodes();
+  // …and this season's own queue rows, which decide whether an episode is
+  // being fetched right now. state.queueItems is the newest 100 rows of the
+  // whole queue, so for most seasons it says nothing at all. The list is
+  // already on screen; this only sharpens it, and it is deliberately skipped
+  // while an episode panel is open rather than tearing one down mid-search.
+  loadQueueSeason(ctx.item.tmdb_id, n).then(() => {
+    if (epsSeq.isCurrent(token) && ctx.season === n && !ctx.episode) renderEpisodes();
+  });
   if (autoEpisode) {
     toggleEpisode(autoEpisode, true);
     document.getElementById('ep-panel-' + autoEpisode)?.scrollIntoView({block: 'nearest'});
@@ -463,13 +526,15 @@ function renderEpisodes() {
   let html = '<div class="eps-list">';
   for (const e of ctx.episodes) {
     const n = num(e.episode_number);
-    const st = episodeStatus(tmdbId, ctx.season, n);
+    // The air date is what splits the old catch-all `none` into "aired and you
+    // do not have it" and "not broadcast yet" — two states that need opposite
+    // reactions and used to render identically (as nothing at all).
+    const st = episodeStatus(tmdbId, ctx.season, n, e.air_date);
     const open = ctx.episode === n;
-    const tag = st !== 'none'
-      ? `<span class="ep-tag ep-${esc(st)}">${icon(RING_ICON[st])} ${esc(EP_LABEL[st])}</span>` : '';
+    const tag = `<span class="ep-tag ep-${esc(st)}">${icon(RING_ICON[st])} ${esc(EP_TAG[st] || st)}</span>`;
     html += `<div class="ep-row ep-st-${esc(st)}${open ? ' active' : ''}" data-ep="${n}"
         role="button" tabindex="0" aria-expanded="${open}" aria-controls="ep-panel-${n}"
-        aria-label="Episode ${n}: ${esc(e.name)}${st !== 'none' ? ' — ' + esc(EP_LABEL[st]) : ''}">
+        aria-label="Episode ${n}: ${esc(e.name)} — ${esc(EP_LABEL[st] || st)}">
       <span class="ep-dot" style="background:${RING_COLOR[st]}" aria-hidden="true"></span>
       <span class="ep-num">E${String(n).padStart(2, '0')}</span>
       <span class="ep-name">${esc(e.name)}</span>
@@ -521,14 +586,14 @@ function toggleEpisode(n, forceOpen) {
 }
 
 function episodePanelHTML(n, name) {
-  const st = episodeStatus(ctx.item.tmdb_id, ctx.season, n);
+  const ep = ctx.episodes.find(x => num(x.episode_number) === n) || {};
+  const st = episodeStatus(ctx.item.tmdb_id, ctx.season, n, ep.air_date);
   const inLib = st === 'ready' || st === 'stale';
   const epLbl = `S${String(ctx.season).padStart(2, '0')}E${String(n).padStart(2, '0')}`;
   const reqLabel = !state.user ? 'Sign in to request' : (inLib ? 'Re-request' : 'Request Episode');
-  const statusLine = st !== 'none'
-    ? `<span class="ep-inline-status ep-${esc(st)}">
+  const statusLine = `<span class="ep-inline-status ep-${esc(st)}">
         <span class="ep-dot" style="background:${RING_COLOR[st]}" aria-hidden="true"></span>
-        ${icon(RING_ICON[st])} ${esc(EP_LABEL[st])}</span>` : '';
+        ${icon(RING_ICON[st])} ${esc(EP_LABEL[st] || st)}</span>`;
   const removeBtn = (inLib && state.user)
     ? `<button class="btn danger ep-remove-btn" type="button" data-mact="remove-episode"
         data-ep="${n}">${icon('trash')} Remove</button>` : '';

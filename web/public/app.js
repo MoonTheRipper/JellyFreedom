@@ -21,7 +21,6 @@ function el(id) { return document.getElementById(id); }
 
 async function init() {
   restorePrefs();
-  setUnauthorizedHandler(onUnauthorized);
 
   initAuth();
   initHealthUI();
@@ -55,7 +54,18 @@ async function init() {
     router.navItem(card.dataset.type, Number(card.dataset.tmdbId));
   });
 
+  // The FIRST auth probe is expected to 401 for a signed-out visitor — that is the
+  // answer to "who am I", not a failure. The global handler was armed before it, so
+  // apiFetch's 401 branch fired onUnauthorized and every anonymous arrival got the
+  // sign-in modal thrown at them before they had asked for anything. (Catching the
+  // rejection in loadMe does not help: apiFetch calls the handler and THEN throws.)
+  //
+  // Arming it afterwards keeps the meaning it should have had all along: a 401 after
+  // we know who you are means the session went away, which is worth interrupting for.
+  // Nothing between here and the init* calls above touches the API — they only
+  // register listeners — so there is no window where a 401 goes unhandled.
   await refreshAuth();
+  setUnauthorizedHandler(onUnauthorized);
 
   // Configured state first: it is what turns a blank first-run page into an
   // explained one, and it must not wait behind sixteen browse rows.

@@ -100,6 +100,13 @@
       <button type="button" class="filter-tab" data-filter="mine" aria-pressed="false">Mine</button>
     </div>
   </div>
+  <!-- Shows that need a human, resolved to the exact episode. Hidden when
+       there are none, so an all-clear library carries no strip at all. -->
+  <div id="library-attention" class="lib-attention" role="region"
+       aria-label="Shows that need attention" hidden></div>
+  <!-- Level 1 of the show tree. Movies stay in the poster grid below: a movie
+       is one file, and a one-child tree is noise. -->
+  <div id="library-shows" class="lib-shows"></div>
   <div id="library-grid" class="library-grid"></div>
 </div>
 

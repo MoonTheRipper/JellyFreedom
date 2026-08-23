@@ -742,3 +742,93 @@ select.lib-picker{flex:1}
 /* The episode the machine is on, findable without reading every row. */
 .sg-ep.now{background:rgba(96,165,250,.08);border-radius:6px;margin:0 -8px;padding:7px 8px}
 .sg-ep.now .sg-ep-name{color:var(--text)}
+
+/* ── Library tree: show → season → episode ────────────────────────────────
+   The library page grew the same three levels the queue page did in 39e8477,
+   and deliberately reuses its markup — .show-group / .show-row /
+   .show-group-head / .season-group / .sg-* / .qr-chip are all defined above
+   and are NOT redefined here. What follows is only what the library adds:
+   the needs-attention strip, the episode row as a link into the modal, and
+   the rolled-up states the queue has no concept of (missing, unaired).     */
+.lib-shows{display:flex;flex-direction:column;gap:8px;margin-bottom:20px}
+.lib-shows:empty{display:none;margin-bottom:0}
+.lib-shows .show-group{margin-bottom:0}
+.sg-year{color:var(--muted);font-weight:500;font-size:12px}
+.sg-total{font-weight:600;color:var(--muted2)}
+
+/* Needs attention: the shows that want a human, each chip resolving to the
+   exact episode. It is hidden entirely when there are none, so an all-clear
+   library is not decorated with an empty warning box. */
+.lib-attention{margin-bottom:16px;padding:12px 14px;border:1px solid var(--border);
+  border-radius:var(--r-md);background:var(--surface)}
+.lib-attention-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;
+  font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--muted2)}
+.lib-attention-head .ic{color:var(--red)}
+.lib-attention-n{background:var(--surface2);border:1px solid var(--border);
+  border-radius:999px;padding:1px 7px;font-size:10px;color:var(--text)}
+.lib-attention-chips{display:flex;flex-wrap:wrap;gap:8px}
+.attn-chip{display:inline-flex;align-items:center;gap:7px;max-width:100%;
+  padding:7px 12px;border-radius:999px;background:var(--bg);
+  border:1px solid var(--border);color:var(--text);font-size:12px;font-weight:600;
+  transition:border-color .15s,background .15s}
+.attn-chip:hover{border-color:var(--qr);background:var(--surface2)}
+.attn-chip .ic{color:var(--qr);width:14px;height:14px}
+.attn-name{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.attn-why{color:var(--muted);font-weight:500;white-space:nowrap}
+.attn-chip.attn-failed{border-color:rgba(248,113,113,.4)}
+
+/* An episode row is a real <button> — it holds no nested control, so Enter,
+   Space and the focus ring come from the platform. .sg-ep above styles it;
+   these rules only undo the button chrome, and restore the bottom border the
+   `border:0` reset would otherwise take with it. */
+.lib-ep{width:calc(100% + 12px);margin:0 -6px;padding:7px 6px;text-align:left;
+  background:none;color:inherit;font:inherit;font-size:12px;border-radius:6px;
+  border:0;border-bottom:1px solid var(--border)}
+.lib-ep:hover{background:rgba(255,255,255,.045)}
+.lib-ep .ic{color:var(--muted);width:13px;height:13px}
+.sg-ep-date{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums;
+  flex-shrink:0;min-width:74px;text-align:right}
+.sg-ep-actions{display:flex;gap:6px;flex-wrap:wrap;padding:9px 0 2px}
+.sg-ep-actions .queue-action-btn{padding:4px 9px;font-size:10px}
+
+/* Rolled-up states the queue page has no name for. `partial` (aired, not in
+   the library) is ACTIONABLE and reads as such; `airing` (you hold everything
+   that exists yet) is not, and must never be mistaken for `complete` — that
+   is the whole point of keeping them apart. `unknown` says TMDB lists
+   episodes nobody has checked yet, rather than guessing which way they go. */
+.qr-chip.qr-stale{color:var(--yellow)}
+.qr-chip.qr-partial{color:var(--purple);background:rgba(167,139,250,.12);
+  border-color:rgba(167,139,250,.35)}
+.qr-chip.qr-airing{color:var(--muted2)}
+.qr-chip.qr-complete{color:var(--green)}
+.qr-chip.qr-unknown,.qr-chip.qr-empty{color:var(--muted)}
+.qr-chip.qr-airing-hint{color:var(--blue)}
+
+/* Episode states, in the modal's list and in the tree. */
+.ep-tag.ep-missing{background:rgba(167,139,250,.18);color:var(--purple)}
+.ep-tag.ep-unaired{background:rgba(255,255,255,.05);color:var(--muted)}
+.ep-row.ep-st-missing{border-color:rgba(167,139,250,.3)}
+.ep-inline-status.ep-missing{color:var(--purple)}
+.ep-inline-status.ep-unaired{color:var(--muted)}
+
+/* "Up to date" is NOT "Complete": the season is current, the show is not
+   finished, and requesting the rest would only queue episodes that have not
+   been broadcast. Deliberately not green. */
+.season-req-btn.uptodate{color:var(--muted2);border-color:var(--border-strong);opacity:1}
+.season-roll{display:flex}
+.season-roll .qr-chip{width:100%;justify-content:center}
+
+@media (max-width:620px){
+  .lib-ep .sg-ep-date{display:none}
+  .show-row .queue-action-btn span{display:none}
+  .attn-name{max-width:42vw}
+  /* The head stacks into four lines on a phone; keep the disclosure chevron
+     with the title rather than floating in the middle of the stack, and pull
+     the count bits together so the stack stays short. */
+  .show-group-head{align-items:flex-start}
+  .show-group-head .queue-poster,.show-group-head .queue-poster-placeholder{
+    width:38px;height:57px}
+  .sg-counts{gap:6px 8px}
+  .lib-attention-chips{flex-direction:column;align-items:flex-start}
+}
