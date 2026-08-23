@@ -2524,6 +2524,11 @@ func (w *queueWorker) resolvePlayable(ctx context.Context, mediaType, libraryNam
 		return nil, fmt.Errorf("no library configured for type %s", mediaType)
 	}
 	pc := livePickerFor(w.cfg, lib)
+	// Runtime turns the size cap into a BITRATE judgement: size alone cannot tell a
+	// 4.5Mbps WEB-DL from a 65Mbps remux, and only one of those streams out of a bounded
+	// ring buffer. Zero when TMDB does not know the runtime, which leaves the rule
+	// dormant rather than guessing.
+	pc.RuntimeMinutes = details.RuntimeMinutes
 
 	// Build the ordered candidate list (best score first). We try each in turn and commit the
 	// FIRST that resolves its file list, matches the episode, validates, AND can actually reach
@@ -3575,6 +3580,9 @@ func toPicker(cp config.PickerConfig) picker.Config {
 		PreferContainers:  cp.PreferContainers,
 		MaxSizeGB:         cp.MaxSizeGB,
 		RejectCAM:         cp.RejectCAMValue(),
+		TargetResolution:  cp.TargetResolution,
+		RequireDirectPlay: cp.RequireDirectPlayValue(),
+		MaxMbps:           cp.MaxMbps,
 	}
 }
 

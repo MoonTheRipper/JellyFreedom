@@ -101,6 +101,13 @@ func (e *noReleaseError) Error() string {
 	case rejected[picker.RejectMaxSize] == len(e.d.Candidates):
 		return fmt.Sprintf("Found %d releases, but every one is larger than the %d GB limit. "+
 			"Raise it in Settings → Quality.", e.d.TotalFound, e.d.Filters.MaxSizeGB)
+	case rejected[picker.RejectDirectPlay] == len(e.d.Candidates):
+		return fmt.Sprintf("Found %d releases, but none of them can direct-play — every one "+
+			"would force your player to transcode. Turn off \"require direct play\" in "+
+			"Settings → Quality to accept them anyway.", e.d.TotalFound)
+	case rejected[picker.RejectJunk] == len(e.d.Candidates):
+		return fmt.Sprintf("Found %d results, but every one is a sample, trailer or extras "+
+			"file rather than the feature itself.", e.d.TotalFound)
 	default:
 		return fmt.Sprintf("Found %d releases, but none passed the quality filters. "+
 			"Open the request for the per-release breakdown.", e.d.TotalFound)

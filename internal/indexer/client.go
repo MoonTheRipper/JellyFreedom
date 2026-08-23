@@ -85,6 +85,32 @@ type Release struct {
 	VideoCodec string `json:"video_codec"`
 	AudioCodec string `json:"audio_codec"`
 	Container  string `json:"container"`
+	// Resolution is the canonical vertical-resolution rung parsed from the title
+	// ("2160p"/"1080p"/"720p"/"576p"/"480p"/"360p"), or "" when the title does not say.
+	// The picker ranks distance from the user's target rung, which is the single
+	// biggest lever on "did the auto-pick feel right".
+	Resolution string `json:"resolution"`
+	// Indexer is the Prowlarr indexer that returned the result, kept so the UI can show
+	// where a release came from and so a consistently bad indexer is identifiable.
+	Indexer string `json:"indexer"`
+	// PublishDate is when the indexer says the release was posted. Zero when unknown.
+	// Exposed for display/age, deliberately NOT scored: age correlates far too weakly
+	// with stream quality to be worth a ranking weight, and penalising old releases
+	// would bury the best-seeded catalogue titles.
+	PublishDate time.Time `json:"publish_date,omitzero"`
+}
+
+// AgeDays reports how many days ago the release was published, or -1 when the indexer
+// did not supply a publish date. For display only — see the PublishDate comment.
+func (r Release) AgeDays() int {
+	if r.PublishDate.IsZero() {
+		return -1
+	}
+	d := int(time.Since(r.PublishDate).Hours() / 24)
+	if d < 0 {
+		return 0 // a clock-skewed "future" release is 0 days old, never negative
+	}
+	return d
 }
 
 type prowlarrResult struct {
@@ -97,6 +123,37 @@ type prowlarrResult struct {
 	Size        int64  `json:"size"`
 	Seeders     int    `json:"seeders"`
 	Leechers    int    `json:"leechers"`
+	Indexer     string `json:"indexer"`
+	// PublishDate is decoded as a STRING and parsed by hand rather than into a
+	// time.Time. Prowlarr passes the indexer's own value straight through, and several
+	// indexers send "" or a non-RFC3339 stamp — decoding into time.Time makes the whole
+	// json.Decode fail on those, which would throw away every result in the response.
+	PublishDate string `json:"publishDate"`
+}
+
+// publishDateLayouts are tried in order. RFC3339 is what Prowlarr normally emits; the
+// rest are the shapes real indexers have been seen to send instead.
+var publishDateLayouts = []string{
+	time.RFC3339,
+	"2006-01-02T15:04:05.999999999Z07:00",
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+}
+
+// parsePublishDate returns the zero time for anything it cannot read. An unparseable
+// date is a display detail; it must never cost us a result.
+func parsePublishDate(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}
+	}
+	for _, layout := range publishDateLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // infoHashRe matches a bare 40-char hex BitTorrent v1 info hash. The word boundaries keep
@@ -190,14 +247,17 @@ func (c *Client) search(ctx context.Context, query string, categories []int) ([]
 		}
 		r.InfoHash = hash // so buildMagnet uses it when magnetUrl is absent
 		rel := Release{
-			Title:     r.Title,
-			InfoHash:  hash,
-			SizeBytes: r.Size,
-			Seeders:   r.Seeders,
-			Leechers:  r.Leechers,
-			Magnet:    buildMagnet(r),
+			Title:       r.Title,
+			InfoHash:    hash,
+			SizeBytes:   r.Size,
+			Seeders:     r.Seeders,
+			Leechers:    r.Leechers,
+			Magnet:      buildMagnet(r),
+			Indexer:     r.Indexer,
+			PublishDate: parsePublishDate(r.PublishDate),
 		}
 		parseCodecs(&rel)
+		rel.Resolution = ParseResolution(rel.Title)
 		releases = append(releases, rel)
 	}
 	return releases, nil
@@ -257,7 +317,11 @@ func parseCodecs(r *Release) {
 		r.AudioCodec = "truehd"
 	case strings.Contains(t, "dts-hd"), strings.Contains(t, "dts hd"):
 		r.AudioCodec = "dts-hd"
-	case strings.Contains(t, "eac3"), strings.Contains(t, "e-ac-3"), strings.Contains(t, "dd+"):
+	// "ddp" is the spelling almost every modern WEB-DL uses (DDP5.1). Without it the
+	// most common direct-play-capable audio track on the whole indexer parsed as
+	// unknown, which cost those releases the direct-play bonus outright.
+	case strings.Contains(t, "eac3"), strings.Contains(t, "e-ac-3"),
+		strings.Contains(t, "dd+"), strings.Contains(t, "ddp"):
 		r.AudioCodec = "eac3"
 	case strings.Contains(t, "ac3"), strings.Contains(t, "dolby digital"):
 		r.AudioCodec = "ac3"
@@ -272,6 +336,99 @@ func parseCodecs(r *Release) {
 		r.Container = "mkv"
 	case strings.Contains(t, ".mp4"), strings.Contains(t, "mp4"):
 		r.Container = "mp4"
+	}
+}
+
+// The resolution ladder, lowest rung first. Everything a release title can say about
+// picture size is normalised onto one of these so the picker can talk about "one rung
+// below the target" instead of comparing free-form strings.
+const (
+	Res360p  = "360p"
+	Res480p  = "480p"
+	Res576p  = "576p"
+	Res720p  = "720p"
+	Res1080p = "1080p"
+	Res2160p = "2160p"
+)
+
+var (
+	// resolutionTagRe matches an explicit height tag. Word boundaries matter: without
+	// them "1080p" inside a group name or a "x264-1080" suffix would be indistinguishable
+	// from the real tag.
+	resolutionTagRe = regexp.MustCompile(`(?i)\b(4320p|2160p|1440p|1080[pi]|720p|576[pi]|480[pi]|360p)\b`)
+	// uhdRe covers the marketing spellings of 2160p.
+	uhdRe = regexp.MustCompile(`(?i)\b(4k|uhd)\b`)
+	// dimensionsRe matches the WIDTHxHEIGHT form some indexers use ("1920x1080"). The
+	// 3-4 digit floor keeps it away from episode numbering like "1x05".
+	dimensionsRe = regexp.MustCompile(`\b(\d{3,4})\s?[xX\x{00D7}]\s?(\d{3,4})\b`)
+)
+
+// ParseResolution does best-effort extraction of the picture resolution from a release
+// title, normalised onto the ladder above. It returns "" when the title does not say —
+// which the picker treats as "unknown", not as "bad".
+//
+// Exported because resolution is not only a scoring input: the dashboard shows it, and
+// a caller holding a bare title (a manual magnet override, for instance) has no Release
+// to read it from.
+func ParseResolution(title string) string {
+	if m := resolutionTagRe.FindStringSubmatch(title); m != nil {
+		switch strings.ToLower(m[1]) {
+		case "4320p", "2160p":
+			return Res2160p
+		// 1440p sits between the two common rungs. It is treated as 1080p rather than
+		// given a rung of its own: it direct-plays and looks like 1080p-or-better, and
+		// inventing a rung would silently shift every "one step below target" decision.
+		case "1440p", "1080p", "1080i":
+			return Res1080p
+		case "720p":
+			return Res720p
+		case "576p", "576i":
+			return Res576p
+		case "480p", "480i":
+			return Res480p
+		case "360p":
+			return Res360p
+		}
+	}
+	if uhdRe.MatchString(title) {
+		return Res2160p
+	}
+	if m := dimensionsRe.FindStringSubmatch(title); m != nil {
+		w, werr := strconv.Atoi(m[1])
+		h, herr := strconv.Atoi(m[2])
+		if werr == nil && herr == nil {
+			return resolutionForDimensions(w, h)
+		}
+	}
+	return ""
+}
+
+// resolutionForDimensions snaps a WIDTHxHEIGHT pair onto the ladder.
+//
+// Width is the more reliable of the two. Cropped widescreen encodes lose height while
+// keeping the rung's nominal width — a 2.39:1 "1080p" file is 1920x800, which is shorter
+// than a full-frame 720p — so ranking on height alone puts HD encodes a rung too low.
+// Only in SD does height carry the information, where it is the one thing separating PAL
+// 720x576 from NTSC 720x480.
+func resolutionForDimensions(w, h int) string {
+	switch {
+	case w >= 3000:
+		return Res2160p
+	case w >= 1800:
+		return Res1080p
+	case w >= 1200:
+		return Res720p
+	case w >= 640:
+		switch {
+		case h >= 520:
+			return Res576p
+		case h >= 400:
+			return Res480p
+		default:
+			return Res360p
+		}
+	default:
+		return ""
 	}
 }
 

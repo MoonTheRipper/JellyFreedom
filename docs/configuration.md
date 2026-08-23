@@ -176,20 +176,40 @@ picker:
   prefer_containers: ["mp4", "mkv"]
   max_size_gb: 20
   reject_cam: true
+  target_resolution: "1080p"
+  require_direct_play: false
+  max_mbps: 0
 ```
 
 | Key | Default | Consequence |
 |---|---|---|
 | `min_seeders` | `5` | Releases below this are not considered. Raise it for reliability, lower it to see marginal releases (which will stream badly). |
-| `max_size_gb` | `20` | Upper bound on release size. Mostly excludes remuxes that will never stream well. |
+| `max_size_gb` | `20` | Upper bound on release size. A blunt instrument — prefer `max_mbps`, which measures the thing that actually matters. |
 | `reject_cam` | `true` | Sinks CAM, telesync and screener rips. Set false only if you genuinely want them. |
-| `prefer_video_codecs` | `h264, h265, hevc` | Tie-breakers for **direct play**. A codec your client cannot direct-play means a video transcode, which is exactly what you do not want while pulling from a swarm. |
+| `target_resolution` | `1080p` | The resolution the picker aims for. Hitting it is worth +300; one rung down +150, two down nothing, three+ down a penalty. Going *above* target is worth only +100 — 4K looks better but costs bitrate you may not be able to stream. A typo here fails startup rather than being silently ignored. |
+| `require_direct_play` | `false` | When true, a release that would force your player to transcode is rejected outright rather than merely ranked lower. Worth turning on for Apple TV. |
+| `max_mbps` | `0` (off) | Ceiling on **bitrate**, computed as size ÷ runtime. Dormant when TMDB does not know the runtime. |
+| `prefer_video_codecs` | `h264, h265` | Tie-breakers for **direct play**. A codec your client cannot direct-play means a video transcode, which is exactly what you do not want while pulling from a swarm. |
 | `prefer_audio_codecs` | `aac, ac3, eac3` | Same. DTS and TrueHD need a transcode on most clients. |
 | `prefer_containers` | `mp4, mkv` | Same. |
 
-**Seeder count dominates the score; codec, audio and container are tie-breakers only.** A
-well-seeded release in a slightly worse format beats a dead release in a perfect one, every
-time — a dead release does not stream at all.
+**Resolution and direct play are now real signals, not tie-breakers.** Before this, neither
+was scored at all: a 480p release with 520 seeders beat a 1080p HEVC with 210 seeders,
+because seeder count was the only signal with any weight behind it. A release that direct-
+plays is worth +400 and one at your target resolution +300, which is enough to outrank a
+seeder bucket or two.
+
+Seeder count still leads, and deliberately so — a dead release does not stream at all, no
+matter how good its format. But it no longer wins on its own.
+
+**Why bitrate rather than size.** A 60 GB remux and a 4 GB WEB-DL of the same film are
+65 Mbps and 4.5 Mbps. Only one of them feeds a bounded ring buffer over a VPN link, and
+`max_size_gb` cannot tell them apart from a 40 GB three-hour feature that streams fine.
+
+**Why direct play matters more here than on a normal server.** Transcoding a torrent stream
+is the worst case in this architecture: ffmpeg reads ahead faster than the swarm delivers,
+so the ring buffer starves and playback stalls. On a 3rd-gen Apple TV 4K, DTS/TrueHD force
+an audio transcode and AV1 forces a full video transcode.
 
 Also editable in **Dashboard → Settings**, which overrides these on every subsequent start.
 

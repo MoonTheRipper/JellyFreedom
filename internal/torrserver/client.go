@@ -278,16 +278,47 @@ var videoExtSet = map[string]bool{
 	".mov": true, ".ts": true, ".wmv": true, ".flv": true,
 }
 
-// episodePatterns returns the SxxEyy / NxNN tokens that identify a specific episode.
-func episodePatterns(season, episode int) []string {
-	return []string{
-		fmt.Sprintf("s%02de%02d", season, episode), // s01e05
-		fmt.Sprintf("s%de%d", season, episode),     // s1e5
-		fmt.Sprintf("%dx%02d", season, episode),    // 1x05
-		fmt.Sprintf("s%02d.e%02d", season, episode),
-		fmt.Sprintf("s%02d e%02d", season, episode),
-		fmt.Sprintf("s%02dxe%02d", season, episode),
+// episodeKey identifies a compiled episode matcher in the cache.
+type episodeKey struct{ season, episode int }
+
+// episodeReCache memoises the compiled matchers. EpisodeFileIndex runs one matcher
+// across every file of a season pack, so without this a 30-file pack recompiled the
+// same regex 30 times per candidate release.
+var episodeReCache sync.Map // episodeKey -> *regexp.Regexp
+
+// episodeMatcher returns the compiled SxxEyy / NxNN matcher for one episode.
+//
+// This used to be a list of fmt.Sprintf'd substrings tested with strings.Contains, and
+// that was a correctness bug, not just a sloppiness: the shorthand pattern "s1e5" is a
+// prefix of "S1E50".."S1E59", and "s1e1" is a prefix of "S1E10".."S1E19". Because the
+// same function is used BOTH to filter candidate releases AND to pick the file inside a
+// season pack, a request for episode 5 could select episode 50's file and report the
+// match as confident — silently playing the wrong episode.
+//
+// The fix is a real boundary on both ends:
+//
+//   - leading (?:^|[^0-9a-z]) — a separator must precede the token, so the height pair
+//     "1920x1080" cannot satisfy a request for season 20 episode 108 ("20x108" is a
+//     substring of it).
+//   - trailing (?:$|[^0-9]) — a DIGIT may not follow, which is what kills the S1E5 /
+//     S1E50 collision. Letters are deliberately still allowed so real-world suffixes
+//     keep matching: "S01E05v2" (a re-encode) and "S01E05E06" (a double episode that
+//     genuinely contains episode 5).
+//
+// 0* on each number absorbs zero-padding, so one pattern covers s1e5, s01e05 and
+// s001e005 without enumerating them.
+func episodeMatcher(season, episode int) *regexp.Regexp {
+	key := episodeKey{season, episode}
+	if re, ok := episodeReCache.Load(key); ok {
+		return re.(*regexp.Regexp)
 	}
+	// The separator class covers s01e05, s01.e05, s01 e05, s01_e05, s01-e05, s01xe05
+	// and the "Show S01/E05.mkv" directory layout.
+	pat := fmt.Sprintf(`(?:^|[^0-9a-z])(?:s0*%[1]d[ ._/x-]?e0*%[2]d|0*%[1]dx0*%[2]d)(?:$|[^0-9])`,
+		season, episode)
+	re := regexp.MustCompile(pat)
+	episodeReCache.Store(key, re)
+	return re
 }
 
 // MatchesEpisode reports whether a name (release title or file path) contains a
@@ -295,13 +326,10 @@ func episodePatterns(season, episode int) []string {
 // discriminator between Western episodic TV (SxxEyy) and anime "- NN" numbering,
 // so a same-named anime never gets grabbed for a TV episode request.
 func MatchesEpisode(name string, season, episode int) bool {
-	lower := strings.ToLower(name)
-	for _, p := range episodePatterns(season, episode) {
-		if strings.Contains(lower, p) {
-			return true
-		}
+	if season < 0 || episode < 0 {
+		return false
 	}
-	return false
+	return episodeMatcher(season, episode).MatchString(strings.ToLower(name))
 }
 
 func videoFiles(files []FileInfo) []FileInfo {
@@ -315,21 +343,39 @@ func videoFiles(files []FileInfo) []FileInfo {
 	return out
 }
 
+// baseName returns the last path component of a torrent file path. Torrent paths are
+// "/"-separated, but Windows-authored torrents occasionally carry a backslash, so both
+// separators are cut.
+func baseName(p string) string {
+	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
 // EpisodeFileIndex finds the file matching a specific S##E## episode and reports
 // whether the match is trustworthy. matched=false means the torrent is a
 // multi-file set with NO file for the requested episode — i.e. a mislabeled or
 // wrong-show pack — and the caller should reject it rather than guess.
+//
+// The match is tried against the BASE FILENAME first, and this ordering is the whole
+// point. Matching the full path let a directory component decide the answer for every
+// file underneath it: in "Show.S01E01-E10.COMPLETE/Show.S01E07.mkv" the folder name
+// contains "S01E01", so a request for episode 1 matched EVERY file in the pack, took
+// the largest one, and returned it as a confident match. The viewer got a random
+// episode with no indication anything had gone wrong.
+//
+// The full path is still consulted, because the token genuinely lives in the directory
+// for layouts like "Show S01/E05.mkv" — but only when the basename pass found nothing
+// AND the path pass identifies EXACTLY ONE file. More than one file matching only on
+// its path means the token came from a shared ancestor directory, which is precisely
+// the poisoning case above and carries no information about which file to play.
 func EpisodeFileIndex(files []FileInfo, season, episode int) (index int, matched bool) {
-	var bestID int
-	var bestSize int64
-	for _, f := range files {
-		if MatchesEpisode(f.Path, season, episode) && f.Length > bestSize {
-			bestSize = f.Length
-			bestID = f.ID
-		}
+	if id, ok := largestMatching(files, season, episode, baseName); ok {
+		return id, true // confident SxxEyy filename match
 	}
-	if bestID != 0 {
-		return bestID, true // confident SxxEyy filename match
+	if id, ok := uniqueMatching(files, season, episode); ok {
+		return id, true // the token is in the directory, and it points at one file only
 	}
 	// No episode token. Only trust a fallback for an unambiguous single-video
 	// torrent (a lone episode file). Multiple files with no match = not confident.
@@ -337,6 +383,42 @@ func EpisodeFileIndex(files []FileInfo, season, episode int) (index int, matched
 		return vids[0].ID, true
 	}
 	return BestFileIndex(files), false
+}
+
+// largestMatching returns the biggest file whose name (as produced by nameOf) carries
+// the episode token. Biggest wins so a "Show.S01E01.sample.mkv" never beats the episode
+// it was cut from.
+//
+// The found flag is separate from the ID on purpose: file IDs start at 0 in some
+// torrents, and the previous code used `bestID != 0` as its "did we match" test — so a
+// correct match on file 0 was reported as no match at all, and the caller fell through
+// to the largest-file guess.
+func largestMatching(files []FileInfo, season, episode int, nameOf func(string) string) (int, bool) {
+	var bestID int
+	var bestSize int64
+	found := false
+	for _, f := range files {
+		if !MatchesEpisode(nameOf(f.Path), season, episode) {
+			continue
+		}
+		if !found || f.Length > bestSize {
+			bestID, bestSize, found = f.ID, f.Length, true
+		}
+	}
+	return bestID, found
+}
+
+// uniqueMatching returns the single file matching on its full path, or found=false if
+// zero or more than one file matches. See EpisodeFileIndex for why "more than one" is
+// treated as no answer rather than as a tie to be broken by size.
+func uniqueMatching(files []FileInfo, season, episode int) (int, bool) {
+	id, n := 0, 0
+	for _, f := range files {
+		if MatchesEpisode(f.Path, season, episode) {
+			id, n = f.ID, n+1
+		}
+	}
+	return id, n == 1
 }
 
 func (c *Client) post(path string, payload any, out any) error {

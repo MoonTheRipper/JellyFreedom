@@ -140,6 +140,13 @@ type Details struct {
 	Overview  string `json:"overview"`
 	PosterURL string `json:"poster_url,omitempty"`
 	Status    string `json:"status,omitempty"` // TV: "Returning Series" | "Ended" | "Canceled" | "In Production"
+	// RuntimeMinutes is the episode/feature length, 0 when TMDB does not know it. The
+	// picker divides size by this to rank a release on BITRATE rather than raw size,
+	// which is the metric that actually decides whether a torrent streams: a 60GB remux
+	// and a 4GB WEB-DL of the same film are 65Mbps and 4.5Mbps, and only one of them
+	// feeds a bounded ring buffer over a VPN. A max-size cap cannot express that.
+	// For TV this is episode_run_time[0] — TMDB reports it per show, not per episode.
+	RuntimeMinutes int `json:"runtime_minutes,omitempty"`
 }
 
 // IsAiring reports whether a TV show is still producing new episodes.
@@ -157,6 +164,7 @@ type movieDetails struct {
 	ReleaseDate string `json:"release_date"`
 	Overview    string `json:"overview"`
 	PosterPath  string `json:"poster_path"`
+	Runtime     int    `json:"runtime"`
 }
 
 type tvDetails struct {
@@ -166,6 +174,10 @@ type tvDetails struct {
 	Overview     string `json:"overview"`
 	PosterPath   string `json:"poster_path"`
 	Status       string `json:"status"`
+	// TMDB returns a LIST here because some shows mix lengths (a 22-minute sitcom with
+	// 44-minute specials). The first entry is the usual length, which is what a bitrate
+	// estimate wants; an empty list simply leaves runtime unknown.
+	EpisodeRunTime []int `json:"episode_run_time"`
 }
 
 func (c *Client) Details(tmdbID int, mediaType string) (*Details, error) {
@@ -195,6 +207,7 @@ func (c *Client) Details(tmdbID int, mediaType string) (*Details, error) {
 		d.Title = m.Title
 		d.Year = year(m.ReleaseDate)
 		d.Overview = m.Overview
+		d.RuntimeMinutes = m.Runtime
 		if m.PosterPath != "" {
 			d.PosterURL = "https://image.tmdb.org/t/p/w342" + m.PosterPath
 		}
@@ -207,6 +220,9 @@ func (c *Client) Details(tmdbID int, mediaType string) (*Details, error) {
 		d.Year = year(t.FirstAirDate)
 		d.Overview = t.Overview
 		d.Status = t.Status
+		if len(t.EpisodeRunTime) > 0 {
+			d.RuntimeMinutes = t.EpisodeRunTime[0]
+		}
 		if t.PosterPath != "" {
 			d.PosterURL = "https://image.tmdb.org/t/p/w342" + t.PosterPath
 		}

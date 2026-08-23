@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"jellyfreedom/internal/picker"
 )
 
 type Config struct {
@@ -93,6 +95,11 @@ type JellyfinConfig struct {
 	APIKey  string `yaml:"api_key"`
 }
 
+// PickerConfig is the user-facing quality policy. It deliberately exposes INTENT — what
+// resolution you want, whether a transcode is acceptable, how much bitrate your link can
+// carry — and not the individual point weights. Those stay hardcoded in the picker: a
+// scoring spreadsheet in YAML is a support burden nobody can reason about, and the
+// weights are only meaningful relative to one another.
 type PickerConfig struct {
 	MinSeeders        int      `yaml:"min_seeders"`
 	PreferVideoCodecs []string `yaml:"prefer_video_codecs"`
@@ -100,11 +107,34 @@ type PickerConfig struct {
 	PreferContainers  []string `yaml:"prefer_containers"`
 	MaxSizeGB         int      `yaml:"max_size_gb"`
 	RejectCAM         *bool    `yaml:"reject_cam"` // nil = default (true): never auto-pick camera/telesync rips
+
+	// TargetResolution is the rung the picker aims for: "2160p", "1080p", "720p",
+	// "576p" or "480p" ("4k"/"uhd" are accepted spellings of 2160p). Empty = 1080p.
+	// Releases are scored by distance from it, and ABOVE it scores lower than at it —
+	// 4K costs three to four times the bitrate, which on a swarm-fed stream buys stalls
+	// more often than detail.
+	TargetResolution string `yaml:"target_resolution"`
+
+	// RequireDirectPlay makes "Apple TV can play this without the server transcoding it"
+	// a hard filter instead of a strong preference. nil = false, and that default is
+	// deliberate: turning it on for an existing install would silently empty release
+	// lists that work fine today. Turn it on if playback stutters on the Apple TV.
+	RequireDirectPlay *bool `yaml:"require_direct_play"`
+
+	// MaxMbps is the average bitrate the link between TorrServer and the player can
+	// comfortably sustain. 0 = no cap. It only takes effect when the item's runtime is
+	// known, since bitrate is size ÷ runtime.
+	MaxMbps int `yaml:"max_mbps"`
 }
 
 // RejectCAMValue resolves the reject_cam setting, defaulting to true (reject).
 func (p PickerConfig) RejectCAMValue() bool {
 	return p.RejectCAM == nil || *p.RejectCAM
+}
+
+// RequireDirectPlayValue resolves the require_direct_play setting, defaulting to false.
+func (p PickerConfig) RequireDirectPlayValue() bool {
+	return p.RequireDirectPlay != nil && *p.RequireDirectPlay
 }
 
 func Load(path string) (*Config, error) {
@@ -201,13 +231,67 @@ func validate(cfg *Config) error {
 		cfg.Picker.MaxSizeGB = 20
 	}
 	if len(cfg.Picker.PreferVideoCodecs) == 0 {
-		cfg.Picker.PreferVideoCodecs = []string{"h264", "h265", "hevc"}
+		// "hevc" used to be the third entry here and could never match anything: the
+		// indexer folds x265/HEVC/H265 into the single name "h265" while parsing the
+		// release title, so the picker never sees the string "hevc" on a release. The
+		// dead entry also inflated the weights — with three entries h264 scored 120 and
+		// h265 80, purely because of a value that matched nothing. The picker now also
+		// canonicalises codec names, so an existing config that still says "hevc" keeps
+		// working; the default no longer ships the inconsistency.
+		cfg.Picker.PreferVideoCodecs = []string{"h264", "h265"}
 	}
 	if len(cfg.Picker.PreferAudioCodecs) == 0 {
 		cfg.Picker.PreferAudioCodecs = []string{"aac", "ac3", "eac3"}
 	}
 	if len(cfg.Picker.PreferContainers) == 0 {
 		cfg.Picker.PreferContainers = []string{"mp4", "mkv"}
+	}
+	if cfg.Picker.TargetResolution == "" {
+		cfg.Picker.TargetResolution = picker.DefaultTargetResolution
+	}
+	// Validate the global picker and every library override. A typo'd target resolution
+	// is worse than a hard failure at startup would suggest: it silently falls back to
+	// the default, so the user's deliberate "I want 2160p" quietly does nothing and the
+	// only symptom is picks that feel wrong months later.
+	if err := validatePicker(&cfg.Picker, "picker"); err != nil {
+		return err
+	}
+	for i := range cfg.Libraries {
+		if cfg.Libraries[i].Picker == nil {
+			continue
+		}
+		where := fmt.Sprintf("libraries[%d] (%s).picker", i, cfg.Libraries[i].Name)
+		if err := validatePicker(cfg.Libraries[i].Picker, where); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validatePicker checks and canonicalises one picker block, in place.
+//
+// picker.NormaliseTargetResolution is the single authority on which spellings are
+// accepted, so importing the picker here is on purpose: a private copy of the table in
+// this package would drift the moment a rung is added, and the failure would be a
+// config value the validator accepts and the picker then ignores.
+func validatePicker(p *PickerConfig, where string) error {
+	if p.TargetResolution != "" {
+		canonical := picker.NormaliseTargetResolution(p.TargetResolution)
+		if canonical == "" {
+			return fmt.Errorf("%s.target_resolution %q is not a resolution — "+
+				"use one of 2160p (or 4k), 1080p, 720p, 576p, 480p", where, p.TargetResolution)
+		}
+		p.TargetResolution = canonical
+	}
+	if p.MaxMbps < 0 {
+		return fmt.Errorf("%s.max_mbps must be 0 (no cap) or a positive megabits-per-second "+
+			"value, got %d", where, p.MaxMbps)
+	}
+	if p.MinSeeders < 0 {
+		return fmt.Errorf("%s.min_seeders must be 0 or more, got %d", where, p.MinSeeders)
+	}
+	if p.MaxSizeGB < 0 {
+		return fmt.Errorf("%s.max_size_gb must be 0 (unlimited) or more, got %d", where, p.MaxSizeGB)
 	}
 	return nil
 }
@@ -263,6 +347,23 @@ func (c *Config) PickerFor(lib *Library) PickerConfig {
 	}
 	if len(lp.PreferContainers) > 0 {
 		merged.PreferContainers = lp.PreferContainers
+	}
+	if lp.TargetResolution != "" {
+		merged.TargetResolution = lp.TargetResolution
+	}
+	if lp.MaxMbps > 0 {
+		merged.MaxMbps = lp.MaxMbps
+	}
+	// The *bool overrides test for non-nil, not for truth: that is the whole reason they
+	// are pointers. reject_cam was silently NOT merged at all, so a library that set
+	// `reject_cam: false` (an adult library, say, where camera rips may be all that
+	// exists) still had the global `true` applied and got "no suitable release found"
+	// with no indication that its own setting had been discarded.
+	if lp.RejectCAM != nil {
+		merged.RejectCAM = lp.RejectCAM
+	}
+	if lp.RequireDirectPlay != nil {
+		merged.RequireDirectPlay = lp.RequireDirectPlay
 	}
 	return merged
 }

@@ -263,3 +263,118 @@ func TestMatchesEpisode(t *testing.T) {
 		}
 	}
 }
+
+// TestMatchesEpisodeShortTokenCollision is the regression test for the wrong-episode bug.
+//
+// The matcher used to be strings.Contains over fmt.Sprintf'd patterns, and "s1e5" is a
+// prefix of "S1E50".."S1E59" (likewise "s1e1" of "S1E10".."S1E19"). Because the same
+// function filters candidate RELEASES and selects the FILE inside a season pack, asking
+// for episode 5 could hand back episode 50 and report it as a confident match — the
+// viewer just gets the wrong episode with nothing logged.
+func TestMatchesEpisodeShortTokenCollision(t *testing.T) {
+	cases := []struct {
+		name       string
+		season, ep int
+		want       bool
+	}{
+		// The collision itself.
+		{"Show.S1E50.1080p.mkv", 1, 5, false},
+		{"Show.S1E59.1080p.mkv", 1, 5, false},
+		{"Show.S1E5.1080p.mkv", 1, 5, true},
+		{"Show.S1E10.mkv", 1, 1, false},
+		{"Show.S1E19.mkv", 1, 1, false},
+		{"Show.S1E1.mkv", 1, 1, true},
+		// Zero padding on either side is still equivalent.
+		{"Show.S01E05.mkv", 1, 5, true},
+		{"Show.s001e005.mkv", 1, 5, true},
+		{"Show.S1E05.mkv", 1, 5, true},
+		// A digit before the season number must not be swallowed: "1920x1080" contains
+		// the substring "20x108", which is season 20 episode 108 to a naive matcher.
+		{"Show.1920x1080.mkv", 20, 108, false},
+		{"Show.1x05.mkv", 1, 5, true},
+		{"Show.11x05.mkv", 1, 5, false},
+		{"Show.S11E05.mkv", 1, 5, false},
+		{"Show.S21E05.mkv", 1, 5, false},
+		// Letters after the token are still allowed on purpose: these are real forms
+		// that genuinely do contain the requested episode.
+		{"Show.S01E05v2.1080p.mkv", 1, 5, true},
+		{"Show.S01E05E06.1080p.mkv", 1, 5, true},
+		{"Show.S01E05-E06.1080p.mkv", 1, 5, true},
+		// The double-episode above must not make episode 5 match a request for 50.
+		{"Show.S01E05E06.1080p.mkv", 1, 50, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MatchesEpisode(tc.name, tc.season, tc.ep); got != tc.want {
+				t.Errorf("MatchesEpisode(%q, %d, %d) = %v, want %v",
+					tc.name, tc.season, tc.ep, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEpisodeFileIndexIgnoresPackFolder is the regression test for the pack-folder
+// poisoning: the episode token in a DIRECTORY component used to satisfy the match for
+// every file underneath it, so a request for E01 in "Show.S01E01-E10.COMPLETE/" matched
+// all ten files, took the largest, and returned matched=true.
+func TestEpisodeFileIndexIgnoresPackFolder(t *testing.T) {
+	const mb = int64(1024 * 1024)
+	pack := []FileInfo{
+		{ID: 1, Path: "Show.S01E01-E10.COMPLETE.1080p/Show.S01E07.1080p.mkv", Length: 1400 * mb},
+		{ID: 2, Path: "Show.S01E01-E10.COMPLETE.1080p/Show.S01E08.1080p.mkv", Length: 900 * mb},
+		{ID: 3, Path: "Show.S01E01-E10.COMPLETE.1080p/Show.S01E09.1080p.mkv", Length: 950 * mb},
+	}
+	// Episode 1 is not actually in this pack, whatever the folder claims.
+	if idx, matched := EpisodeFileIndex(pack, 1, 1); matched {
+		t.Errorf("EpisodeFileIndex = (%d, true); the folder name must not make every "+
+			"file a confident match for an episode the pack does not contain", idx)
+	}
+	// An episode that IS present still resolves to its own file.
+	if idx, matched := EpisodeFileIndex(pack, 1, 8); idx != 2 || !matched {
+		t.Errorf("EpisodeFileIndex = (%d, %v), want (2, true)", idx, matched)
+	}
+}
+
+// The directory is still consulted when the filenames say nothing — but only when it
+// points at exactly one file. More than one file matching on its path alone means the
+// token came from a shared ancestor, which carries no information about which to play.
+func TestEpisodeFileIndexDirectoryFallback(t *testing.T) {
+	const mb = int64(1024 * 1024)
+
+	t.Run("token lives in the directory and identifies one file", func(t *testing.T) {
+		files := []FileInfo{
+			{ID: 1, Path: "Show S01/E04.mkv", Length: 800 * mb},
+			{ID: 2, Path: "Show S01/E05.mkv", Length: 810 * mb},
+		}
+		if idx, matched := EpisodeFileIndex(files, 1, 5); idx != 2 || !matched {
+			t.Errorf("EpisodeFileIndex = (%d, %v), want (2, true)", idx, matched)
+		}
+	})
+
+	t.Run("an ambiguous directory token is not an answer", func(t *testing.T) {
+		files := []FileInfo{
+			{ID: 1, Path: "Show.S01E05.Complete/part1.mkv", Length: 800 * mb},
+			{ID: 2, Path: "Show.S01E05.Complete/part2.mkv", Length: 810 * mb},
+		}
+		if idx, matched := EpisodeFileIndex(files, 1, 5); matched {
+			t.Errorf("EpisodeFileIndex = (%d, true); two files matching only via a "+
+				"shared folder is not a confident answer", idx)
+		}
+	})
+}
+
+// TestEpisodeFileIndexFileZero: file IDs start at 0 in some torrents, and the old code
+// used `bestID != 0` as its "did we match anything" test — so a correct match on the
+// first file was reported as no match, and the caller fell through to a guess.
+func TestEpisodeFileIndexFileZero(t *testing.T) {
+	const mb = int64(1024 * 1024)
+	files := []FileInfo{
+		{ID: 0, Path: "Show.S01E05.1080p.mkv", Length: 900 * mb},
+		{ID: 1, Path: "Show.S01E06.1080p.mkv", Length: 950 * mb},
+	}
+	idx, matched := EpisodeFileIndex(files, 1, 5)
+	if idx != 0 || !matched {
+		t.Errorf("EpisodeFileIndex = (%d, %v), want (0, true) — file ID 0 is a real file",
+			idx, matched)
+	}
+}
