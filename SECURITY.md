@@ -2,8 +2,13 @@
 
 ## Reporting a vulnerability
 
-Email **briviamoon@gmail.com** with a description, affected version, and reproduction
-steps. Please do not open a public issue for an unfixed vulnerability.
+Use **[GitHub's private vulnerability reporting](https://github.com/MoonTheRipper/JellyFreedom/security/advisories/new)**
+— the *Report a vulnerability* button under the repository's **Security** tab. Include a
+description, the affected version, and reproduction steps.
+
+The report is visible only to the maintainer, so please use it rather than opening a public
+issue for an unfixed vulnerability. It needs no email address from either of us, and it
+keeps the whole exchange in one place with a private fork for the fix if one is needed.
 
 This is a single-maintainer hobby project. Expect an acknowledgement within about a week
 and a fix on a best-effort basis. There is no bug bounty.
