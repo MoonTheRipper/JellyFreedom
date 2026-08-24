@@ -9,6 +9,17 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-24
+
+### Fixed
+- **The release picker looked like it had hung.** Searching your indexers takes real time —
+  43 seconds against 16 indexers in one measurement — and the picker filled that with a bare
+  shimmer, which is indistinguishable from a frozen screen. It now says what it is doing,
+  counts the seconds, and after twenty of them adds that a slow answer is normal rather than
+  a fault. The styles for this shipped in 0.5.0 but the code that renders them did not, so
+  0.5.0 carried the rules with nothing to use them.
+
+
 ## [0.5.0] - 2026-08-23
 
 A queue that could bury your whole library under one title, a Request button that had never
@@ -353,7 +364,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.4.0...v0.4.1
