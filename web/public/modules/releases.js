@@ -51,15 +51,57 @@ export async function reloadPicker() {
   if (picker.ctx) await load(picker.ctx);
 }
 
-function skeleton() {
-  return `<div class="release-list">${Array(5).fill(0).map(() =>
-    `<div class="rel-row"><div class="skeleton sk-line" style="width:100%"></div></div>`).join('')}</div>`;
+/* Searching indexers is SLOW — measured at 43s against a real Prowlarr with 16 indexers,
+   returning 106 releases. A bare shimmer for three quarters of a minute is indistinguishable
+   from a hung UI, which is exactly how it was reported: "new cards when clicked just show the
+   shining aesthetic of searching". So the wait says what it is doing, how long it has been
+   doing it, and that a slow answer is normal. */
+function skeleton(elapsed) {
+  const secs = Number.isFinite(elapsed) ? elapsed : 0;
+  const slow = secs >= 20
+    ? `<p class="rel-wait-note">Still going. Indexers that have gone cold can take a while to
+       wake up — this is normal, not a hang.</p>`
+    : '';
+  return `<div class="rel-wait" role="status" aria-live="polite">
+      <div class="rel-wait-head">${icon('refresh', 'spin')}
+        <span>Searching your indexers…<span class="rel-wait-secs"> ${secs}s</span></span>
+      </div>
+      <p class="rel-wait-note">This asks every indexer you have configured and can take up to
+        a minute the first time.</p>
+      ${slow}
+    </div>
+    <div class="release-list" aria-hidden="true">${Array(5).fill(0).map(() =>
+      `<div class="rel-row"><div class="skeleton sk-line" style="width:100%"></div></div>`).join('')}</div>`;
+}
+
+/* startWaitTicker keeps the elapsed count live and returns a stop function. The interval is
+   cleared on every exit path below — a stray ticker would keep writing into a panel that has
+   since been replaced by results, an error, or a different title. */
+function startWaitTicker(p) {
+  const began = Date.now();
+  let slowShown = false;
+  p.innerHTML = skeleton(0);
+  const id = setInterval(() => {
+    const secs = Math.round((Date.now() - began) / 1000);
+    const el = p.querySelector('.rel-wait-secs');
+    if (!el) { clearInterval(id); return; }   // panel replaced; stop writing to it
+    el.textContent = ` ${secs}s`;
+    // >= with a latch, not === : a tick can be late. A GC pause is enough to jump 19 -> 21,
+    // and a background tab is throttled to roughly one tick a MINUTE, so an equality test
+    // skips the threshold entirely — losing the reassurance in exactly the case it exists
+    // for, since a long wait is when someone is most likely to have switched away.
+    if (secs >= 20 && !slowShown) {
+      slowShown = true;
+      p.innerHTML = skeleton(secs);   // upgrade to the "still going" note, once
+    }
+  }, 1000);
+  return () => clearInterval(id);
 }
 
 async function load(ctx) {
   const p = panel();
   if (!p) return;
-  p.innerHTML = skeleton();
+  const stopTicker = startWaitTicker(p);
 
   let url = `/api/releases?tmdb_id=${encodeURIComponent(ctx.tmdbId)}&type=${encodeURIComponent(ctx.mediaType)}`;
   if (ctx.mediaType === 'tv' && ctx.season && ctx.episode) {
@@ -71,6 +113,7 @@ async function load(ctx) {
   try {
     releases = await apiFetch(url, {signal: token.signal});
   } catch (e) {
+    stopTicker();
     if (isAbort(e) || !seq.isCurrent(token)) return;
     // A 500 here used to render as "No releases found", which reads as
     // "your indexers had nothing" — the single most misleading message in
@@ -79,6 +122,7 @@ async function load(ctx) {
       {retryAttr: 'data-rel-retry="1"', compact: true});
     return;
   }
+  stopTicker();
   if (!seq.isCurrent(token)) return;
 
   picker.releases = Array.isArray(releases) ? releases : [];
