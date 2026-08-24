@@ -3,23 +3,24 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>JellyFreedom — stream torrents straight into Jellyfin</title>
-<meta name="description" content="Self-hosted: search & stream movies and TV from torrents straight into Jellyfin, on any device, behind a fail-closed WireGuard kill switch. No Docker, no debrid.">
+<title>JellyFreedom — watch straight from a torrent, in Jellyfin</title>
+<meta name="description" content="Self-hosted. Search the sources you add, pick the file you want, and it plays in Jellyfin on any device — without saving anything to your disk, and behind a VPN that fails closed.">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="canonical" href="https://moontheripper.github.io/JellyFreedom/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="JellyFreedom">
-<meta property="og:title" content="JellyFreedom — stream torrents straight into Jellyfin">
-<meta property="og:description" content="Self-hosted torrent streaming into your Jellyfin library. No Docker, no debrid, fail-closed WireGuard kill switch.">
+<meta property="og:title" content="JellyFreedom — watch straight from a torrent, in Jellyfin">
+<meta property="og:description" content="Pick a file, press play, watch it in Jellyfin. Nothing is saved to your disk, and the VPN fails closed.">
 <meta property="og:url" content="https://moontheripper.github.io/JellyFreedom/">
-<!-- TODO(social-card): replace with a real 1200x630 PNG once one exists.
-     Do NOT ship an invented screenshot; the SVG mark is honest until then. -->
-<meta property="og:image" content="https://moontheripper.github.io/JellyFreedom/favicon.svg">
-<meta property="og:image:alt" content="The JellyFreedom mark: a purple-to-cyan play button.">
+<!-- A real 1200x630 crop of the actual search view, not a mockup. -->
+<meta property="og:image" content="https://moontheripper.github.io/JellyFreedom/img/social-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The JellyFreedom search page, showing results as cover art.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="JellyFreedom — stream torrents straight into Jellyfin">
-<meta name="twitter:description" content="Self-hosted torrent streaming into your Jellyfin library. No Docker, no debrid, fail-closed WireGuard kill switch.">
-<meta name="twitter:image" content="https://moontheripper.github.io/JellyFreedom/favicon.svg">
+<meta name="twitter:title" content="JellyFreedom — watch straight from a torrent, in Jellyfin">
+<meta name="twitter:description" content="Pick a file, press play, watch it in Jellyfin. Nothing is saved to your disk, and the VPN fails closed.">
+<meta name="twitter:image" content="https://moontheripper.github.io/JellyFreedom/img/social-card.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@500;600;700&family=Open+Sans:wght@400;600&display=swap" rel="stylesheet">
@@ -49,6 +50,16 @@
   .btn-primary{background:var(--grad);color:#fff;box-shadow:0 6px 22px rgba(120,80,200,.35)}
   .btn-primary:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(120,80,200,.5)}
   .btn-ghost{border:1px solid var(--border);color:var(--text)}.btn-ghost:hover{border-color:var(--g2)}
+
+  .sub-small{font-size:15px;color:var(--muted);margin-top:14px}
+
+  /* screenshots */
+  .shots{display:flex;flex-direction:column;gap:56px;margin-top:8px}
+  .shot{text-align:center}
+  .shot img{width:100%;border-radius:12px;border:1px solid var(--border);
+            box-shadow:0 18px 50px rgba(0,0,0,.55);display:block}
+  .shot h3{font-size:20px;margin-bottom:8px}
+  .shot p{color:var(--muted);max-width:660px;margin:0 auto 20px;font-size:15px}
 
   /* hero */
   header.hero{position:relative;text-align:center;padding:96px 0 84px;overflow:hidden}
@@ -125,6 +136,7 @@
   </span>
   <span class="nav-links">
     <a href="#install">Install</a>
+    <a href="#look">Screenshots</a>
     <a href="#features">Features</a>
     <a href="#how">How</a>
     <a href="https://github.com/MoonTheRipper/JellyFreedom" target="_blank" rel="noopener">GitHub ↗</a>
@@ -133,11 +145,13 @@
 
 <header class="hero"><div class="wrap">
   <svg class="hero-logo" viewBox="0 0 24 24" fill="url(#jf)"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm-2 6.2l6.5 3.8L10 15.8V8.2z"/></svg>
-  <span class="pill">Self-hosted · No Docker · No debrid</span>
-  <h1>Stream torrents straight into <span class="grad-text">Jellyfin</span></h1>
-  <p class="sub">JellyFreedom turns torrent-streamable movies &amp; TV into playable items in your
-  Jellyfin library — watch on any device, behind a fail-closed WireGuard kill switch, with a
-  cache that never bloats your disk.</p>
+  <span class="pill">Self-hosted · Your own sources · No Docker</span>
+  <h1>Watch it straight away, in <span class="grad-text">Jellyfin</span></h1>
+  <p class="sub">Search, pick the file you want, press play. It appears in your Jellyfin
+  library and streams on demand — on your TV, your phone, your browser — without ever
+  filling up your disk.</p>
+  <p class="sub sub-small">You bring the sources. JellyFreedom has no catalogue of its own:
+  it looks only where you tell it to, and plays only what you choose.</p>
   <div class="cta">
     <a class="btn btn-primary" href="#install">Get started</a>
     <a class="btn btn-ghost" href="https://github.com/MoonTheRipper/JellyFreedom" target="_blank" rel="noopener">View on GitHub</a>
@@ -146,35 +160,77 @@
 
 <section id="install"><div class="wrap">
   <h2 class="section-title">Up and running in one line</h2>
-  <p class="section-sub">Debian / Ubuntu. Installs the orchestrator, TorrServer, FlareSolverr, Jellyfin &amp; Prowlarr.</p>
+  <p class="section-sub">Debian or Ubuntu. Sets up everything for you, and leaves anything you already have alone.</p>
   <div class="code">
     <button class="copy" type="button" data-copy-target="install-cmd">Copy</button>
     <span class="prompt" aria-hidden="true">$</span> <code id="install-cmd">curl -fsSL https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/get.sh | sudo bash</code>
   </div>
-  <p class="install-note">Then open <code>http://&lt;host&gt;:1990/dashboard/</code>, add your keys, and upload a WireGuard config from any provider.</p>
+  <p class="install-note">Then open <code>http://&lt;your-server&gt;:1990/dashboard/</code>, create your account, and upload a WireGuard file from whichever VPN you use. Until you do, nothing will transfer at all &mdash; that is deliberate.</p>
+</div></section>
+
+<section id="look"><div class="wrap">
+  <h2 class="section-title">What it looks like</h2>
+  <p class="section-sub">Real screenshots — nothing here is a mockup.</p>
+  <div class="shots">
+
+    <div class="shot">
+      <h3>Find it</h3>
+      <p>Type a name, pick the right title. Cover art and descriptions come from TMDB.</p>
+      <img src="img/search.png" alt="The search page, showing results as cover art" loading="lazy" width="1200" height="750">
+    </div>
+
+    <div class="shot">
+      <h3>Choose the file — or don&rsquo;t</h3>
+      <p>Every option shows its quality, video and audio format, size, and how many people are
+      sharing it, so you can tell a good one from a bad one at a glance. Leave it alone and a
+      sensible choice is made for you.</p>
+      <img src="img/choose-release.png" alt="Choosing which file to play, with quality and size shown for each option" loading="lazy" width="1200" height="792">
+    </div>
+
+    <div class="shot">
+      <h3>Your library, as a tree</h3>
+      <p>Shows open into seasons, seasons into episodes. A show that is still airing says
+      &ldquo;Up to date&rdquo;, never &ldquo;Complete&rdquo; &mdash; so you notice when the next
+      episode lands.</p>
+      <img src="img/library.png" alt="The library, showing shows expanding into seasons and episodes" loading="lazy" width="1200" height="875">
+    </div>
+
+    <div class="shot">
+      <h3>Watch things arrive</h3>
+      <p>The queue is a tree too, and anything that needs you sorts to the top.</p>
+      <img src="img/queue.png" alt="The request queue, grouped by show and season" loading="lazy" width="1200" height="875">
+    </div>
+
+    <div class="shot">
+      <h3>A dashboard that tells you what&rsquo;s left</h3>
+      <p>Every row links straight to the thing that fixes it.</p>
+      <img src="img/dashboard.png" alt="The setup dashboard, listing each component and whether it is ready" loading="lazy" width="1200" height="817">
+    </div>
+
+  </div>
 </div></section>
 
 <section id="features" class="alt"><div class="wrap">
   <h2 class="section-title">Why JellyFreedom</h2>
-  <p class="section-sub">Built for the living room — and for staying private.</p>
+  <p class="section-sub">Built for the living room, and for staying private.</p>
   <div class="grid">
-    <div class="card"><div class="ico">📺</div><h3>Every device</h3><p>Jellyfin is the frontend, so Apple TV, phone, and browser all work natively. No per-device app to build.</p></div>
-    <div class="card"><div class="ico">💾</div><h3>No disk bloat</h3><p>A bounded RAM ring-buffer streams the playhead window and evicts the rest. Disk usage stays flat.</p></div>
-    <div class="card"><div class="ico">🛡️</div><h3>Fail-closed VPN</h3><p>Torrent traffic is confined to a network namespace whose only route is WireGuard. If the VPN drops, it's blocked — not leaked.</p></div>
-    <div class="card"><div class="ico">🔁</div><h3>Self-healing</h3><p>Resolve-at-play: links point at a stable identity, not a frozen hash, so the library re-picks a live release when seeders decay.</p></div>
-    <div class="card"><div class="ico">🎛️</div><h3>Web UI included</h3><p>A request app for everyone — search, queue, release picker, calendar — plus an admin dashboard for health, VPN config upload/activate, users, settings and scheduled tasks.</p></div>
-    <div class="card"><div class="ico">🧩</div><h3>No Docker, any VPN</h3><p>Native single binaries and systemd units. Bring a WireGuard config from any provider or self-hosted.</p></div>
+    <div class="card"><div class="ico">📺</div><h3>Works on what you own</h3><p>Jellyfin is the app you actually watch in, so your Apple TV, phone, tablet and browser all just work. There is no extra app to install.</p></div>
+    <div class="card"><div class="ico">💾</div><h3>Your disk stays empty</h3><p>Only the part you are watching is held, in memory, with a hard size limit. Watch one film or a hundred &mdash; disk usage does not move.</p></div>
+    <div class="card"><div class="ico">🛡️</div><h3>Private, or nothing</h3><p>That traffic can only leave through your VPN. If the tunnel drops, it stops dead rather than falling back to your normal connection. Checked every minute.</p></div>
+    <div class="card"><div class="ico">🔁</div><h3>Nothing goes stale</h3><p>Links point at the title, not at one particular copy. If whoever was sharing it disappears, the next play just finds another one.</p></div>
+    <div class="card"><div class="ico">🎛️</div><h3>A proper interface</h3><p>Search, a queue, a file picker and a calendar for everyone in the house &mdash; plus an admin side for health, VPN files, accounts and settings.</p></div>
+    <div class="card"><div class="ico">🧩</div><h3>No Docker, any VPN</h3><p>Plain programs and normal system services. Bring a WireGuard file from any provider, or run your own.</p></div>
   </div>
 </div></section>
 
 <section id="how"><div class="wrap">
   <h2 class="section-title">How it works</h2>
-  <p class="section-sub">Search → pick a healthy release → stream on demand → it appears in Jellyfin.</p>
+  <p class="section-sub">Four steps, and you only do the first one.</p>
   <div class="steps">
-    <div class="step"><h3>Search</h3><p>TMDB for metadata, Prowlarr for releases — seeder-aware picking, CAM rips rejected.</p></div>
-    <div class="step"><h3>Resolve</h3><p>The best currently-live release is handed to TorrServer behind the VPN kill switch.</p></div>
-    <div class="step"><h3>Point</h3><p>A tiny <code>.strm</code> file lands in your Jellyfin library — instant "availability."</p></div>
-    <div class="step"><h3>Play</h3><p>Press play on any device; it streams on demand and drops when you're done.</p></div>
+    <div class="step"><h3>You search</h3><p>It looks in the places you added and shows you what is there, with quality and size for each.</p></div>
+    <div class="step"><h3>It picks</h3><p>Either you choose, or it takes the best one &mdash; favouring files that play without your TV having to work hard.</p></div>
+    <div class="step"><h3>It appears</h3><p>The title shows up in your Jellyfin library straight away, ready to play.</p></div>
+    <div class="step"><h3>You watch</h3><p>Press play on any device. It streams while you watch and lets go when you stop.</p></div>
   </div>
 </div></section>
 
@@ -184,8 +240,9 @@
   &nbsp;·&nbsp; <a href="https://github.com/MoonTheRipper/JellyFreedom/releases/latest" target="_blank" rel="noopener">Releases</a>
   &nbsp;·&nbsp; MIT License &nbsp;·&nbsp; © moontheripper
   <p class="disclaimer">An independent project. Not affiliated with, endorsed by, or part of the
-  Jellyfin project — it simply feeds a Jellyfin server you run. You are responsible for what you
-  stream and for complying with the laws that apply to you.</p>
+  Jellyfin project &mdash; it simply feeds a Jellyfin server you run. JellyFreedom includes no
+  sources and no content: it searches only what you add and plays only what you point it at.
+  What you choose to play, and whether you have the right to, is up to you.</p>
 </div></footer>
 
 <script>
