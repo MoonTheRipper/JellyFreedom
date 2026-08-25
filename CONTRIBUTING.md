@@ -101,13 +101,32 @@ Match what is already in `git log`:
 
 ## Pull requests
 
+`main` is protected. It accepts pull requests only, all eight CI jobs must pass before a
+merge is allowed, and it cannot be force-pushed or deleted — by anyone, including the
+maintainer. So the loop for every change, however small, is:
+
+```bash
+git checkout main && git pull
+git checkout -b feat/short-name        # or fix/short-name
+# ... work, commit ...
+git push -u origin feat/short-name
+gh pr create --fill
+gh pr checks --watch                   # eight jobs, a few minutes
+gh pr merge --squash --delete-branch   # only unlocks once they are green
+```
+
+There is no way to skip the checks, which is the point: the merge button stays disabled
+until CI agrees, so `main` is always a commit that built and passed its tests.
+
 - One logical change per pull request.
 - CI must be green: build, `go vet`, tests, `gofmt`, ShellCheck, both cross-compiles, and
   the installer smoke test.
 - Update the docs in the same change. If you change behaviour that `docs/dev/architecture.md`,
   `docs/dev/operations.md`, `docs/install.md`, `docs/configuration.md`, or `README.md`
   describes, fix them too.
-- Add an entry under `## [Unreleased]` in `CHANGELOG.md`.
+- Add an entry under `## [Unreleased]` in `CHANGELOG.md`. `release/bump.sh` turns that
+  section into the published release notes later, and refuses to cut a release when it is
+  empty — so an omission here is caught at release time, not discovered by readers.
 - If you change routes or authentication, re-check `SECURITY.md` against reality.
 
 ## Reporting bugs

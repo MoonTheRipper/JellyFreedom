@@ -58,27 +58,45 @@ and it has drifted before.
 1. **Land everything** for the release on `main`, with CI green — including the
    `installer-smoke` job. A release whose installer has not been smoke-tested end to end is
    not ready.
-2. **Bump `VERSION`.** This is the single source of truth. The release workflow refuses to
-   build if the tag does not match it.
-3. **Update `CHANGELOG.md`:** rename `## [Unreleased]` to `## [<version>] - YYYY-MM-DD`,
-   add a fresh empty `## [Unreleased]`, and update the comparison links at the bottom.
-   The workflow extracts the release notes from the `## [<version>]` section and **fails if
-   that section does not exist**.
-4. **Re-read `SECURITY.md`** if routes or authentication changed in this cycle.
-5. **Commit** the version bump and changelog (existing commit style: imperative subject,
-   `-` bullet body, no tooling attribution).
-6. **Tag and push:**
+2. **Run `release/bump.sh`.** It does steps 2, 3 and 5 of the old manual checklist together,
+   because getting one of them right and another wrong is how a tag lands that the workflow
+   then refuses to build:
+
    ```bash
+   ./release/bump.sh patch     # 0.5.1 -> 0.5.2   a fix
+   ./release/bump.sh minor     # 0.5.1 -> 0.6.0   a feature
+   ./release/bump.sh major     # 0.5.1 -> 1.0.0   a break
+   ./release/bump.sh 1.2.3     # an exact version
+   ```
+
+   It writes `VERSION`, renames `## [Unreleased]` to `## [<version>] - <today>`, opens a
+   fresh `## [Unreleased]`, repoints the comparison links, commits on a `release/<version>`
+   branch, and prints the remaining commands.
+
+   It refuses to run on a dirty tree, on a version that already has a tag, or when
+   `## [Unreleased]` is empty — an empty section would publish empty release notes to
+   everyone watching. Before committing it re-runs **the workflow's own extraction** against
+   the file it just wrote, so a layout change is caught here rather than after the tag is
+   pushed.
+
+3. **Re-read `SECURITY.md`** if routes or authentication changed in this cycle.
+4. **Open the PR, let CI finish, merge it.** `main` is protected: it takes pull requests
+   only, and all eight CI jobs must pass. This is deliberate — the tag in the next step is
+   what publishes, so the commit it points at should be one CI has already agreed with.
+5. **Tag the merged commit and push the tag:**
+   ```bash
+   git checkout main && git pull
    git tag -a v0.3.0 -m 'JellyFreedom 0.3.0'
-   git push origin main
    git push origin v0.3.0
    ```
-7. **Watch the workflow.** It builds `linux/amd64` and `linux/arm64`, verifies each binary's
+   Pushing the tag is what triggers the build. `main` itself is already up to date by this
+   point, because the bump went in through its pull request.
+6. **Watch the workflow.** It builds `linux/amd64` and `linux/arm64`, verifies each binary's
    machine type, generates `SHA256SUMS`, attests provenance, and creates a **draft** release.
-8. **Review the draft:** correct notes, and **seven** assets present — see *Asset names*
+7. **Review the draft:** correct notes, and **seven** assets present — see *Asset names*
    below. The two stable `jellyfreedom-linux-<arch>.tar.gz` names are the ones the
    one-liner actually downloads; if they are missing, `get.sh` fails for every user.
-9. **Smoke-test the published artifact** on a throwaway VM — never on a live box:
+8. **Smoke-test the published artifact** on a throwaway VM — never on a live box:
    ```bash
    curl -fsSLO https://github.com/MoonTheRipper/JellyFreedom/releases/download/v0.3.0/SHA256SUMS
    curl -fsSLO https://github.com/MoonTheRipper/JellyFreedom/releases/download/v0.3.0/jellyfreedom-0.3.0-linux-amd64.tar.gz
@@ -87,14 +105,14 @@ and it has drifted before.
    curl -fsSL https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/get.sh | sudo bash
    gh attestation verify jellyfreedom-0.3.0-linux-amd64.tar.gz --repo MoonTheRipper/JellyFreedom
    ```
-10. **Publish** the draft. Publishing is what makes
+9. **Publish** the draft. Publishing is what makes
     `releases/latest/download/get.sh` resolve — the one-liner in the README points at
     `latest`, so an unpublished draft leaves users on the previous release.
-11. **Verify the one-liner** resolves:
+10. **Verify the one-liner** resolves:
     ```bash
     curl -fsSLI https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/get.sh
     ```
-12. **Update an existing install** to confirm the upgrade path:
+11. **Update an existing install** to confirm the upgrade path:
     `sudo jellyfreedom --update` on a test box.
 
 ## Asset names
