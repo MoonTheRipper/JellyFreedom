@@ -9,6 +9,14 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Added
+- `release/bump.sh` — cuts a release in one step: moves `VERSION`, closes off the changelog
+  section, repoints the comparison links, and commits on a `release/<version>` branch.
+  Takes `patch`, `minor`, `major`, or an exact version. It refuses a dirty tree, a version
+  that is already tagged, and an empty `## [Unreleased]`, and it re-runs the release
+  workflow's own note extraction against the file it just wrote — so a mistake surfaces
+  before the tag is pushed rather than after.
+
 ## [0.5.1] - 2026-08-24
 
 ### Fixed
