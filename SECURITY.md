@@ -55,8 +55,17 @@ registered falls through to `RequireAdmin`** — the default is closed.
 - `GET /` and the media UI assets, `GET /search`
 - `GET /healthz`, `GET /readyz`, `GET /api/version`, `GET /api/health/summary`,
   `GET /api/configured`, `GET /api/playback/active`
-- TMDB read-through: `GET /api/tmdb/{id}/full`, `.../seasons`, `.../seasons/{n}/episodes`,
-  `GET /api/browse/trending`, `GET /api/browse/discover`
+- TMDB read-through: `GET /api/tmdb/{id}/full`, `.../seasons`, `.../seasons/{n}/episodes`
+- Browse and filtering: `GET /api/browse/trending`, `GET /api/browse/discover`,
+  `GET /api/genres`, `GET /api/studios` — every one of these turns an anonymous request
+  into an outbound TMDB call on this instance's API key, so all four share a fixed-window
+  limit of **180 requests per minute per address** (the homepage alone fires one discover
+  per carousel on load, so the budget is deliberately generous; what it stops is a script
+  in a loop). `/api/browse/discover` accepts filters only from an explicit allowlist in
+  `tmdb.DiscoverParams` — caller-supplied parameters are never forwarded to TMDB, so an
+  anonymous caller cannot inject `api_key` or any other upstream parameter, and every
+  value is validated (numeric ids, a fixed sort allowlist, bounded `page`/`min_votes`)
+  with a `400` rather than being coerced.
 - Library and queue reads: `GET /api/libraries`, `GET /api/library`,
   `GET /api/library/status`, `GET /api/queue`, `GET /api/queue/groups`,
   `GET /api/queue/count`,

@@ -2,13 +2,17 @@ package tmdb
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"jellyfreedom/internal/redact"
 )
 
 // DefaultBaseURL is the public TMDB API root. It is a per-Client field rather than a
@@ -20,13 +24,27 @@ type Client struct {
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
+
+	// genreMu guards genreCache only. It is deliberately NOT mu: mu is taken on every
+	// single request to read the key and the base URL, and the genre cache is written
+	// rarely and read from a different code path, so sharing one lock would put genre
+	// refreshes in the way of unrelated traffic for no benefit.
+	genreMu    sync.Mutex
+	genreCache map[string]cachedGenres
 }
 
 func New(apiKey string) *Client {
+	// The key travels as a TMDB query parameter (TMDB v3 has no header form for it), so
+	// it WILL end up inside any *url.Error this client produces. Registering it with the
+	// redaction backstop the moment the client learns it is what stops a wrapped error
+	// from carrying it into a log line or a response body — the Prowlarr incident that
+	// package documents started exactly this way.
+	redact.Register(apiKey)
 	return &Client{
 		apiKey:     apiKey,
 		baseURL:    DefaultBaseURL,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
+		genreCache: map[string]cachedGenres{},
 	}
 }
 
@@ -48,7 +66,12 @@ func (c *Client) base() string {
 }
 
 // Configure updates the API key at runtime under a write lock.
+//
+// The new key is registered with redact for the same reason New does it: the Settings UI
+// can swap the key while the process runs, and a key that was never registered is a key
+// the backstop cannot scrub.
 func (c *Client) Configure(apiKey string) {
+	redact.Register(apiKey)
 	c.mu.Lock()
 	c.apiKey = apiKey
 	c.mu.Unlock()
@@ -755,14 +778,434 @@ func (c *Client) Trending() ([]BrowseResult, error) {
 	return c.browseGet(url, "")
 }
 
-// Discover fetches movies or TV shows filtered by genres, companies, or networks.
-// params is a map of Torznab query params, e.g. {"with_genres":"28","sort_by":"popularity.desc"}
+// Discover fetches movies or TV shows filtered by genres, companies, networks and the
+// rest of TMDB's /discover vocabulary. params holds TMDB parameter names verbatim, e.g.
+// {"with_genres": "28|12", "sort_by": "popularity.desc"}.
+//
+// TWO THINGS THE CALLER OWNS, and neither is enforceable here:
+//
+//  1. The KEYS in params are written straight into the outbound query, so the caller must
+//     build the map from an explicit allowlist. Handing this function a map assembled
+//     from a request's query string would let an unauthenticated caller add `api_key`
+//     (pointing TMDB at someone else's account) or any other TMDB parameter of their
+//     choosing. cmd/orchestrator's browse handler is the allowlist; see discoverParams.
+//  2. The VALUES are escaped here, but escaping is not validation. "with_genres=lolno"
+//     is a perfectly well-formed query that TMDB answers with nonsense.
+//
+// Values are encoded with url.Values rather than concatenated. The old code appended
+// "&"+k+"="+v raw, which meant a single "&" inside any value silently became a new
+// outbound parameter — the same injection shape as (1), just reached through a value
+// instead of a key. It matters concretely now: OR-ing genres needs a literal "|", which
+// must reach TMDB percent-encoded.
 func (c *Client) Discover(mediaType string, params map[string]string) ([]BrowseResult, error) {
-	base := fmt.Sprintf("%s/discover/%s?api_key=%s", c.base(), mediaType, c.key())
+	q := make(url.Values, len(params)+1)
+	q.Set("api_key", c.key())
 	for k, v := range params {
-		base += "&" + k + "=" + v
+		q.Set(k, v)
 	}
-	return c.browseGet(base, mediaType)
+	return c.browseGet(fmt.Sprintf("%s/discover/%s?%s", c.base(), mediaType, q.Encode()), mediaType)
+}
+
+// ── Browse filter allowlist ───────────────────────────────────────────────────
+
+// DiscoverSorts is the complete set of sort orders a caller may ask for, in the order a
+// UI should offer them. It is an ALLOWLIST, not a suggestion: sort_by is forwarded to
+// TMDB verbatim, so anything not on this list is refused rather than passed along.
+var DiscoverSorts = []string{
+	"popularity.desc",
+	"vote_average.desc",
+	"primary_release_date.desc",
+	"revenue.desc",
+}
+
+const (
+	// maxDiscoverPage is TMDB's own hard ceiling on /discover paging: page 501 is an
+	// error upstream, so refusing it here turns a confusing 502 into an honest 400.
+	maxDiscoverPage = 500
+	// maxDiscoverVotes bounds vote_count.gte. The most-voted title on TMDB is in the
+	// low tens of thousands, so anything past this is a caller probing, not filtering.
+	maxDiscoverVotes = 100000
+	// maxFilterIDs caps how many ids one filter may carry. A browse UI offers a handful
+	// of chips; the cap exists so an unauthenticated caller cannot make us build a
+	// multi-kilobyte outbound URL out of ten thousand comma-separated ids.
+	maxFilterIDs = 20
+	// minFilmYear is the year of Roundhay Garden Scene, the oldest surviving film, and
+	// maxFilmYear leaves room for announced-but-unreleased titles. Fixed constants
+	// rather than time.Now() so the accepted range does not drift under the tests.
+	minFilmYear = 1888
+	maxFilmYear = 2100
+	// defaultRatingVotes is the vote floor applied when a caller sorts by rating and
+	// says nothing about vote counts. Without it, vote_average.desc is worthless: the
+	// top of that list is short films with a single 10/10 vote, not good movies. An
+	// explicit min_votes (including min_votes=0) overrides it.
+	defaultRatingVotes = 200
+)
+
+// DiscoverParams translates a browse request's query string into TMDB /discover
+// parameters.
+//
+// THIS FUNCTION IS THE SECURITY BOUNDARY for /api/browse/discover, which is
+// unauthenticated (SECURITY.md). It reads an explicit list of keys out of q and ignores
+// everything else — it never ranges over q. That is the whole point: a passthrough would
+// let anyone who can reach the port append `api_key=<their own>` and bill their traffic
+// to this instance's TMDB account, or reach TMDB parameters (certification, region,
+// with_watch_providers…) that the UI never intended to expose. Adding a filter means
+// adding a case here; there is no way to "just pass this one through".
+//
+// Every error returned is built from string constants — never from caller input and never
+// from an upstream error — so a handler may return the message verbatim to an anonymous
+// caller with no risk of echoing back an API key or reflecting input.
+//
+// Two TMDB asymmetries are handled here, and both are the kind that look right in code
+// review and return nothing at runtime:
+//
+//  1. THE YEAR PARAMETER IS NAMED DIFFERENTLY PER MEDIA TYPE. Movies filter on
+//     primary_release_year, TV on first_air_date_year. Send a movie's parameter name to
+//     /discover/tv and TMDB does not complain — it silently ignores the unknown
+//     parameter and returns an unfiltered list, so the bug shows up as "the year filter
+//     does nothing", never as an error.
+//  2. SORT ORDERS ARE NOT SHARED. primary_release_date.desc is a movie concept; the TV
+//     equivalent is first_air_date.desc, and it is translated below. revenue.desc has no
+//     TV equivalent at all, so it is refused for TV rather than translated into
+//     something that means something different.
+func DiscoverParams(mediaType string, q url.Values) (map[string]string, error) {
+	if mediaType != "movie" && mediaType != "tv" {
+		return nil, errors.New("type must be movie or tv")
+	}
+	params := map[string]string{
+		"sort_by": "popularity.desc",
+		// Explicit rather than relying on the upstream default, which is a setting we do
+		// not control.
+		"include_adult": "false",
+	}
+
+	// ── Genres ────────────────────────────────────────────────────────────────
+	//
+	// TMDB's separators are the opposite way round from most people's intuition, and
+	// getting them backwards yields a plausible-looking list instead of an error:
+	//
+	//	with_genres=28,12   → AND: a film that is BOTH Action and Adventure
+	//	with_genres=28|12   → OR:  a film that is Action OR Adventure
+	//
+	// The caller always sends a plain comma-separated list; match= chooses the join.
+	// The default is OR, because "Action & Adventure" as a browse heading means "show me
+	// action and adventure films", not "show me films that are simultaneously both" —
+	// which is a far smaller and much stranger set.
+	sep := "|"
+	switch q.Get("match") {
+	case "", "any":
+		sep = "|"
+	case "all":
+		sep = ","
+	default:
+		return nil, errors.New("match must be any or all")
+	}
+	if genres := q.Get("genres"); genres != "" {
+		joined, err := joinIDs(genres, sep)
+		if err != nil {
+			return nil, errors.New("genres must be a comma-separated list of numeric TMDB genre ids")
+		}
+		params["with_genres"] = joined
+	}
+
+	// ── Studios and networks ──────────────────────────────────────────────────
+	//
+	// Both are always OR-joined. Asking for two studios means "either studio"; a title
+	// co-produced by both is rare enough that AND would read as a broken filter. The
+	// legacy `companies=` spelling is still accepted because the homepage carousels were
+	// built against it.
+	studios := q.Get("studios")
+	if studios == "" {
+		studios = q.Get("companies")
+	}
+	if studios != "" {
+		joined, err := joinIDs(studios, "|")
+		if err != nil {
+			return nil, errors.New("studios must be a comma-separated list of numeric TMDB company ids")
+		}
+		params["with_companies"] = joined
+	}
+	if networks := q.Get("networks"); networks != "" {
+		// with_networks is a TV-only concept. TMDB ignores it on /discover/movie, which
+		// would quietly return an unfiltered movie list instead of saying no.
+		if mediaType != "tv" {
+			return nil, errors.New("networks is only available for type=tv")
+		}
+		joined, err := joinIDs(networks, "|")
+		if err != nil {
+			return nil, errors.New("networks must be a comma-separated list of numeric TMDB network ids")
+		}
+		params["with_networks"] = joined
+	}
+
+	// ── Year (see asymmetry 1 above) ──────────────────────────────────────────
+	if y := q.Get("year"); y != "" {
+		n, err := boundedInt(y, minFilmYear, maxFilmYear)
+		if err != nil {
+			return nil, fmt.Errorf("year must be a number between %d and %d", minFilmYear, maxFilmYear)
+		}
+		key := "primary_release_year"
+		if mediaType == "tv" {
+			key = "first_air_date_year"
+		}
+		params[key] = strconv.Itoa(n)
+	}
+
+	// ── Sort (see asymmetry 2 above) ──────────────────────────────────────────
+	sortBy := q.Get("sort")
+	if sortBy != "" {
+		if !allowedSort(sortBy) {
+			return nil, errors.New("sort must be one of: " + strings.Join(DiscoverSorts, ", "))
+		}
+		if mediaType == "tv" {
+			switch sortBy {
+			case "primary_release_date.desc":
+				sortBy = "first_air_date.desc"
+			case "revenue.desc":
+				return nil, errors.New("sort=revenue.desc is only available for type=movie")
+			}
+		}
+		params["sort_by"] = sortBy
+	}
+
+	// ── Vote floor ────────────────────────────────────────────────────────────
+	if mv := q.Get("min_votes"); mv != "" {
+		n, err := boundedInt(mv, 0, maxDiscoverVotes)
+		if err != nil {
+			return nil, fmt.Errorf("min_votes must be a number between 0 and %d", maxDiscoverVotes)
+		}
+		params["vote_count.gte"] = strconv.Itoa(n)
+	} else if strings.HasPrefix(params["sort_by"], "vote_average.") {
+		params["vote_count.gte"] = strconv.Itoa(defaultRatingVotes)
+	}
+
+	// ── Paging ────────────────────────────────────────────────────────────────
+	if pg := q.Get("page"); pg != "" {
+		n, err := boundedInt(pg, 1, maxDiscoverPage)
+		if err != nil {
+			return nil, fmt.Errorf("page must be a number between 1 and %d", maxDiscoverPage)
+		}
+		params["page"] = strconv.Itoa(n)
+	}
+
+	return params, nil
+}
+
+// allowedSort reports whether sortBy is on the DiscoverSorts allowlist.
+func allowedSort(sortBy string) bool {
+	for _, s := range DiscoverSorts {
+		if s == sortBy {
+			return true
+		}
+	}
+	return false
+}
+
+// joinIDs parses a caller-supplied comma-separated id list and re-emits it joined by sep.
+//
+// It re-emits rather than passing the string through so that ONLY digits and the chosen
+// separator can ever reach the outbound URL: whatever punctuation, whitespace or encoded
+// separator the caller sent is discarded along the way, and the result is built from
+// integers this function parsed itself.
+func joinIDs(raw, sep string) (string, error) {
+	parts := strings.Split(raw, ",")
+	if len(parts) > maxFilterIDs {
+		return "", fmt.Errorf("at most %d ids", maxFilterIDs)
+	}
+	ids := make([]string, 0, len(parts))
+	for _, p := range parts {
+		n, err := boundedInt(strings.TrimSpace(p), 1, 1<<31-1)
+		if err != nil {
+			return "", err
+		}
+		ids = append(ids, strconv.Itoa(n))
+	}
+	if len(ids) == 0 {
+		return "", errors.New("no ids")
+	}
+	return strings.Join(ids, sep), nil
+}
+
+// boundedInt parses a decimal integer and requires it to fall inside [lo, hi].
+//
+// strconv.Atoi alone is not enough: it happily accepts "+7", "-1" and values that
+// overflow into nonsense, and a caller who sends "1e9" deserves a 400 rather than a
+// coerced 0. Anything that is not plain digits within range is an error, never a
+// silently substituted default.
+func boundedInt(s string, lo, hi int) (int, error) {
+	if s == "" {
+		return 0, errors.New("empty")
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("not a number: %q", s)
+		}
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, err
+	}
+	if n < lo || n > hi {
+		return 0, fmt.Errorf("out of range [%d, %d]", lo, hi)
+	}
+	return n, nil
+}
+
+// ── Genre vocabulary ──────────────────────────────────────────────────────────
+
+// Genre is one entry of TMDB's genre vocabulary: the id that /discover filters on, and
+// the label a human reads.
+type Genre struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// genreCacheTTL is how long a fetched genre list is served without re-asking TMDB.
+//
+// A whole day is deliberate. TMDB's genre vocabulary is a fixed list of roughly nineteen
+// movie and sixteen TV genres; ids are permanent and the list has changed a handful of
+// times in the lifetime of the v3 API. Meanwhile every browse page load needs it just to
+// label its filter chips, so an uncached lookup puts a round trip to api.themoviedb.org
+// in front of the first pixel of the filter bar — over a home connection that is the
+// difference between an instant panel and a visible stall, and it is the entire reason
+// this cache exists.
+//
+// The cost of being stale is bounded and boring: a genre added today shows up in the
+// filter list within a day. The cost that would actually hurt — an id changing meaning —
+// cannot happen. The cache is in-process, so restarting the orchestrator is always a way
+// to force a refresh.
+const genreCacheTTL = 24 * time.Hour
+
+type cachedGenres struct {
+	genres  []Genre
+	fetched time.Time
+}
+
+// Genres returns TMDB's genre list for "movie" or "tv", cached for genreCacheTTL.
+//
+// Two properties worth stating, because both are easy to get wrong when adding a cache:
+//
+//   - The lock is NOT held across the HTTP call. Two concurrent first-callers may both
+//     fetch, and the loser simply overwrites an identical list — which is free. Holding
+//     the mutex over a request that can take the client's full 10-second timeout would
+//     instead stall every browse request in the process behind one slow TMDB response,
+//     including requests for the other media type.
+//   - ONLY successes are cached. A failed fetch leaves the entry untouched, so a TMDB
+//     blip cannot poison the list for a day; the next caller retries immediately.
+//
+// The returned slice is a copy: the cached one is shared by every caller and must not be
+// handed out where a caller could sort or append to it.
+func (c *Client) Genres(mediaType string) ([]Genre, error) {
+	if mediaType != "movie" && mediaType != "tv" {
+		return nil, fmt.Errorf("tmdb genres: unknown media type %q", mediaType)
+	}
+
+	c.genreMu.Lock()
+	entry, ok := c.genreCache[mediaType]
+	c.genreMu.Unlock()
+	if ok && time.Since(entry.fetched) < genreCacheTTL {
+		return append([]Genre(nil), entry.genres...), nil
+	}
+
+	u := fmt.Sprintf("%s/genre/%s/list?api_key=%s", c.base(), mediaType, url.QueryEscape(c.key()))
+	resp, err := c.httpClient.Get(u)
+	if err != nil {
+		return nil, fmt.Errorf("tmdb genres: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("tmdb genres: status %d", resp.StatusCode)
+	}
+	var raw struct {
+		Genres []Genre `json:"genres"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("tmdb genres: %w", err)
+	}
+
+	out := make([]Genre, 0, len(raw.Genres))
+	for _, g := range raw.Genres {
+		if g.ID > 0 && g.Name != "" {
+			out = append(out, g)
+		}
+	}
+	// An empty list is not a result worth remembering for a day — TMDB answering 200 with
+	// nothing in it is a fault on their side, not a genuinely empty vocabulary.
+	if len(out) == 0 {
+		return nil, fmt.Errorf("tmdb genres: empty list for %s", mediaType)
+	}
+
+	c.genreMu.Lock()
+	if c.genreCache == nil {
+		c.genreCache = map[string]cachedGenres{}
+	}
+	c.genreCache[mediaType] = cachedGenres{genres: out, fetched: time.Now()}
+	c.genreMu.Unlock()
+
+	return append([]Genre(nil), out...), nil
+}
+
+// ── Studio / company lookup ───────────────────────────────────────────────────
+
+// Studio is a production company as TMDB knows it. The id is what /discover accepts as
+// with_companies; the name and logo are for an autocomplete row.
+type Studio struct {
+	ID      int    `json:"id"`
+	Name    string `json:"name"`
+	LogoURL string `json:"logo_url,omitempty"`
+}
+
+// studioSearchLimit caps how many company matches are returned. TMDB pages at 20 and an
+// autocomplete list longer than a screenful is noise, not choice.
+const studioSearchLimit = 20
+
+// SearchCompanies looks up production companies by name for the studio filter's
+// autocomplete.
+//
+// Deliberately NOT cached: unlike the genre vocabulary this is an open-ended search space
+// keyed on whatever a user typed, so a cache would be an unbounded map filled by
+// unauthenticated callers — a memory-growth lever handed to anyone who can reach the
+// port. The rate limit on the HTTP handler is the control that matters here instead.
+func (c *Client) SearchCompanies(query string) ([]Studio, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, fmt.Errorf("tmdb company search: empty query")
+	}
+	u := fmt.Sprintf("%s/search/company?api_key=%s&query=%s&page=1",
+		c.base(), url.QueryEscape(c.key()), url.QueryEscape(query))
+	resp, err := c.httpClient.Get(u)
+	if err != nil {
+		return nil, fmt.Errorf("tmdb company search: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("tmdb company search: status %d", resp.StatusCode)
+	}
+	var raw struct {
+		Results []struct {
+			ID       int    `json:"id"`
+			Name     string `json:"name"`
+			LogoPath string `json:"logo_path"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("tmdb company search: %w", err)
+	}
+	out := make([]Studio, 0, len(raw.Results))
+	for _, r := range raw.Results {
+		if r.ID <= 0 || r.Name == "" {
+			continue
+		}
+		st := Studio{ID: r.ID, Name: r.Name}
+		if r.LogoPath != "" {
+			st.LogoURL = "https://image.tmdb.org/t/p/w92" + r.LogoPath
+		}
+		out = append(out, st)
+		if len(out) >= studioSearchLimit {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (c *Client) browseGet(url, forceMediaType string) ([]BrowseResult, error) {

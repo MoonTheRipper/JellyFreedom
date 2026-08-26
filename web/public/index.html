@@ -83,7 +83,119 @@
   </div>
 
   <div id="search-results" hidden>
+    <div class="search-filter-wrap">
+      <div class="filter-tabs" role="group" aria-label="Filter results by type">
+        <button type="button" class="filter-tab active" data-search-type="all" aria-pressed="true">All</button>
+        <button type="button" class="filter-tab" data-search-type="movie" aria-pressed="false">Movies</button>
+        <button type="button" class="filter-tab" data-search-type="tv" aria-pressed="false">TV</button>
+      </div>
+    </div>
     <div class="results" id="results"></div>
+  </div>
+
+  <!-- ── Browse & filter ─────────────────────────────────────────────────────
+       Static shell only. The genre chips, the studio suggestions, the results
+       and every empty/error state are rendered by modules/carousels.js — the
+       vocabulary comes from TMDB and is not known until the panel is opened. -->
+  <div class="browse-bar" id="browse-bar">
+    <button type="button" class="btn browse-toggle" id="browse-toggle"
+      aria-expanded="false" aria-controls="browse-panel">
+      <svg class="ic" aria-hidden="true"><use href="#i-filter"></use></svg>
+      <span>Browse &amp; filter</span>
+      <svg class="ic bf-chevron" aria-hidden="true"><use href="#i-chevron-down"></use></svg>
+    </button>
+    <p class="browse-summary" id="browse-summary"></p>
+    <button type="button" class="btn ghost" id="browse-clear" hidden>
+      <svg class="ic" aria-hidden="true"><use href="#i-x"></use></svg>
+      <span>Clear filters</span>
+    </button>
+  </div>
+
+  <section class="browse-panel" id="browse-panel" aria-label="Browse filters" hidden>
+    <div class="bf-row">
+      <div class="bf-field">
+        <span class="bf-label" id="bf-type-label">Type</span>
+        <div class="bf-seg" role="group" aria-labelledby="bf-type-label">
+          <button type="button" class="bf-seg-btn active" data-bf-type="movie" aria-pressed="true">Movies</button>
+          <button type="button" class="bf-seg-btn" data-bf-type="tv" aria-pressed="false">TV Shows</button>
+        </div>
+      </div>
+      <div class="bf-field">
+        <label class="bf-label" for="bf-sort">Sort by</label>
+        <select id="bf-sort"></select>
+      </div>
+      <div class="bf-field">
+        <label class="bf-label" for="bf-year">Year</label>
+        <select id="bf-year"></select>
+      </div>
+      <div class="bf-field">
+        <label class="bf-label" for="bf-votes">Minimum votes</label>
+        <select id="bf-votes">
+          <option value="">Any number of votes</option>
+          <option value="0">No minimum (0+)</option>
+          <option value="50">50+</option>
+          <option value="100">100+</option>
+          <option value="200">200+</option>
+          <option value="500">500+</option>
+          <option value="1000">1,000+</option>
+          <option value="5000">5,000+</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="bf-block">
+      <div class="bf-block-head">
+        <span class="bf-label" id="bf-genre-label">Genres</span>
+        <div class="bf-seg sm" role="group" aria-label="How to combine the selected genres">
+          <button type="button" class="bf-seg-btn active" data-bf-match="any" aria-pressed="true">Any of these</button>
+          <button type="button" class="bf-seg-btn" data-bf-match="all" aria-pressed="false">All of these</button>
+        </div>
+      </div>
+      <p class="bf-help">“Any of these” lists titles in at least one genre you pick. “All of these”
+        lists only titles that are in every one of them — a much smaller set.</p>
+      <div class="bf-chips" id="bf-genres" role="group" aria-labelledby="bf-genre-label"></div>
+    </div>
+
+    <div class="bf-block">
+      <label class="bf-label" for="bf-studio">Studio</label>
+      <div class="bf-combo">
+        <input type="text" id="bf-studio" placeholder="Type a studio name…" autocomplete="off"
+          role="combobox" aria-expanded="false" aria-autocomplete="list"
+          aria-controls="bf-studio-list" aria-describedby="bf-studio-help">
+        <ul class="bf-listbox" id="bf-studio-list" role="listbox" aria-label="Studio matches" hidden></ul>
+      </div>
+      <p class="bf-help" id="bf-studio-help">Pick one or more studios; a title from any of them counts
+        as a match. Use the arrow keys to move through the suggestions and Enter to add one.</p>
+      <div class="bf-chips" id="bf-studio-chips"></div>
+      <p class="bf-status" id="bf-studio-status" role="status" aria-live="polite"></p>
+    </div>
+
+    <div class="bf-actions">
+      <button type="button" class="btn" id="bf-reset">
+        <svg class="ic" aria-hidden="true"><use href="#i-refresh"></use></svg>
+        <span>Reset filters</span>
+      </button>
+      <p class="bf-note" id="bf-note"></p>
+    </div>
+  </section>
+
+  <div id="browse-results" hidden>
+    <div class="browse-results-head">
+      <h2 class="browse-results-title" id="browse-results-title">Browse</h2>
+      <p class="browse-count" id="browse-count" role="status" aria-live="polite"></p>
+    </div>
+    <div class="results" id="browse-grid"></div>
+    <div class="browse-pager" id="browse-pager" hidden>
+      <button type="button" class="btn" data-bf-page="-1">
+        <svg class="ic" aria-hidden="true"><use href="#i-chevron-left"></use></svg>
+        <span>Previous</span>
+      </button>
+      <span class="browse-page-label" id="browse-page-label"></span>
+      <button type="button" class="btn" data-bf-page="1">
+        <span>Next</span>
+        <svg class="ic" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
+      </button>
+    </div>
   </div>
 
   <div id="carousels"></div>
