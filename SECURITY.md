@@ -69,7 +69,12 @@ registered falls through to `RequireAdmin`** — the default is closed.
 - Library and queue reads: `GET /api/libraries`, `GET /api/library`,
   `GET /api/library/status`, `GET /api/queue`, `GET /api/queue/groups`,
   `GET /api/queue/count`,
-  `GET /api/subscriptions`, `GET /api/calendar`
+  `GET /api/subscriptions`, `GET /api/calendar` — reachable without a session, but every
+  one of them is now filtered by **per-library visibility** (below), and an anonymous
+  caller holds no library grants. In practice that means an anonymous caller sees an
+  empty library, an empty queue and an empty subscription list on any install that has
+  libraries configured. `GET /api/queue/count` is the exception: it is a single global
+  number of in-flight items and names no library.
 - `GET /api/releases` — readable anonymously, but **magnet links and info hashes are
   stripped** for callers
   without a session, and anonymous use is rate-limited to 20 searches per minute per
@@ -86,9 +91,11 @@ touched), subscription create/delete, the `POST /api/library/.../drop`
 routes, and `POST /api/auth/change-password`.
 
 **Admin session required (`RequireAdmin`):** the dashboard, `GET /api/status`,
-`GET /api/leak`, `/api/settings*`, `/api/vpn/configs*`, `/api/users*`, `/api/logs`,
-`/api/tasks`, `/api/services/{name}/restart`, `/api/vpn`, `/api/debug/releases`, and every
-unregistered `/api/` path.
+`GET /api/leak`, `/api/settings*`, `/api/vpn/configs*`, `/api/users*` — including
+`GET /api/users/{id}/libraries` and `PUT /api/users/{id}/libraries`, the per-library
+access controls described below — `/api/logs`, `/api/tasks`,
+`/api/services/{name}/restart`, `/api/vpn`, `/api/debug/releases`, and every unregistered
+`/api/` path.
 
 > **Fixed:** `GET /api/releases` was registered with no auth wrapper at all and returned
 > `picker.ScoredRelease`, which embeds `indexer.Release` and therefore its `magnet` field.
@@ -107,6 +114,73 @@ unregistered `/api/` path.
 > real public IPv4, the VPN exit IP, and the WireGuard peer public key — an unauthenticated
 > caller could deanonymise the box. They are now `RequireAdmin`, and the UI's health dot uses
 > the deliberately minimal public `GET /api/health/summary` instead.
+
+### Per-library visibility
+
+An admin decides which libraries each account may see (`GET` / `PUT
+/api/users/{id}/libraries`, both admin-only). It is the ordinary parental-controls
+feature: a household where the adults' libraries should not appear for a child's account.
+A library an account cannot see is invisible to it **everywhere** — the library list, the
+library itself, the search-result status badges, the flat queue, the grouped queue tree,
+subscriptions, the release calendar, and the per-request diagnosis — not merely absent
+from one list.
+
+**The default is deny.** An account with no grants sees no library at all. The
+alternative — visible-until-revoked — means that adding a library to `config.yaml`
+exposes it to every account on the box, including the child's, until somebody remembers
+to go and take it away. The cost of denying by default is that a newly created account
+opens onto an empty app until the admin grants it something; the cost of allowing by
+default is not recoverable after the fact.
+
+The **default single-admin install is unaffected and needs no configuration**: an admin
+bypasses the gate entirely, so the stock deployment never creates a grant and never needs
+one.
+
+How it is enforced, and what to check if you change it:
+
+- **In the store queries, not in the handlers** (`internal/store/store.go`). Every method
+  whose answer depends on who is asking takes a `store.Viewer`, and the library predicate
+  is spliced into its `WHERE` clause. The zero `Viewer` is anonymous, non-admin and holds
+  no grants, so a handler that forgets to fill it in denies rather than discloses.
+  `internal/store/libaccess_test.go` walks `*Store` by reflection and fails if a method
+  taking a `Viewer` is not in its audited read/mutation tables — a read path added later
+  without a filter fails a test rather than leaking quietly.
+- **Writes are gated too.** Requesting into a library you cannot see is refused, never
+  silently redirected: `POST /request`, `POST /request/season` and `POST /api/subscriptions`
+  authorise the destination before doing any work. A request that names no library
+  resolves to the configured default when the caller may use it, otherwise to the first
+  library of that type they can.
+- **Responses are deliberately indistinguishable.** "No such library" and "that library
+  exists but is not yours" are the same `400 unknown library`, because a caller who can
+  tell them apart can enumerate every library on the box by guessing names. Likewise a
+  queue row or library item in a hidden library answers `404`, and a cancel or delete
+  aimed at one reports zero rows affected — the same answers as for something that never
+  existed. Ownership is checked only *after* visibility, so the pre-existing `403 that
+  item belongs to someone else` can never confirm the existence of an item in a hidden
+  library.
+- **It composes with the per-item `is_private` gate rather than replacing it.** Both
+  predicates are ANDed: a library grant never exposes somebody else's private item, and a
+  public item never escapes a hidden library.
+- **An empty `library_name` is exempt.** `config.Load` refuses a library with an empty
+  name, so no configured library is ever called `""`; a row carrying it is a legacy row
+  from before libraries existed, or a request that named no destination, and it stays
+  governed by the ownership and privacy rules that already covered it. Nothing a
+  non-admin does can create one, because the request handlers resolve an empty library to
+  a concrete one first.
+
+Two limits worth understanding before you rely on this:
+
+> **This gates JellyFreedom, not Jellyfin.** The `.strm` files live in Jellyfin's own
+> libraries, and Jellyfin has its own per-user library permissions. Hiding a library here
+> stops an account discovering, requesting into or managing it through JellyFreedom; it
+> does **not** stop a Jellyfin user who can already see that Jellyfin library from playing
+> what is in it. Configure both.
+
+> **`/play/...` and `/proxy/stream` are not gated, and cannot be.** Jellyfin clients fetch
+> `.strm` URLs with no session, so there is no viewer to filter by — possession of the URL
+> is the credential (see *Streaming routes* below). A play URL for an item in a hidden
+> library still plays. What keeps it out of a restricted account's hands is Jellyfin's own
+> library permissions, not this feature.
 
 ### Streaming routes and capability tokens
 
@@ -265,7 +339,7 @@ security is their own; report issues in those projects upstream.
 
 ---
 
-*Verified against the tree on 2026-08-22. If you are reading this after changes to
+*Verified against the tree on 2026-08-26. If you are reading this after changes to
 `internal/api/auth.go`, the route table in `cmd/orchestrator/main.go`, the sudoers block in
 `release/install.sh`, or `vpntorrent/jf-netns-helper`, re-verify before trusting the details
 above.*

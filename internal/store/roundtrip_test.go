@@ -383,7 +383,7 @@ func TestGetStatusByTMDBIDsStaysWithinTMDB(t *testing.T) {
 	if err := s.Upsert(it); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.GetStatusByTMDBIDs([]int{0}, "alice", true)
+	got, err := s.GetStatusByTMDBIDs([]int{0}, vw("alice", true))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -187,7 +187,7 @@ func TestQueueOwnership(t *testing.T) {
 
 	t.Run("another user cannot cancel", func(t *testing.T) {
 		id := enqueue(t, s, "alice", 30, 1, 1)
-		n, err := s.CancelQueueItem(id, "bob", false)
+		n, err := s.CancelQueueItem(id, vw("bob", false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -198,7 +198,7 @@ func TestQueueOwnership(t *testing.T) {
 
 	t.Run("anonymous cannot cancel", func(t *testing.T) {
 		id := enqueue(t, s, "alice", 31, 1, 1)
-		n, err := s.CancelQueueItem(id, "", false)
+		n, err := s.CancelQueueItem(id, vw("", false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -209,7 +209,7 @@ func TestQueueOwnership(t *testing.T) {
 
 	t.Run("owner can cancel", func(t *testing.T) {
 		id := enqueue(t, s, "alice", 32, 1, 1)
-		n, err := s.CancelQueueItem(id, "alice", false)
+		n, err := s.CancelQueueItem(id, vw("alice", false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -224,7 +224,7 @@ func TestQueueOwnership(t *testing.T) {
 
 	t.Run("admin can cancel anyone's", func(t *testing.T) {
 		id := enqueue(t, s, "alice", 33, 1, 1)
-		n, err := s.CancelQueueItem(id, "root", true)
+		n, err := s.CancelQueueItem(id, vw("root", true))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -240,7 +240,7 @@ func TestQueueOwnership(t *testing.T) {
 		if err := s.UpdateQueue(it); err != nil {
 			t.Fatal(err)
 		}
-		n, err := s.CancelQueueItem(id, "alice", false)
+		n, err := s.CancelQueueItem(id, vw("alice", false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -256,7 +256,7 @@ func TestQueueOwnership(t *testing.T) {
 		if err := s.UpdateQueue(it); err != nil {
 			t.Fatal(err)
 		}
-		n, err := s.DeleteQueueItem(id, "bob", false)
+		n, err := s.DeleteQueueItem(id, vw("bob", false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -267,7 +267,7 @@ func TestQueueOwnership(t *testing.T) {
 
 	t.Run("a non-admin cannot delete an in-flight row", func(t *testing.T) {
 		id := enqueue(t, s, "alice", 36, 1, 1)
-		n, err := s.DeleteQueueItem(id, "alice", false)
+		n, err := s.DeleteQueueItem(id, vw("alice", false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -311,19 +311,19 @@ func TestSubscriptionOwnership(t *testing.T) {
 	if err := s.UpsertSubscription(&Subscription{TMDBID: 1, Season: 1, Title: "S", RequestedBy: "alice"}); err != nil {
 		t.Fatal(err)
 	}
-	subs, _ := s.ListSubscriptions("alice", false)
+	subs, _ := s.ListSubscriptions(vw("alice", false))
 	if len(subs) != 1 {
 		t.Fatalf("owner sees %d subs, want 1", len(subs))
 	}
 	id := subs[0].ID
 
-	if n, err := s.DeleteSubscription(id, "bob", false); err != nil || n != 0 {
+	if n, err := s.DeleteSubscription(id, vw("bob", false)); err != nil || n != 0 {
 		t.Fatalf("bob deleted alice's subscription (n=%d, err=%v)", n, err)
 	}
-	if n, err := s.DeleteSubscription(id, "", false); err != nil || n != 0 {
+	if n, err := s.DeleteSubscription(id, vw("", false)); err != nil || n != 0 {
 		t.Fatalf("anonymous deleted a subscription (n=%d, err=%v)", n, err)
 	}
-	if n, err := s.DeleteSubscription(id, "alice", false); err != nil || n != 1 {
+	if n, err := s.DeleteSubscription(id, vw("alice", false)); err != nil || n != 1 {
 		t.Fatalf("owner delete affected %d rows (err=%v), want 1", n, err)
 	}
 
@@ -333,7 +333,7 @@ func TestSubscriptionOwnership(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	subs, _ = s.ListSubscriptions("alice", false)
+	subs, _ = s.ListSubscriptions(vw("alice", false))
 	if len(subs) != 1 {
 		t.Fatalf("upsert created %d rows, want 1", len(subs))
 	}
@@ -469,7 +469,7 @@ func TestListQueueGroupsRollsUpShowsAndMovies(t *testing.T) {
 	enqueue(t, s, "alice", 7, 1, 1)
 	enqueueMovie(t, s, "alice", 99, "Inception")
 
-	g, err := s.ListQueueGroups("alice", false)
+	g, err := s.ListQueueGroups(vw("alice", false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -521,7 +521,7 @@ func TestListQueueGroupsCountsEveryStatus(t *testing.T) {
 		setQueueStatus(t, s, id, status)
 	}
 
-	g, err := s.ListQueueGroups("alice", false)
+	g, err := s.ListQueueGroups(vw("alice", false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestListQueueGroupsSeeRowsTheFlatListCannot(t *testing.T) {
 		enqueue(t, s, "alice", 42, 1, ep)
 	}
 
-	flat, err := s.ListQueue("alice", false)
+	flat, err := s.ListQueue(vw("alice", false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +569,7 @@ func TestListQueueGroupsSeeRowsTheFlatListCannot(t *testing.T) {
 		t.Fatalf("flat list = %d rows, want the %d-row cap", len(flat), queueListLimit)
 	}
 
-	g, err := s.ListQueueGroups("alice", false)
+	g, err := s.ListQueueGroups(vw("alice", false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +604,7 @@ func TestListQueueGroupsPrefersAPopulatedPoster(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	g, err := s.ListQueueGroups("alice", false)
+	g, err := s.ListQueueGroups(vw("alice", false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +631,7 @@ func TestListQueueFilteredScopesToOneSeason(t *testing.T) {
 	}
 	enqueue(t, s, "alice", 7, 1, 1)
 
-	rows, err := s.ListQueueFiltered("alice", false, QueueFilter{
+	rows, err := s.ListQueueFiltered(vw("alice", false), QueueFilter{
 		TMDBID: 42, MediaType: "tv", Season: 1, SeasonSet: true,
 	})
 	if err != nil {
@@ -658,14 +658,14 @@ func TestListQueueFilterSeasonZeroIsARealSeason(t *testing.T) {
 	enqueue(t, s, "alice", 42, 0, 1) // a special
 	enqueue(t, s, "alice", 42, 1, 1)
 
-	all, err := s.ListQueueFiltered("alice", false, QueueFilter{TMDBID: 42})
+	all, err := s.ListQueueFiltered(vw("alice", false), QueueFilter{TMDBID: 42})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(all) != 2 {
 		t.Fatalf("unset season filtered anyway: got %d rows, want 2", len(all))
 	}
-	specials, err := s.ListQueueFiltered("alice", false, QueueFilter{TMDBID: 42, Season: 0, SeasonSet: true})
+	specials, err := s.ListQueueFiltered(vw("alice", false), QueueFilter{TMDBID: 42, Season: 0, SeasonSet: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +681,7 @@ func TestListQueueFilterActiveOnly(t *testing.T) {
 	finished := enqueue(t, s, "alice", 42, 1, 2)
 	setQueueStatus(t, s, finished, "done")
 
-	rows, err := s.ListQueueFiltered("alice", false, QueueFilter{TMDBID: 42, ActiveOnly: true})
+	rows, err := s.ListQueueFiltered(vw("alice", false), QueueFilter{TMDBID: 42, ActiveOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,11 +697,11 @@ func TestListQueueUnfilteredIsUnchanged(t *testing.T) {
 	for ep := 1; ep <= 3; ep++ {
 		enqueue(t, s, "alice", 42, 1, ep)
 	}
-	plain, err := s.ListQueue("alice", false)
+	plain, err := s.ListQueue(vw("alice", false))
 	if err != nil {
 		t.Fatal(err)
 	}
-	zero, err := s.ListQueueFiltered("alice", false, QueueFilter{})
+	zero, err := s.ListQueueFiltered(vw("alice", false), QueueFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +744,7 @@ func TestDeleteFinishedQueueRespectsOwnership(t *testing.T) {
 
 	t.Run("anonymous clears nothing", func(t *testing.T) {
 		s := seed(t)
-		n, err := s.DeleteFinishedQueue("", false)
+		n, err := s.DeleteFinishedQueue(vw("", false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -755,7 +755,7 @@ func TestDeleteFinishedQueueRespectsOwnership(t *testing.T) {
 
 	t.Run("a user clears only their own", func(t *testing.T) {
 		s := seed(t)
-		n, err := s.DeleteFinishedQueue("alice", false)
+		n, err := s.DeleteFinishedQueue(vw("alice", false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -783,7 +783,7 @@ func TestDeleteFinishedQueueRespectsOwnership(t *testing.T) {
 
 	t.Run("an admin clears everyone's", func(t *testing.T) {
 		s := seed(t)
-		n, err := s.DeleteFinishedQueue("root", true)
+		n, err := s.DeleteFinishedQueue(vw("root", true))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1077,7 +1077,7 @@ func TestSubscriptionsRefuseNonTMDBProviders(t *testing.T) {
 		TMDBID: 1622, Season: 14, Title: "Supernatural", RequestedBy: "alice"}); err != nil {
 		t.Fatal(err)
 	}
-	subs, err := s.ListSubscriptions("alice", false)
+	subs, err := s.ListSubscriptions(vw("alice", false))
 	if err != nil || len(subs) != 1 {
 		t.Fatalf("ListSubscriptions: %v %v", subs, err)
 	}
