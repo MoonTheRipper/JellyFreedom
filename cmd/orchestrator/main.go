@@ -697,8 +697,36 @@ func main() {
 		jsonOK(w, map[string]string{"status": "unsubscribed"})
 	})))
 
-	// ── Browse endpoints (homepage carousels) ───────────────────────────────────
+	// ── Browse endpoints (homepage carousels, browse filters) ───────────────────
+	//
+	// Every route in this block is UNAUTHENTICATED (SECURITY.md), and every one of them
+	// turns a request from anyone who can reach port 1990 into an outbound call to TMDB
+	// on this instance's API key. That is a small amplifier pointed at someone else's
+	// rate limit and our own bandwidth, so it gets the same fixed-window per-address
+	// throttle as the anonymous release search — the searchLimiter type from serve.go,
+	// a second instance rather than a second implementation.
+	//
+	// The budget is far larger than the release limiter's twenty, and it has to be: the
+	// homepage fires one discover request PER CAROUSEL — sixteen of them today — plus
+	// trending, in a single page load, and the browse page then adds a genre list and a
+	// page of results. A limit tuned for one search per user action would lock a real
+	// visitor out on their second refresh. What this budget stops is a script in a loop,
+	// which is exactly the case that matters, since a browse response is cheap for the
+	// caller and expensive for us.
+	browseLimiter := newSearchLimiter(180, time.Minute)
+	browseAllowed := func(w http.ResponseWriter, r *http.Request) bool {
+		if browseLimiter.allow(clientIPOf(r)) {
+			return true
+		}
+		w.Header().Set("Retry-After", "60")
+		jsonErr(w, "too many browse requests — slow down", http.StatusTooManyRequests)
+		return false
+	}
+
 	mux.HandleFunc("GET /api/browse/trending", func(w http.ResponseWriter, r *http.Request) {
+		if !browseAllowed(w, r) {
+			return
+		}
 		results, err := tmdbClient.Trending()
 		if err != nil {
 			httpFail(w, r, http.StatusBadGateway, "TMDB is unavailable right now", err)
@@ -707,25 +735,27 @@ func main() {
 		jsonOK(w, results)
 	})
 
+	// GET /api/browse/discover?type=movie|tv&genres=&match=&studios=&networks=&year=
+	//                          &sort=&min_votes=&page=
+	//
+	// The filter vocabulary and ALL of its validation live in tmdb.DiscoverParams, which
+	// is an explicit allowlist — this handler deliberately does not touch r.URL.Query()
+	// beyond handing it over and reading `type`. Read the comment on DiscoverParams
+	// before adding a filter here; forwarding a caller's parameters as-is would let an
+	// anonymous caller inject api_key and any other TMDB parameter they like.
 	mux.HandleFunc("GET /api/browse/discover", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		mediaType := q.Get("type")
-		if mediaType != "movie" && mediaType != "tv" {
-			jsonErr(w, "type=movie|tv required", http.StatusBadRequest)
+		if !browseAllowed(w, r) {
 			return
 		}
-		params := map[string]string{"sort_by": "popularity.desc"}
-		if genres := q.Get("genres"); genres != "" {
-			params["with_genres"] = genres
-		}
-		if companies := q.Get("companies"); companies != "" {
-			params["with_companies"] = companies
-		}
-		if networks := q.Get("networks"); networks != "" {
-			params["with_networks"] = networks
-		}
-		if sortBy := q.Get("sort"); sortBy != "" {
-			params["sort_by"] = sortBy
+		mediaType := r.URL.Query().Get("type")
+		params, err := tmdb.DiscoverParams(mediaType, r.URL.Query())
+		if err != nil {
+			// Safe to return verbatim: DiscoverParams builds its messages from
+			// constants, never from caller input or from an upstream error, so this
+			// cannot reflect input back or leak a key. Contrast the /api/releases
+			// incident below, where err.Error() came from *url.Error.
+			jsonErr(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 		results, err := tmdbClient.Discover(mediaType, params)
 		if err != nil {
@@ -733,6 +763,52 @@ func main() {
 			return
 		}
 		jsonOK(w, results)
+	})
+
+	// GET /api/genres?type=movie|tv → [{id, name}], the vocabulary the filter chips are
+	// built from. Served from an in-process cache with a long TTL (tmdb.genreCacheTTL),
+	// so a page load does not wait on TMDB just to draw its filter bar.
+	mux.HandleFunc("GET /api/genres", func(w http.ResponseWriter, r *http.Request) {
+		if !browseAllowed(w, r) {
+			return
+		}
+		mediaType := r.URL.Query().Get("type")
+		if mediaType != "movie" && mediaType != "tv" {
+			jsonErr(w, "type=movie|tv required", http.StatusBadRequest)
+			return
+		}
+		genres, err := tmdbClient.Genres(mediaType)
+		if err != nil {
+			httpFail(w, r, http.StatusBadGateway, "TMDB is unavailable right now", err)
+			return
+		}
+		jsonOK(w, genres)
+	})
+
+	// GET /api/studios?q=<name> → [{id, name, logo_url}] for the studio autocomplete.
+	// The id is what /api/browse/discover accepts as studios=.
+	mux.HandleFunc("GET /api/studios", func(w http.ResponseWriter, r *http.Request) {
+		if !browseAllowed(w, r) {
+			return
+		}
+		// Bounded before it reaches the network: an autocomplete sends a few characters,
+		// and a caller who sends a megabyte is not typing. Trimmed here so that a query
+		// of pure whitespace is a 400 rather than a pointless TMDB round trip.
+		query := strings.TrimSpace(r.URL.Query().Get("q"))
+		if query == "" {
+			jsonErr(w, "q is required", http.StatusBadRequest)
+			return
+		}
+		if len(query) > 100 {
+			jsonErr(w, "q is too long", http.StatusBadRequest)
+			return
+		}
+		studios, err := tmdbClient.SearchCompanies(query)
+		if err != nil {
+			httpFail(w, r, http.StatusBadGateway, "TMDB is unavailable right now", err)
+			return
+		}
+		jsonOK(w, studios)
 	})
 
 	// ── Release calendar ────────────────────────────────────────────────────────

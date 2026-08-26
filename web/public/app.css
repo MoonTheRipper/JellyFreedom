@@ -832,3 +832,146 @@ select.lib-picker{flex:1}
   .sg-counts{gap:6px 8px}
   .lib-attention-chips{flex-direction:column;align-items:flex-start}
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Browse & filter  (modules/carousels.js)
+
+   Everything here is APPENDED, so it also lands after the media queries above.
+   Any responsive rule of its own therefore has to be restated at the foot of
+   this block rather than folded into the earlier breakpoints.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* [hidden] is a UA rule at element specificity, so ANY class rule that sets a
+   display wins over it: `.btn{display:inline-flex}` on a hidden button, and
+   `.browse-pager{display:flex}` on a hidden pager, both painted themselves
+   anyway. ID selectors out-specify the class rules without reaching for
+   !important, which would leak into every hidden element on the page. */
+#browse-bar[hidden],
+#browse-panel[hidden],
+#browse-results[hidden],
+#browse-pager[hidden],
+#browse-clear[hidden],
+#bf-studio-list[hidden],
+#carousels[hidden],
+#search-results[hidden],
+#hero[hidden]{display:none}
+
+/* An empty state or an error inside a .results grid is a MESSAGE, not a card:
+   without this it is squeezed into one 150px column and reads as a broken
+   poster. Applies to the search grid too, which had the same problem. */
+.results > .empty-state,
+.results > .callout{grid-column:1/-1}
+
+.empty-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:16px}
+
+/* ── The bar ─────────────────────────────────────────────────────────────── */
+.browse-bar{max-width:1400px;margin:0 auto 14px;padding:0 20px;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.browse-toggle{flex-shrink:0}
+.browse-toggle .bf-chevron{transition:transform .18s}
+.browse-toggle[aria-expanded="true"] .bf-chevron{transform:rotate(180deg)}
+.browse-summary{flex:1;min-width:0;color:var(--muted2);font-size:13px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.browse-summary:empty{display:none}
+
+/* ── The panel ───────────────────────────────────────────────────────────── */
+.browse-panel{max-width:1400px;margin:0 auto 22px;padding:18px 20px 16px;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);
+  box-shadow:var(--sh-1)}
+@media (min-width:721px){
+  .browse-panel{margin-left:20px;margin-right:20px;
+    max-width:calc(1400px - 40px)}
+}
+.bf-row{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+.bf-field{display:flex;flex-direction:column;gap:6px;min-width:170px;flex:1 1 170px}
+.bf-label{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--muted)}
+.bf-field select{width:100%}
+.bf-block{padding-top:14px;border-top:1px solid var(--border)}
+.bf-block-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+.bf-help{font-size:12px;color:var(--muted);margin:0 0 10px;max-width:70ch;line-height:1.5}
+.bf-status{font-size:12px;color:var(--muted2);margin-top:8px;min-height:1.2em}
+.bf-note{font-size:12px;color:var(--yellow);margin:0;max-width:70ch;line-height:1.5}
+.bf-note:empty{display:none}
+.bf-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding-top:14px;margin-top:14px;border-top:1px solid var(--border)}
+
+/* ── Segmented toggles ───────────────────────────────────────────────────── */
+.bf-seg{display:inline-flex;gap:4px;background:var(--surface2);
+  border:1px solid var(--border);border-radius:var(--r-sm);padding:3px}
+.bf-seg-btn{padding:6px 14px;border-radius:6px;font-size:13px;font-weight:600;
+  background:none;border:none;color:var(--muted2);cursor:pointer;white-space:nowrap}
+.bf-seg-btn:hover{color:var(--text)}
+/* Selected state is background + weight + colour together. On a washed-out TV
+   panel the fill is what survives, which is why it is not a colour swap alone. */
+.bf-seg-btn.active{background:var(--accent);color:#fff}
+.bf-seg.sm .bf-seg-btn{padding:4px 11px;font-size:12px}
+
+/* ── Chips ───────────────────────────────────────────────────────────────── */
+.bf-chips{display:flex;gap:8px;flex-wrap:wrap}
+.bf-chips:empty{display:none}
+.bf-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;
+  border-radius:999px;font-size:13px;font-weight:600;cursor:pointer;
+  background:var(--surface2);border:1px solid var(--border);color:var(--muted2)}
+.bf-chip:hover{border-color:var(--border-strong);color:var(--text)}
+.bf-chip .ic{width:14px;height:14px;opacity:.7}
+/* on = fill + border + text colour + a check glyph swapped in by the renderer. */
+.bf-chip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
+.bf-chip.on .ic{opacity:1;color:var(--accent)}
+.bf-chip.studio{cursor:default;padding-right:5px}
+.bf-chip-logo{height:16px;max-width:52px;object-fit:contain;background:#fff;
+  border-radius:3px;padding:1px}
+.bf-chip-x{display:inline-flex;align-items:center;justify-content:center;
+  width:22px;height:22px;border-radius:999px;border:none;background:none;
+  color:var(--muted);cursor:pointer}
+.bf-chip-x:hover{background:rgba(248,113,113,.18);color:var(--red)}
+.bf-chip-x .ic{width:13px;height:13px;opacity:1}
+.bf-loading{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted)}
+.bf-loading .ic{width:15px;height:15px}
+
+/* ── Studio combobox ─────────────────────────────────────────────────────── */
+.bf-combo{position:relative;max-width:420px}
+.bf-combo input{width:100%}
+.bf-listbox{position:absolute;z-index:40;top:calc(100% + 4px);left:0;right:0;
+  max-height:290px;overflow-y:auto;list-style:none;margin:0;padding:4px;
+  background:var(--surface2);border:1px solid var(--border-strong);
+  border-radius:var(--r-md);box-shadow:var(--sh-2)}
+.bf-opt{display:flex;align-items:center;gap:10px;padding:8px 10px;
+  border-radius:var(--r-sm);cursor:pointer;font-size:13px;color:var(--muted2)}
+.bf-opt:hover{background:var(--surface);color:var(--text)}
+/* The active option is outlined as well as filled: focus stays on the input
+   (aria-activedescendant), so this is the only cue a keyboard user gets. */
+.bf-opt.active{background:var(--accent-soft);color:var(--text);
+  box-shadow:inset 0 0 0 1px var(--accent)}
+.bf-opt-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bf-opt-logo{width:34px;height:20px;object-fit:contain;flex-shrink:0;
+  background:#fff;border-radius:3px;padding:1px}
+.bf-opt-logo.none{display:inline-flex;align-items:center;justify-content:center;
+  background:none;color:var(--border-strong)}
+.bf-opt-logo.none .ic{width:16px;height:16px}
+
+/* ── Results ─────────────────────────────────────────────────────────────── */
+.browse-results-head{max-width:1400px;margin:0 auto;padding:0 20px 12px;
+  display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.browse-results-title{font-size:19px;font-weight:700}
+.browse-count{color:var(--muted);font-size:13px}
+.browse-pager{display:flex;align-items:center;justify-content:center;gap:14px;
+  padding:8px 20px 44px}
+.browse-page-label{font-size:13px;color:var(--muted2);font-weight:600;min-width:64px;
+  text-align:center}
+.bf-empty .ic{color:var(--border-strong)}
+
+/* ── Search page type filter ─────────────────────────────────────────────── */
+.search-filter-wrap{display:flex;justify-content:center;padding:0 20px 18px}
+
+@media (max-width:720px){
+  .browse-bar{padding:0 14px;gap:8px}
+  .browse-summary{flex-basis:100%;white-space:normal}
+  .browse-panel{margin-left:14px;margin-right:14px;padding:14px}
+  .bf-row{gap:12px}
+  .bf-field{min-width:100%;flex-basis:100%}
+  .bf-seg-btn{padding:9px 14px}
+  .bf-chip{padding:9px 14px}
+  .browse-results-head{padding:0 14px 10px}
+  .browse-pager{padding-bottom:32px}
+}

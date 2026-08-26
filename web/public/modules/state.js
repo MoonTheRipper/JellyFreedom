@@ -23,6 +23,28 @@ export function emit(evt, payload) {
   }
 }
 
+/* ── Browse filter model ──────────────────────────────────────────────────
+   Declared above `state` because state holds one, and mirrored one-for-one by
+   the URL (see browseToQuery/browseFromQuery at the foot of this file).
+
+   `on` is the VIEW mode, not "are any filters set": changing the type alone is
+   a legitimate browse ("popular TV"), and the home carousels have to give way
+   for it. Reset turns it back off.                                           */
+export function newBrowse() {
+  return {
+    on: false,           // browse results replace the carousels
+    open: false,         // the filter panel is expanded
+    type: 'movie',       // movie | tv
+    genres: [],          // numeric TMDB genre ids
+    match: 'any',        // any -> OR, all -> AND (backend default is any)
+    studios: [],         // [{id, name}] — the name is carried for the chip label
+    year: '',            // '' = any
+    sort: 'popularity.desc',
+    minVotes: '',        // '' = let the server decide (see RATING_VOTE_FLOOR)
+    page: 1,
+  };
+}
+
 /* ── Data ─────────────────────────────────────────────────────────────────
    All snake_case (API contract §1). The PascalCase -> snake_case conversion
    happens once, at the fetch boundary in shared/api.js.                     */
@@ -39,7 +61,12 @@ export const state = {
   subscriptions: [],     // store.Subscription[]
   configured: null,      // shared/status.js shape
   health: {known: false, ok: true, degraded: []},
-  prefs: {libFilter: 'all', qFilterStatus: 'all', qFilterType: 'all', qSort: 'newest', calView: 'month'},
+  /* browse is the home page's filter model — see "Browse filters" below. It
+     lives on state rather than inside carousels.js because it is serialised
+     into the URL, and the URL is read at boot before any module renders. */
+  browse: newBrowse(),
+  prefs: {libFilter: 'all', qFilterStatus: 'all', qFilterType: 'all', qSort: 'newest',
+    calView: 'month', searchType: 'all'},
 };
 
 /* ── Preferences ─────────────────────────────────────────────────────────── */
@@ -601,3 +628,252 @@ export function seasonShapeKey(tmdbId, season) { return epKey(tmdbId, season); }
 export function showShapeKey(tmdbId) { return String(num(tmdbId)); }
 export function queueShapeKey(tmdbId, season) { return `q:${epKey(tmdbId, season)}`; }
 
+
+/* ── Browse filters: vocabulary, loaders, URL ─────────────────────────────
+   The constants below MIRROR internal/tmdb's allowlist (DiscoverSorts,
+   maxFilterIDs, minFilmYear/maxFilmYear, defaultRatingVotes). They are here so
+   the UI never offers a combination the server will refuse — a 400 that the
+   user could not have avoided is a bug, not a validation. The server remains
+   the authority; this is politeness, not enforcement.                        */
+
+/** DISCOVER_SORTS — value, label, and whether TV supports it. revenue.desc is
+ *  movie-only upstream (TV has no revenue), and asking for it on a series is a
+ *  400, so it is never rendered for TV rather than being rendered and failing. */
+export const DISCOVER_SORTS = [
+  {value: 'popularity.desc',            label: 'Most popular',    tv: true},
+  {value: 'vote_average.desc',          label: 'Highest rated',   tv: true},
+  {value: 'primary_release_date.desc',  label: 'Newest first',    tv: true},
+  {value: 'revenue.desc',               label: 'Highest grossing', tv: false},
+];
+export const MAX_FILTER_IDS = 20;      // tmdb.maxFilterIDs
+export const MIN_FILM_YEAR = 1888;     // tmdb.minFilmYear
+export const MAX_FILM_YEAR = 2100;     // tmdb.maxFilmYear
+export const MAX_BROWSE_PAGE = 500;    // tmdb.maxDiscoverPage
+export const RATING_VOTE_FLOOR = 200;  // tmdb.defaultRatingVotes
+export const BROWSE_PAGE_SIZE = 20;    // TMDB's fixed /discover page size
+
+export function sortsFor(mediaType) {
+  return mediaType === 'tv' ? DISCOVER_SORTS.filter(s => s.tv) : DISCOVER_SORTS.slice();
+}
+export function sortLabel(value) {
+  const s = DISCOVER_SORTS.find(x => x.value === value);
+  return s ? s.label : value;
+}
+
+/* ── Genre vocabulary ─────────────────────────────────────────────────────
+   Cached per media type for the life of the page and de-duplicated in flight.
+   The server already caches this for a day; the point of caching it again here
+   is that /api/genres shares the 180/min browse budget with every carousel on
+   the home page, so re-fetching it each time the panel is opened would spend a
+   request on a list that cannot have changed since the panel was last shut.   */
+/**
+ * vocabFetch is a bare fetch used ONLY by the two browse-vocabulary routes, and
+ * it deliberately does not go through apiFetch.
+ *
+ * /api/genres and /api/studios are unauthenticated on a build that serves them.
+ * On a build that does not, the path falls through to the admin-only mux and
+ * answers 401 — and apiFetch reads every 401 as "your session went away" and
+ * throws the sign-in modal at the user. Opening the filter panel during an
+ * update window (assets and binary do not swap in the same instant) would then
+ * interrupt with a prompt that cannot possibly fix it, over a list that is not
+ * private in the first place. Here those statuses mean one thing and say it.
+ *
+ * Everything else keeps apiFetch's contract: an abort stays an abort, the
+ * server's own `error` field is what surfaces, and a body that is not an array
+ * is normalised rather than trusted.
+ */
+async function vocabFetch(path, opts) {
+  let r;
+  try {
+    r = await fetch(path, opts);
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.code === 20)) throw e;
+    throw new Error('Cannot reach the server — is JellyFreedom running?');
+  }
+  if (r.status === 401 || r.status === 403 || r.status === 404) {
+    throw new Error('This JellyFreedom build does not serve the browse filter lists yet. ' +
+      'Update the orchestrator — signing in will not help.');
+  }
+  if (!r.ok) {
+    const body = await r.json().catch(() => null);
+    throw new Error((body && body.error) || `${r.status} ${r.statusText || 'request failed'}`);
+  }
+  const text = await r.text();
+  if (!text) return [];
+  let d;
+  try { d = JSON.parse(text); } catch (_) { throw new Error('Server returned a malformed response'); }
+  return Array.isArray(d) ? d : [];
+}
+
+const genreCache = new Map();      // 'movie'|'tv' -> [{id, name}]
+const genreInFlight = new Map();   // 'movie'|'tv' -> Promise
+
+export function cachedGenres(mediaType) {
+  return genreCache.get(mediaType === 'tv' ? 'tv' : 'movie') || null;
+}
+
+/** loadGenres resolves with the vocabulary and REJECTS on failure — the panel
+ *  needs to tell "genres could not be loaded" apart from "there are none". */
+export function loadGenres(mediaType) {
+  const t = mediaType === 'tv' ? 'tv' : 'movie';
+  const hit = genreCache.get(t);
+  if (hit) return Promise.resolve(hit);
+  if (genreInFlight.has(t)) return genreInFlight.get(t);
+  const p = vocabFetch('/api/genres?type=' + t).then(list => {
+    const clean = list
+      .map(g => ({id: num(g.id), name: String(g.name || '')}))
+      .filter(g => g.id > 0 && g.name);
+    genreCache.set(t, clean);
+    genreInFlight.delete(t);
+    return clean;
+  }, e => {
+    genreInFlight.delete(t);   // nothing is latched: the next open retries
+    throw e;
+  });
+  genreInFlight.set(t, p);
+  return p;
+}
+
+/** genreName resolves an id against whatever vocabulary is loaded. Returns ''
+ *  when the list has not been fetched yet, so a caller can decide between
+ *  waiting and saying "3 genres" rather than printing an id at the user. */
+export function genreName(mediaType, id) {
+  const list = cachedGenres(mediaType);
+  if (!list) return '';
+  const g = list.find(x => x.id === num(id));
+  return g ? g.name : '';
+}
+
+/** searchStudios is deliberately NOT cached, for the same reason the server
+ *  does not cache it: the key space is whatever anyone types. The 300ms
+ *  debounce at the call site is what keeps it inside the rate limit. */
+export async function searchStudios(q, opts) {
+  const query = String(q || '').trim().slice(0, 100);
+  if (!query) return [];
+  const list = await vocabFetch('/api/studios?q=' + encodeURIComponent(query), opts);
+  return list
+    .map(s => ({id: num(s.id), name: String(s.name || ''), logo_url: String(s.logo_url || '')}))
+    .filter(s => s.id > 0 && s.name);
+}
+
+/**
+ * browseQuery builds the /api/browse/discover query string from the model.
+ *
+ * Defaults are omitted rather than sent: `match=any` and `sort=popularity.desc`
+ * are what the server does anyway, and leaving them out keeps a shared URL
+ * short enough to read. `networks` is never sent — the UI has no way to
+ * enumerate networks (there is no /api/networks), so the fixed network
+ * carousels remain the only place that filter is used.
+ */
+export function browseQuery(b) {
+  const p = new URLSearchParams();
+  p.set('type', b.type === 'tv' ? 'tv' : 'movie');
+  if (b.genres.length) {
+    p.set('genres', b.genres.slice(0, MAX_FILTER_IDS).join(','));
+    if (b.match === 'all') p.set('match', 'all');
+  }
+  if (b.studios.length) p.set('studios', b.studios.slice(0, MAX_FILTER_IDS).map(s => s.id).join(','));
+  if (b.year) p.set('year', String(b.year));
+  if (b.sort && b.sort !== 'popularity.desc') p.set('sort', b.sort);
+  if (b.minVotes !== '' && b.minVotes !== null) p.set('min_votes', String(b.minVotes));
+  if (num(b.page, 1) > 1) p.set('page', String(num(b.page, 1)));
+  return p;
+}
+
+/** loadDiscover throws on failure, exactly like every other page-owning fetch:
+ *  the browse grid has to distinguish a 502 from an empty result set, and the
+ *  incident this codebase carries is precisely that confusion. */
+export function loadDiscover(b, opts) {
+  return apiList('/api/browse/discover?' + browseQuery(b).toString(), opts);
+}
+
+/* ── View state in the URL ────────────────────────────────────────────────
+   router.js owns location.hash and its grammar has no room for a browse route
+   — head must be one of home/library/queue/calendar/search/movie/tv, and
+   anything else silently falls back to home. It is also off limits to change.
+   The QUERY STRING is therefore where this view state lives: router.js never
+   reads it, every navigation it performs is a hash assignment that preserves
+   it, and a query-only replaceState fires no hashchange, so the two cannot
+   fight. The cost is that a filtered browse is ?…#… rather than #…, which is
+   ugly but linkable and survives reload — which is the requirement.          */
+
+/** setQueryParams merges a patch into location.search, leaving the hash alone.
+ *  '' / null / undefined delete a key. */
+export function setQueryParams(patch) {
+  const p = new URLSearchParams(location.search);
+  for (const k of Object.keys(patch)) {
+    const v = patch[k];
+    if (v === '' || v === null || v === undefined) p.delete(k);
+    else p.set(k, String(v));
+  }
+  const qs = p.toString();
+  history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+}
+export function queryParam(k) {
+  try { return new URLSearchParams(location.search).get(k) || ''; }
+  catch (_) { return ''; }
+}
+
+/* Studios are encoded as `id~name` pairs because there is no endpoint that
+   resolves a company id back to a name, and a chip reading "Studio #420" on a
+   shared link is worse than carrying the label. The name is display-only — it
+   never leaves for the API, only the id does — and it is escaped like any other
+   untrusted string, so a hand-edited URL can mislabel a chip and nothing more. */
+const STUDIO_SEP = '~';
+
+export function browseToQuery(b) {
+  if (!b.on) {
+    return {b: '', type: '', genres: '', match: '', studios: '', year: '', sort: '', votes: '', page: ''};
+  }
+  return {
+    b: '1',
+    type: b.type,
+    genres: b.genres.join(',') || '',
+    match: b.genres.length > 1 && b.match === 'all' ? 'all' : '',
+    studios: b.studios.map(s => `${s.id}${STUDIO_SEP}${s.name}`).join(',') || '',
+    year: b.year || '',
+    sort: b.sort !== 'popularity.desc' ? b.sort : '',
+    votes: b.minVotes === '' ? '' : String(b.minVotes),
+    page: num(b.page, 1) > 1 ? String(num(b.page, 1)) : '',
+  };
+}
+
+/** clampInt is the client-side twin of tmdb.boundedInt: digits only, in range,
+ *  or the fallback. Never a coerced 0, and never NaN reaching a URL. */
+function clampInt(s, lo, hi, fallback) {
+  if (!/^[0-9]+$/.test(String(s || ''))) return fallback;
+  const n = parseInt(s, 10);
+  return n >= lo && n <= hi ? n : fallback;
+}
+
+/** browseFromQuery rebuilds the model from the current URL. Everything is
+ *  bounded here so a hand-written link cannot make us send the server a request
+ *  it will only refuse — and cannot put anything but digits into an id list. */
+export function browseFromQuery() {
+  const b = newBrowse();
+  if (queryParam('b') !== '1') return b;
+  b.on = true;
+  b.type = queryParam('type') === 'tv' ? 'tv' : 'movie';
+  b.genres = queryParam('genres').split(',')
+    .map(x => clampInt(x.trim(), 1, 2147483647, 0))
+    .filter(Boolean)
+    .slice(0, MAX_FILTER_IDS);
+  b.match = queryParam('match') === 'all' ? 'all' : 'any';
+  b.studios = queryParam('studios').split(',').map(raw => {
+    const at = raw.indexOf(STUDIO_SEP);
+    const id = clampInt((at === -1 ? raw : raw.slice(0, at)).trim(), 1, 2147483647, 0);
+    const name = at === -1 ? '' : raw.slice(at + 1).trim().slice(0, 100);
+    return id ? {id, name: name || `Studio ${id}`, logo_url: ''} : null;
+  }).filter(Boolean).slice(0, MAX_FILTER_IDS);
+  const y = clampInt(queryParam('year'), MIN_FILM_YEAR, MAX_FILM_YEAR, 0);
+  b.year = y ? String(y) : '';
+  const sort = queryParam('sort');
+  b.sort = sortsFor(b.type).some(s => s.value === sort) ? sort : 'popularity.desc';
+  // min_votes=0 is meaningful (it overrides the server's rating vote floor), so
+  // it must survive the round trip — hence -1 as the "not a number" sentinel
+  // rather than 0, which would silently become a real filter.
+  const votes = clampInt(queryParam('votes'), 0, 100000, -1);
+  b.minVotes = votes < 0 ? '' : String(votes);
+  b.page = clampInt(queryParam('page'), 1, MAX_BROWSE_PAGE, 1);
+  return b;
+}
