@@ -15,11 +15,143 @@ import (
 // sxxeyy extracts season/episode numbers from a string like "Show S01E08".
 var sxxeyy = regexp.MustCompile(`(?i)s(\d{1,2})[\s._-]*e(\d{1,3})`)
 
+// ── Identity ──────────────────────────────────────────────────────────────────
+//
+// A row's identity used to be a bare TMDB integer. It is now a PAIR: which catalogue
+// issued the id, and the id as that catalogue spells it. The reason is concrete — the
+// next metadata provider's stable identifier is a UUID like
+// "cc5a1adf-5ba4-441f-bcf0-6ade6fcd1e6c". Stored in the INTEGER tmdb_id column SQLite
+// would coerce it to 0 without complaint, and every row from that provider would
+// collapse onto the single identity (0, media_type, season, episode) — one show
+// silently overwriting the next.
+//
+// The change is strictly ADDITIVE, and that is not a stylistic preference. There are
+// live .strm files in the user's Jellyfin libraries containing URLs of the form
+// /play/tv/1622/14/1?t=<hmac>, and the HMAC signs the identity string "tv:1622:14:1"
+// (cmd/orchestrator/playtoken.go). Renaming tmdb_id, retyping it, or changing what it
+// means for an existing row would invalidate every one of those tokens at once and
+// break playback of the whole library. So tmdb_id keeps its name, its INTEGER type and
+// its meaning; provider/provider_id sit BESIDE it and are the key the store matches on.
+//
+// For a TMDB row the two are redundant by construction: provider is "tmdb" and
+// provider_id is the decimal spelling of tmdb_id. Redundancy that a caller can get
+// wrong is a bug waiting to happen, so it is not left to discipline — every write path
+// runs the pair through reconcileIdentity, which fills in whichever half the caller
+// omitted and REFUSES a row whose two halves contradict each other.
+
+// ProviderTMDB is the identity namespace of every row that existed before the provider
+// dimension did, and the default the new columns carry. Its provider_id is always the
+// decimal spelling of the row's tmdb_id.
+const ProviderTMDB = "tmdb"
+
+// Identity is the provider-qualified key of one library or queue row: which catalogue,
+// which id in that catalogue, and — for TV — which episode of it. Season and Episode
+// are 0 for a movie, and 0 is a REAL value there, not a "not set" sentinel.
+type Identity struct {
+	Provider   string
+	ProviderID string
+	MediaType  string // "movie" | "tv"
+	Season     int
+	Episode    int
+}
+
+// TMDBIdentity builds the identity of a TMDB row from the integer id the rest of the
+// system still speaks in. It is the single place the int→string spelling happens, so
+// the conversion cannot drift between call sites.
+func TMDBIdentity(tmdbID int, mediaType string, season, episode int) Identity {
+	return Identity{
+		Provider:   ProviderTMDB,
+		ProviderID: strconv.Itoa(tmdbID),
+		MediaType:  mediaType,
+		Season:     season,
+		Episode:    episode,
+	}
+}
+
+// canonical fills in the provider default. A zero-valued Provider must mean "tmdb"
+// rather than matching nothing at all: a lookup that silently returns no rows because
+// a struct field was left blank is the failure mode this whole change exists to
+// prevent, and it would be indistinguishable from a genuine miss.
+func (id Identity) canonical() Identity {
+	if id.Provider == "" {
+		id.Provider = ProviderTMDB
+	}
+	return id
+}
+
+// reconcileIdentity makes the provider pair and the legacy TMDB integer agree, in
+// place, or reports why they cannot. Every write path calls it, which is what turns
+// "keep these three fields consistent" from a comment into an enforced invariant —
+// a caller that sets one and forgets the other gets a correct row, and a caller that
+// sets both to different things gets an error instead of a corrupted identity.
+//
+// The rules:
+//
+//   - No provider at all means TMDB, matching the column default and every row that
+//     predates these columns.
+//   - A TMDB row's two spellings must agree; whichever the caller supplied fills in
+//     the other. This is what lets cmd/orchestrator keep building QueueItem{TMDBID: n}
+//     literals with no knowledge that providers exist.
+//   - A non-TMDB row MUST carry a provider_id — its identity is the only one it has.
+//   - A non-TMDB row must NOT carry a tmdb_id. One row, one identity: a row claiming
+//     both would be found by a TMDB lookup and by a provider lookup, as two different
+//     things, and there would be no way to say which was right.
+func reconcileIdentity(provider, providerID *string, tmdbID *int) error {
+	if *provider == "" {
+		*provider = ProviderTMDB
+	}
+	if *provider != ProviderTMDB {
+		if *providerID == "" {
+			return fmt.Errorf("store: provider %q row has an empty provider_id", *provider)
+		}
+		if *tmdbID != 0 {
+			return fmt.Errorf(
+				"store: row claims provider %q id %q AND tmdb_id %d — a row has exactly one identity",
+				*provider, *providerID, *tmdbID)
+		}
+		return nil
+	}
+	canonical := strconv.Itoa(*tmdbID)
+	switch {
+	case *providerID == "":
+		*providerID = canonical
+	case *tmdbID == 0:
+		// The caller spoke in provider terms; recover the integer so the .strm URL,
+		// the play token and the web UI's tmdb_id all keep working for this row.
+		n, err := strconv.Atoi(*providerID)
+		if err != nil {
+			return fmt.Errorf("store: tmdb provider_id %q is not an integer", *providerID)
+		}
+		*tmdbID = n
+	case *providerID != canonical:
+		return fmt.Errorf("store: tmdb_id %d and provider_id %q are different identities", *tmdbID, *providerID)
+	}
+	return nil
+}
+
+// identityOnRead repairs the pair coming OUT of the database. Post-migration no row
+// should need it — the backfill guarantees provider_id is populated — but a row
+// written by an older binary between the ALTER and the backfill would carry the ”
+// default, and returning that to a caller would hand them a row with no identity.
+func identityOnRead(provider, providerID *string, tmdbID int) {
+	if *provider == "" {
+		*provider = ProviderTMDB
+	}
+	if *providerID == "" && *provider == ProviderTMDB {
+		*providerID = strconv.Itoa(tmdbID)
+	}
+}
+
 // Item is one library entry. JSON field names are snake_case and LOCKED by the API
 // contract — the web UI reads exactly these names.
 type Item struct {
-	ID           int64      `json:"id"`
-	TMDBID       int        `json:"tmdb_id"`
+	ID     int64 `json:"id"`
+	TMDBID int   `json:"tmdb_id"`
+	// Provider and ProviderID are the row's real identity; TMDBID above is the TMDB
+	// spelling of it and stays for the .strm URLs and the web UI. See the Identity
+	// block at the top of this file for why both exist.
+	Provider     string     `json:"provider"`
+	ProviderID   string     `json:"provider_id"`
 	MediaType    string     `json:"media_type"` // "movie" | "tv"
 	Title        string     `json:"title"`
 	Year         string     `json:"year"`
@@ -51,8 +183,31 @@ func (i Item) Redacted() Item {
 	return i
 }
 
-// itemCols is the canonical SELECT column list for Item rows.
-const itemCols = `id,tmdb_id,media_type,title,year,info_hash,file_index,strm_path,library_name,status,seeders,updated,requested_by,is_private,poster_url,magnet,release_title,stale_since,season,episode`
+// SetTMDBIdentity sets all three identity fields of a TMDB item together. Prefer it to
+// assigning TMDBID directly: it is impossible to use and end up with a half-set
+// identity, which is exactly the mistake the redundancy invites.
+func (i *Item) SetTMDBIdentity(tmdbID int) {
+	i.TMDBID, i.Provider, i.ProviderID = tmdbID, ProviderTMDB, strconv.Itoa(tmdbID)
+}
+
+// SetProviderIdentity sets a NON-TMDB identity, clearing TMDBID because the row does
+// not have one. Setting it back to a real TMDB id afterwards would make the row claim
+// two identities, and Upsert refuses such a row.
+func (i *Item) SetProviderIdentity(provider, providerID string) {
+	i.Provider, i.ProviderID, i.TMDBID = provider, providerID, 0
+}
+
+// Identity returns the row's provider-qualified key, filling in the TMDB default for a
+// struct whose provider fields were never set.
+func (i Item) Identity() Identity {
+	return Identity{Provider: i.Provider, ProviderID: i.ProviderID,
+		MediaType: i.MediaType, Season: i.Season, Episode: i.Episode}.canonical()
+}
+
+// itemCols is the canonical SELECT column list for Item rows. provider/provider_id are
+// APPENDED rather than placed beside tmdb_id: scanItem reads positionally, and adding
+// them in the middle would silently shift every field after it.
+const itemCols = `id,tmdb_id,media_type,title,year,info_hash,file_index,strm_path,library_name,status,seeders,updated,requested_by,is_private,poster_url,magnet,release_title,stale_since,season,episode,provider,provider_id`
 
 // Queue stage tokens — a CLOSED, ordered set the UI renders as a stepper.
 // Progress stays free-text human prose; Stage is the machine-readable position.
@@ -70,8 +225,13 @@ const (
 )
 
 type QueueItem struct {
-	ID             int64     `json:"id"`
-	TMDBID         int       `json:"tmdb_id"`
+	ID     int64 `json:"id"`
+	TMDBID int   `json:"tmdb_id"`
+	// Provider and ProviderID are the row's real identity — see the Identity block at
+	// the top of this file. The unique index that stops duplicate in-flight rows keys
+	// on these, not on tmdb_id.
+	Provider       string    `json:"provider"`
+	ProviderID     string    `json:"provider_id"`
 	MediaType      string    `json:"media_type"`
 	Title          string    `json:"title"`
 	Year           string    `json:"year"`
@@ -103,6 +263,23 @@ func (q QueueItem) Redacted() QueueItem {
 	return q
 }
 
+// SetTMDBIdentity sets all three identity fields of a TMDB queue row together.
+func (q *QueueItem) SetTMDBIdentity(tmdbID int) {
+	q.TMDBID, q.Provider, q.ProviderID = tmdbID, ProviderTMDB, strconv.Itoa(tmdbID)
+}
+
+// SetProviderIdentity sets a NON-TMDB identity, clearing TMDBID because the row does
+// not have one. See Item.SetProviderIdentity.
+func (q *QueueItem) SetProviderIdentity(provider, providerID string) {
+	q.Provider, q.ProviderID, q.TMDBID = provider, providerID, 0
+}
+
+// Identity returns the row's provider-qualified key.
+func (q QueueItem) Identity() Identity {
+	return Identity{Provider: q.Provider, ProviderID: q.ProviderID,
+		MediaType: q.MediaType, Season: q.Season, Episode: q.Episode}.canonical()
+}
+
 type User struct {
 	ID       int64  `json:"id"`
 	Username string `json:"username"`
@@ -116,9 +293,19 @@ type User struct {
 }
 
 // Subscription auto-fetches newly-aired episodes of a TV season for airing shows.
+//
+// Provider and ProviderID are present on the struct so the API shape matches Item and
+// QueueItem, but the subscriptions TABLE is NOT provider-partitioned yet and the fields
+// are derived rather than stored — always ("tmdb", the tmdb_id). Partitioning it means
+// rebuilding UNIQUE(tmdb_id, season), which is a table rebuild rather than an additive
+// column, so it is deliberately out of this change. Until then UpsertSubscription
+// REFUSES a non-TMDB subscription outright rather than writing a row whose provider
+// would be silently dropped and whose identity would collide with TMDB's.
 type Subscription struct {
 	ID          int64      `json:"id"`
 	TMDBID      int        `json:"tmdb_id"`
+	Provider    string     `json:"provider"`
+	ProviderID  string     `json:"provider_id"`
 	Season      int        `json:"season"`
 	Title       string     `json:"title"`
 	PosterURL   string     `json:"poster_url"`
@@ -133,6 +320,11 @@ type Subscription struct {
 func (s Subscription) Redacted() Subscription {
 	s.RequestedBy = ""
 	return s
+}
+
+// SetTMDBIdentity sets all three identity fields of a TMDB subscription together.
+func (s *Subscription) SetTMDBIdentity(tmdbID int) {
+	s.TMDBID, s.Provider, s.ProviderID = tmdbID, ProviderTMDB, strconv.Itoa(tmdbID)
 }
 
 type Store struct {
@@ -285,11 +477,39 @@ func (s *Store) migrate() error {
 		`ALTER TABLE items    ADD COLUMN episode       INTEGER  NOT NULL DEFAULT 0`,
 		`ALTER TABLE queue    ADD COLUMN stage         TEXT     NOT NULL DEFAULT ''`,
 		`ALTER TABLE queue    ADD COLUMN diagnosis     TEXT     NOT NULL DEFAULT ''`,
+		// The provider dimension. Every row that exists before this ALTER runs is a
+		// TMDB row, so DEFAULT 'tmdb' gives all of them the right answer without
+		// rewriting a single one — which matters, because this runs on a live
+		// database at startup.
+		//
+		// provider_id has to default to '' instead of to tmdb_id, because SQLite
+		// cannot compute a column default from another column. backfillProviderIdentity
+		// below fills it in immediately afterwards, and the ORDER is load-bearing: the
+		// unique identity index is rebuilt over (provider, provider_id, …), and while
+		// every row still holds provider_id='' that index would see one identity where
+		// there are hundreds and refuse to build.
+		//
+		// It is TEXT, not INTEGER, and that is the entire point of the change: the next
+		// provider's stable id is a UUID, and an INTEGER column would coerce
+		// "cc5a1adf-…" to 0 without a word of complaint.
+		//
+		// Note what is NOT here: tmdb_id is not renamed, not retyped and not dropped.
+		// Live .strm files carry /play/tv/1622/14/1?t=<hmac> URLs whose HMAC signs
+		// "tv:1622:14:1"; touching the TMDB integer would invalidate every one of them.
+		`ALTER TABLE items    ADD COLUMN provider      TEXT     NOT NULL DEFAULT 'tmdb'`,
+		`ALTER TABLE items    ADD COLUMN provider_id   TEXT     NOT NULL DEFAULT ''`,
+		`ALTER TABLE queue    ADD COLUMN provider      TEXT     NOT NULL DEFAULT 'tmdb'`,
+		`ALTER TABLE queue    ADD COLUMN provider_id   TEXT     NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range adds {
 		if err := s.addColumn(stmt); err != nil {
 			return err
 		}
+	}
+	// Must run before the queue dedupe and the identity index below, both of which
+	// group on provider_id and would be nonsense while it is still ''.
+	if err := s.backfillProviderIdentity(); err != nil {
+		return err
 	}
 	// One-time collapse of duplicate queue rows, then the constraint that makes them
 	// impossible. A magnet-override request used to bypass every idempotency check
@@ -306,23 +526,25 @@ func (s *Store) migrate() error {
 	// In-flight rows keep the OLDEST per identity (it holds the queue position the user
 	// actually waited for); terminal rows keep the NEWEST per identity+status (the most
 	// recent outcome is the true one).
+	//
+	// The GROUP BY leads with (provider, provider_id) rather than tmdb_id so that it
+	// collapses exactly what the index below refuses to hold, and no more. Grouping on
+	// tmdb_id would treat two providers' identically-numbered titles as the same row
+	// and delete one of them here, before the index ever got the chance to allow both.
 	if _, err := s.db.Exec(
 		`DELETE FROM queue WHERE status IN ('pending','processing') AND id NOT IN (
              SELECT MIN(id) FROM queue WHERE status IN ('pending','processing')
-             GROUP BY tmdb_id,media_type,season,episode,requested_by)`); err != nil {
+             GROUP BY provider,provider_id,media_type,season,episode,requested_by)`); err != nil {
 		return fmt.Errorf("collapse duplicate in-flight queue rows: %w", err)
 	}
 	if _, err := s.db.Exec(
 		`DELETE FROM queue WHERE status IN ('done','failed','cancelled') AND id NOT IN (
              SELECT MAX(id) FROM queue WHERE status IN ('done','failed','cancelled')
-             GROUP BY tmdb_id,media_type,season,episode,status,requested_by)`); err != nil {
+             GROUP BY provider,provider_id,media_type,season,episode,status,requested_by)`); err != nil {
 		return fmt.Errorf("collapse duplicate terminal queue rows: %w", err)
 	}
-	if _, err := s.db.Exec(
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_active_identity
-             ON queue(tmdb_id,media_type,season,episode,requested_by)
-             WHERE status IN ('pending','processing')`); err != nil {
-		return fmt.Errorf("create queue identity index: %w", err)
+	if err := s.migrateQueueIdentityIndex(); err != nil {
+		return err
 	}
 	// The queue tree reads the whole visible queue in ONE aggregate over
 	// (tmdb_id, media_type, season) — ListQueueGroups — and then fetches a single
@@ -388,6 +610,86 @@ func (s *Store) addColumn(stmt string) error {
 		return nil // already migrated
 	}
 	return fmt.Errorf("migration %q: %w", stmt, err)
+}
+
+// backfillProviderIdentity gives every pre-existing row a real, canonical identity in
+// the new columns: ('tmdb', the decimal spelling of its tmdb_id).
+//
+// It cannot be folded into the ALTER TABLE — SQLite will not compute a column DEFAULT
+// from another column — so the columns land empty and this fills them. Until it has
+// run, provider_id is ” on every row, which is not merely incomplete but actively
+// wrong: it says all 1,591 queue rows and every library item share one identity. The
+// unique index rebuilt just after this would then refuse to build at all, which is the
+// good failure; the bad one would be code reading ” as a legitimate key.
+//
+// Both statements are written to be no-ops on a second run, because migrate() runs on
+// EVERY startup, not once.
+func (s *Store) backfillProviderIdentity() error {
+	// The table names are from this fixed literal list, never from input.
+	for _, table := range []string{"items", "queue"} {
+		// The ALTER's DEFAULT 'tmdb' covers rows that predate the column. This covers
+		// the narrow window in between: a row inserted by a build that had the column
+		// but not yet this backfill could have been written with an explicit ''.
+		if _, err := s.db.Exec(
+			`UPDATE ` + table + ` SET provider='` + ProviderTMDB + `' WHERE provider=''`); err != nil {
+			return fmt.Errorf("backfill %s.provider: %w", table, err)
+		}
+		// Scoped to TMDB rows ON PURPOSE, and the scope is the safety property. An
+		// unscoped `WHERE provider_id=''` would, the moment a second provider's row
+		// ever reached the table without an id, stamp it with CAST(tmdb_id AS TEXT) —
+		// i.e. "0" — and hand it TMDB's zero identity, which is precisely the silent
+		// collapse this whole change exists to prevent. reconcileIdentity already
+		// refuses to write such a row; this is the second lock on the same door.
+		if _, err := s.db.Exec(
+			`UPDATE ` + table + ` SET provider_id=CAST(tmdb_id AS TEXT)
+             WHERE provider_id='' AND provider='` + ProviderTMDB + `'`); err != nil {
+			return fmt.Errorf("backfill %s.provider_id: %w", table, err)
+		}
+	}
+	return nil
+}
+
+// migrateQueueIdentityIndex rebuilds idx_queue_active_identity so it keys on the
+// provider-qualified identity instead of on tmdb_id alone.
+//
+// This one CANNOT use CREATE UNIQUE INDEX IF NOT EXISTS, and the reason is worth
+// stating plainly: an index of that name already exists on every deployed database, so
+// IF NOT EXISTS would quietly keep the OLD tmdb_id-only definition — leaving the fix
+// applied on fresh installs and absent on exactly the installs that have data in them.
+// So the old index is DROPPED and a new one created.
+//
+// The drop is guarded by reading the stored DDL rather than run unconditionally. This
+// runs on every startup, and rebuilding a unique index over the whole queue table each
+// boot is real work for nothing; worse, each rebuild opens a window in which the
+// constraint that stops duplicate in-flight rows does not exist.
+//
+// Why provider has to be IN the key rather than merely stored beside it: two catalogues
+// can hand out the same number. If the key stayed (tmdb_id, …) then a second provider's
+// title numbered 1622 would collide with TMDB's 1622, and Enqueue's ON CONFLICT DO
+// NOTHING would silently hand back the OTHER show's queue row — the user would press
+// request and watch nothing happen, or worse, watch the wrong thing resolve.
+func (s *Store) migrateQueueIdentityIndex() error {
+	const name = "idx_queue_active_identity"
+	var ddl sql.NullString
+	err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name=?`, name).Scan(&ddl)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("read %s DDL: %w", name, err)
+	}
+	// Matching on the column name rather than on a schema version number keeps this
+	// honest: it asks the database what shape the index actually has.
+	if ddl.Valid && strings.Contains(ddl.String, "provider_id") {
+		return nil
+	}
+	if _, err := s.db.Exec(`DROP INDEX IF EXISTS ` + name); err != nil {
+		return fmt.Errorf("drop %s: %w", name, err)
+	}
+	if _, err := s.db.Exec(
+		`CREATE UNIQUE INDEX ` + name + `
+             ON queue(provider,provider_id,media_type,season,episode,requested_by)
+             WHERE status IN ('pending','processing')`); err != nil {
+		return fmt.Errorf("create %s: %w", name, err)
+	}
+	return nil
 }
 
 // migrateAdminUser promotes the old dashboard_password_hash setting into a proper
@@ -556,12 +858,24 @@ func (s *Store) DeleteSessionsForUser(userID int64, keepToken string) error {
 
 // ── Items ─────────────────────────────────────────────────────────────────────
 
+// Upsert writes a library item, keyed on strm_path.
+//
+// It reconciles the row's identity FIRST, in place, so the caller's struct and the
+// stored row cannot disagree about who this is. A caller that filled in only TMDBID
+// (which is every caller in cmd/orchestrator) gets provider/provider_id derived for
+// free; a caller that filled in only the provider pair gets TMDBID recovered; a caller
+// that filled in two contradictory identities gets an error instead of a row that two
+// different lookups would each claim to own.
 func (s *Store) Upsert(item *Item) error {
+	if err := reconcileIdentity(&item.Provider, &item.ProviderID, &item.TMDBID); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(`
-	INSERT INTO items (tmdb_id, media_type, title, year, info_hash, file_index, strm_path, library_name, status, seeders, updated, requested_by, is_private, poster_url, magnet, release_title, stale_since, season, episode)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO items (tmdb_id, media_type, title, year, info_hash, file_index, strm_path, library_name, status, seeders, updated, requested_by, is_private, poster_url, magnet, release_title, stale_since, season, episode, provider, provider_id)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(strm_path) DO UPDATE SET
-		tmdb_id=excluded.tmdb_id, media_type=excluded.media_type,
+		tmdb_id=excluded.tmdb_id, provider=excluded.provider, provider_id=excluded.provider_id,
+		media_type=excluded.media_type,
 		title=excluded.title, year=excluded.year, info_hash=excluded.info_hash,
 		file_index=excluded.file_index, library_name=excluded.library_name,
 		status=excluded.status, seeders=excluded.seeders, updated=excluded.updated,
@@ -576,6 +890,7 @@ func (s *Store) Upsert(item *Item) error {
 		item.InfoHash, item.FileIndex, item.StrmPath, item.LibraryName,
 		item.Status, item.Seeders, item.Updated, item.RequestedBy, boolToInt(item.IsPrivate),
 		item.PosterURL, item.Magnet, item.ReleaseTitle, item.StaleSince, item.Season, item.Episode,
+		item.Provider, item.ProviderID,
 	)
 	return err
 }
@@ -594,30 +909,29 @@ func (s *Store) MarkStale(strmPath string) error {
 	return err
 }
 
-// ItemsByTMDB returns all items for a show/movie (used for series removal).
+// ItemsByTMDB returns all items for a TMDB show/movie (used for series removal). It is
+// the TMDB-shaped wrapper over ItemsByTitle, kept so cmd/orchestrator's call sites are
+// untouched by the provider change.
 func (s *Store) ItemsByTMDB(tmdbID int, mediaType string) ([]*Item, error) {
-	rows, err := s.db.Query(`SELECT `+itemCols+` FROM items WHERE tmdb_id=? AND media_type=?`, tmdbID, mediaType)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []*Item
-	for rows.Next() {
-		it, err := scanItem(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, it)
-	}
-	return items, rows.Err()
+	return s.ItemsByTitle(ProviderTMDB, strconv.Itoa(tmdbID), mediaType)
 }
 
-// GetEpisode returns a specific TV episode item (used for per-episode removal).
+// ItemsByTitle returns every episode/movie row belonging to one provider-qualified
+// title. Matching on (provider, provider_id) rather than tmdb_id is what stops a
+// "remove this show" from also removing another catalogue's show that happens to carry
+// the same number.
+func (s *Store) ItemsByTitle(provider, providerID, mediaType string) ([]*Item, error) {
+	if provider == "" {
+		provider = ProviderTMDB
+	}
+	return s.queryItems(
+		`SELECT `+itemCols+` FROM items WHERE provider=? AND provider_id=? AND media_type=?`,
+		provider, providerID, mediaType)
+}
+
+// GetEpisode returns a specific TMDB TV episode item (used for per-episode removal).
 func (s *Store) GetEpisode(tmdbID, season, episode int) (*Item, error) {
-	row := s.db.QueryRow(
-		`SELECT `+itemCols+` FROM items WHERE tmdb_id=? AND season=? AND episode=? AND media_type='tv'`,
-		tmdbID, season, episode)
-	return scanItem(row)
+	return s.GetByProviderIdentity(TMDBIdentity(tmdbID, "tv", season, episode))
 }
 
 // CountByHash returns how many item rows (any status) reference a given info hash.
@@ -673,18 +987,32 @@ func (s *Store) backfillEpisodeNumbers() error {
 // On a DB error it reports true (fail CLOSED): skipping a possible duplicate is
 // strictly safer than enqueuing a second copy of an episode we may already have.
 func (s *Store) EpisodeActive(tmdbID, season, episode int) (bool, error) {
+	return s.ProviderEpisodeActive(ProviderTMDB, strconv.Itoa(tmdbID), season, episode)
+}
+
+// ProviderEpisodeActive is EpisodeActive keyed on a provider-qualified title id.
+//
+// Neither query filters on media_type, which is deliberate and matches the behaviour
+// this had before providers existed: an episode number is only ever non-zero on TV
+// rows, so the season/episode predicate already excludes movies.
+func (s *Store) ProviderEpisodeActive(provider, providerID string, season, episode int) (bool, error) {
+	if provider == "" {
+		provider = ProviderTMDB
+	}
 	var n int
 	if err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM items WHERE tmdb_id=? AND season=? AND episode=? AND status='ready'`,
-		tmdbID, season, episode).Scan(&n); err != nil {
+		`SELECT COUNT(*) FROM items
+         WHERE provider=? AND provider_id=? AND season=? AND episode=? AND status='ready'`,
+		provider, providerID, season, episode).Scan(&n); err != nil {
 		return true, err
 	}
 	if n > 0 {
 		return true, nil
 	}
 	if err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM queue WHERE tmdb_id=? AND season=? AND episode=? AND status IN ('pending','processing')`,
-		tmdbID, season, episode).Scan(&n); err != nil {
+		`SELECT COUNT(*) FROM queue
+         WHERE provider=? AND provider_id=? AND season=? AND episode=? AND status IN ('pending','processing')`,
+		provider, providerID, season, episode).Scan(&n); err != nil {
 		return true, err
 	}
 	return n > 0, nil
@@ -705,7 +1033,12 @@ func (s *Store) GetStatusByTMDBIDs(ids []int, viewer string, isAdmin bool) (map[
 		return nil, nil
 	}
 	placeholders := make([]string, len(ids))
-	args := make([]any, 0, len(ids)+2)
+	// provider is pinned to TMDB because the whole method is TMDB-shaped: it takes
+	// TMDB integers and returns a map keyed on them. Without the predicate a future
+	// provider's row would be matched by its tmdb_id column — which is 0 on every such
+	// row — and a caller asking about TMDB id 0 would be handed somebody else's item.
+	args := make([]any, 0, len(ids)+3)
+	args = append(args, ProviderTMDB)
 	for i, id := range ids {
 		placeholders[i] = "?"
 		args = append(args, id)
@@ -716,7 +1049,7 @@ func (s *Store) GetStatusByTMDBIDs(ids []int, viewer string, isAdmin bool) (map[
 		args = append(args, viewer, viewer)
 	}
 	q := fmt.Sprintf(
-		`SELECT `+itemCols+` FROM items WHERE tmdb_id IN (%s)%s
+		`SELECT `+itemCols+` FROM items WHERE provider=? AND tmdb_id IN (%s)%s
 		 ORDER BY CASE status WHEN 'ready' THEN 0 WHEN 'stale' THEN 1 WHEN 'error' THEN 2 ELSE 3 END`,
 		strings.Join(placeholders, ","), where,
 	)
@@ -780,13 +1113,27 @@ func (s *Store) GetByHash(hash string) (*Item, error) {
 	return scanItem(row)
 }
 
-// GetByIdentity looks an item up by its stable identity (TMDB id + type + season/episode;
-// season/episode are 0 for movies). This is the key the Resolve-at-Play handler uses to map
-// a /play/... URL back to its library row.
+// GetByIdentity looks an item up by its stable TMDB identity (TMDB id + type +
+// season/episode; season/episode are 0 for movies). This is the key the Resolve-at-Play
+// handler uses to map a /play/... URL back to its library row.
+//
+// The signature is unchanged on purpose. A /play/tv/1622/14/1 URL sitting in a live
+// .strm file carries a TMDB integer and nothing else, so the handler that parses it has
+// nothing else to pass — and the HMAC over "tv:1622:14:1" means those URLs cannot be
+// reshaped without reissuing every token in the library. TMDB URLs therefore stay TMDB
+// URLs, and this wrapper turns one into the provider-qualified key the store matches on.
 func (s *Store) GetByIdentity(tmdbID int, mediaType string, season, episode int) (*Item, error) {
+	return s.GetByProviderIdentity(TMDBIdentity(tmdbID, mediaType, season, episode))
+}
+
+// GetByProviderIdentity looks an item up by its full provider-qualified identity. A miss
+// is (nil, nil), never an error — every caller branches on that.
+func (s *Store) GetByProviderIdentity(id Identity) (*Item, error) {
+	id = id.canonical()
 	row := s.db.QueryRow(
-		`SELECT `+itemCols+` FROM items WHERE tmdb_id=? AND media_type=? AND season=? AND episode=?`,
-		tmdbID, mediaType, season, episode)
+		`SELECT `+itemCols+` FROM items
+         WHERE provider=? AND provider_id=? AND media_type=? AND season=? AND episode=?`,
+		id.Provider, id.ProviderID, id.MediaType, id.Season, id.Episode)
 	return scanItem(row)
 }
 
@@ -877,13 +1224,15 @@ func scanItem(s scanner) (*Item, error) {
 	err := s.Scan(&item.ID, &item.TMDBID, &item.MediaType, &item.Title, &item.Year,
 		&item.InfoHash, &item.FileIndex, &item.StrmPath, &item.LibraryName,
 		&item.Status, &item.Seeders, &item.Updated, &item.RequestedBy, &isPrivate, &item.PosterURL,
-		&item.Magnet, &item.ReleaseTitle, &staleSince, &item.Season, &item.Episode)
+		&item.Magnet, &item.ReleaseTitle, &staleSince, &item.Season, &item.Episode,
+		&item.Provider, &item.ProviderID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	identityOnRead(&item.Provider, &item.ProviderID, item.TMDBID)
 	item.IsPrivate = isPrivate == 1
 	if staleSince.Valid {
 		item.StaleSince = &staleSince.Time
@@ -915,9 +1264,11 @@ func boolToInt(b bool) int {
 // ── Queue ─────────────────────────────────────────────────────────────────────
 
 // queueCols is the canonical SELECT column list for QueueItem rows.
+// queueCols is the canonical SELECT column list for QueueItem rows. provider/provider_id
+// are APPENDED rather than placed beside tmdb_id: scanQueueItem reads positionally.
 const queueCols = `id,tmdb_id,media_type,title,year,poster_url,season,episode,library_name,
                    requested_by,magnet_override,status,progress,stage,error_msg,info_hash,strm_path,
-                   diagnosis,created_at,updated_at`
+                   diagnosis,created_at,updated_at,provider,provider_id`
 
 func scanQueueItem(sc scanner) (*QueueItem, error) {
 	var item QueueItem
@@ -925,7 +1276,7 @@ func scanQueueItem(sc scanner) (*QueueItem, error) {
 		&item.ID, &item.TMDBID, &item.MediaType, &item.Title, &item.Year, &item.PosterURL,
 		&item.Season, &item.Episode, &item.LibraryName, &item.RequestedBy, &item.MagnetOverride,
 		&item.Status, &item.Progress, &item.Stage, &item.ErrorMsg, &item.InfoHash, &item.StrmPath,
-		&item.Diagnosis, &item.CreatedAt, &item.UpdatedAt,
+		&item.Diagnosis, &item.CreatedAt, &item.UpdatedAt, &item.Provider, &item.ProviderID,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -933,6 +1284,7 @@ func scanQueueItem(sc scanner) (*QueueItem, error) {
 	if err != nil {
 		return nil, err
 	}
+	identityOnRead(&item.Provider, &item.ProviderID, item.TMDBID)
 	return &item, nil
 }
 
@@ -940,12 +1292,19 @@ func scanQueueItem(sc scanner) (*QueueItem, error) {
 // covers this identity. The ON CONFLICT clause pairs with idx_queue_active_identity,
 // so a duplicate can never be created even if a caller skips the handler-level checks
 // — this is the backstop that the magnet-override path used to have no equivalent of.
+//
+// It reconciles the row's identity first (see Upsert), so a caller building a bare
+// QueueItem{TMDBID: n} literal gets provider/provider_id filled in and lands on the
+// right side of the unique index without knowing the index changed shape.
 func (s *Store) Enqueue(item *QueueItem) (int64, error) {
+	if err := reconcileIdentity(&item.Provider, &item.ProviderID, &item.TMDBID); err != nil {
+		return 0, err
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO queue (tmdb_id,media_type,title,year,poster_url,season,episode,library_name,requested_by,magnet_override,stage)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO queue (tmdb_id,provider,provider_id,media_type,title,year,poster_url,season,episode,library_name,requested_by,magnet_override,stage)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT DO NOTHING`,
-		item.TMDBID, item.MediaType, item.Title, item.Year, item.PosterURL,
+		item.TMDBID, item.Provider, item.ProviderID, item.MediaType, item.Title, item.Year, item.PosterURL,
 		item.Season, item.Episode, item.LibraryName, item.RequestedBy, item.MagnetOverride, StageQueued,
 	)
 	if err != nil {
@@ -954,14 +1313,15 @@ func (s *Store) Enqueue(item *QueueItem) (int64, error) {
 	// DO NOTHING leaves LastInsertId pointing at some earlier insert, so it must never
 	// be trusted without checking that a row was actually written.
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		existing, err := s.ActiveQueueItem(item.TMDBID, item.MediaType, item.Season, item.Episode, item.RequestedBy)
+		existing, err := s.ActiveQueueItemByIdentity(item.Identity(), item.RequestedBy)
 		if err != nil {
 			return 0, fmt.Errorf("read incumbent queue row: %w", err)
 		}
 		if existing != nil {
 			return existing.ID, nil
 		}
-		return 0, fmt.Errorf("queue insert conflicted but no in-flight row found for tmdb %d", item.TMDBID)
+		return 0, fmt.Errorf("queue insert conflicted but no in-flight row found for %s:%s",
+			item.Provider, item.ProviderID)
 	}
 	return res.LastInsertId()
 }
@@ -1443,12 +1803,21 @@ func (s *Store) QueuePendingCount() (int, error) {
 // hand back the existing row instead of enqueuing a duplicate that would show up
 // alongside the library entry. Scoped by requester to match ListQueue's own filter.
 func (s *Store) ActiveQueueItem(tmdbID int, mediaType string, season, episode int, requester string) (*QueueItem, error) {
+	return s.ActiveQueueItemByIdentity(TMDBIdentity(tmdbID, mediaType, season, episode), requester)
+}
+
+// ActiveQueueItemByIdentity is ActiveQueueItem keyed on the full provider-qualified
+// identity. The predicate here mirrors idx_queue_active_identity column for column,
+// which is what makes "the row the index would have conflicted with" and "the row this
+// returns" the same row — Enqueue depends on that to hand back the incumbent.
+func (s *Store) ActiveQueueItemByIdentity(id Identity, requester string) (*QueueItem, error) {
+	id = id.canonical()
 	return scanQueueItem(s.db.QueryRow(
 		`SELECT `+queueCols+` FROM queue
-         WHERE tmdb_id=? AND media_type=? AND season=? AND episode=? AND requested_by=?
+         WHERE provider=? AND provider_id=? AND media_type=? AND season=? AND episode=? AND requested_by=?
            AND status IN ('pending','processing')
          ORDER BY created_at DESC LIMIT 1`,
-		tmdbID, mediaType, season, episode, requester))
+		id.Provider, id.ProviderID, id.MediaType, id.Season, id.Episode, requester))
 }
 
 // ClearTerminalQueue deletes finished (done|failed|cancelled) queue rows for an identity.
@@ -1456,10 +1825,21 @@ func (s *Store) ActiveQueueItem(tmdbID int, mediaType string, season, episode in
 // or duplicate "Completed" entry for a title the library has since resolved. In-flight rows
 // (pending|processing) are left untouched.
 func (s *Store) ClearTerminalQueue(tmdbID int, mediaType string, season, episode int) error {
+	return s.ClearTerminalQueueByIdentity(TMDBIdentity(tmdbID, mediaType, season, episode))
+}
+
+// ClearTerminalQueueByIdentity is ClearTerminalQueue keyed on the full
+// provider-qualified identity. This one is a DELETE, so getting the key wrong destroys
+// data rather than merely failing to find it: keyed on tmdb_id alone, a fresh request
+// for one catalogue's title 1622 would wipe another catalogue's finished rows for its
+// unrelated title 1622 out of the user's history.
+func (s *Store) ClearTerminalQueueByIdentity(id Identity) error {
+	id = id.canonical()
 	_, err := s.db.Exec(
 		`DELETE FROM queue
-         WHERE tmdb_id=? AND media_type=? AND season=? AND episode=? AND status IN ('done','failed','cancelled')`,
-		tmdbID, mediaType, season, episode)
+         WHERE provider=? AND provider_id=? AND media_type=? AND season=? AND episode=?
+           AND status IN ('done','failed','cancelled')`,
+		id.Provider, id.ProviderID, id.MediaType, id.Season, id.Episode)
 	return err
 }
 
@@ -1479,6 +1859,11 @@ func scanSubscription(sc scanner) (*Subscription, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Derived, not stored — the subscriptions table has no provider columns yet, and
+	// UpsertSubscription refuses anything but TMDB, so this is the only value it can
+	// legitimately have. Filling it in here keeps the JSON shape identical to Item and
+	// QueueItem instead of leaving a field that is empty for no reason a client can see.
+	s.SetTMDBIdentity(s.TMDBID)
 	s.IsAiring = airing == 1
 	if lastChecked.Valid {
 		s.LastChecked = &lastChecked.Time
@@ -1487,7 +1872,25 @@ func scanSubscription(sc scanner) (*Subscription, error) {
 }
 
 // UpsertSubscription creates or refreshes a subscription (idempotent per tmdb_id+season).
+//
+// It reconciles the identity like the other write paths, and then REFUSES anything that
+// is not TMDB. That refusal is the honest thing to do rather than a limitation to
+// apologise for: the table's uniqueness constraint is UNIQUE(tmdb_id, season), so a
+// non-TMDB subscription would be stored with tmdb_id 0 and would collide, season for
+// season, with every other non-TMDB subscription — the exact silent collapse this whole
+// change exists to prevent, just moved one table over. Widening it means rebuilding that
+// constraint, which is a table rebuild rather than an additive column, so it is a
+// separate change. Until then a caller finds out immediately instead of losing rows.
 func (s *Store) UpsertSubscription(sub *Subscription) error {
+	if err := reconcileIdentity(&sub.Provider, &sub.ProviderID, &sub.TMDBID); err != nil {
+		return err
+	}
+	if sub.Provider != ProviderTMDB {
+		return fmt.Errorf(
+			"store: subscriptions are TMDB-only for now; provider %q cannot be subscribed to "+
+				"(the table's UNIQUE(tmdb_id, season) constraint has no provider dimension yet)",
+			sub.Provider)
+	}
 	_, err := s.db.Exec(`
 	INSERT INTO subscriptions (tmdb_id, season, title, poster_url, library_name, requested_by, is_airing)
 	VALUES (?, ?, ?, ?, ?, ?, 1)
