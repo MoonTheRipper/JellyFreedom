@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -160,16 +161,35 @@ func migrateStrmTokens(db *store.Store, cfg *config.Config) {
 	slog.Info("play capability tokens are ENFORCED on /play")
 }
 
-// ── Jellyfin webhook authentication ───────────────────────────────────────────
+// ── Machine-caller shared secrets ─────────────────────────────────────────────
+//
+// Two endpoints in this program are called by a PROGRAM rather than by a browser: the
+// Jellyfin webhook, and the external-provider ingest API. Neither can hold a session —
+// Jellyfin's webhook plugin has no way to log in, and a daemon should not be storing a
+// human's password — so both are authenticated by a secret generated on first run,
+// stored in the settings table, shown to an admin once through the dashboard, and
+// presented in a request header.
+//
+// The generation and the comparison live in ONE place each, below, so that a future
+// third machine caller cannot arrive with its own subtly weaker copy: a comparison that
+// forgot to be constant-time, or one that treated a missing secret as "no auth
+// required". Both of those have shipped in real systems and both are one careless
+// copy-paste away.
 
 const webhookSecretSetting = "webhook.secret"
 
 // WebhookHeader is the header Jellyfin's webhook plugin is configured to send.
 const WebhookHeader = "X-JellyFreedom-Token"
 
-// ensureWebhookSecret generates the shared secret on first run and returns it.
-func ensureWebhookSecret(db *store.Store) (string, error) {
-	v, err := db.GetSetting(webhookSecretSetting)
+// ensureSharedSecret generates a 24-byte random secret for key on first run, persists
+// it, and returns whatever is stored.
+//
+// 24 bytes from crypto/rand is 192 bits of entropy, rendered as 48 hex characters. That
+// is far past brute force over a network, which matters because these endpoints have no
+// rate limit and no lockout: the secret's own size is the entire defence against
+// guessing, so it is sized to make guessing not worth modelling.
+func ensureSharedSecret(db *store.Store, key string) (string, error) {
+	v, err := db.GetSetting(key)
 	if err != nil {
 		return "", err
 	}
@@ -181,10 +201,43 @@ func ensureWebhookSecret(db *store.Store) (string, error) {
 		return "", err
 	}
 	v = hex.EncodeToString(b)
-	if err := db.SetSetting(webhookSecretSetting, v); err != nil {
+	if err := db.SetSetting(key, v); err != nil {
 		return "", err
 	}
 	return v, nil
+}
+
+// sharedSecretMatch compares a presented secret against the stored one, in constant
+// time, and FAILS CLOSED on every abnormal case.
+//
+// The three refusals are all deliberate and all mean "no":
+//
+//   - The setting could not be read. A database error is not permission to proceed.
+//   - No secret is stored at all. An endpoint with no secret configured is CLOSED, not
+//     open — the opposite reading turns a failed first-run initialisation into an
+//     unauthenticated, state-changing, file-writing endpoint.
+//   - The caller presented nothing. Checked explicitly so that an empty presented value
+//     can never compare equal to an empty stored one.
+//
+// hmac.Equal is subtle.ConstantTimeCompare, so a wrong secret takes the same time to
+// reject regardless of how many leading bytes were right. A byte-by-byte == would leak
+// the secret one character at a time to a caller who can measure the difference, and
+// these endpoints are reachable from anywhere the orchestrator's port is.
+func sharedSecretMatch(db *store.Store, key, got string) bool {
+	want, err := db.GetSetting(key)
+	if err != nil {
+		slog.Error("shared secret: could not read the stored value", "setting", key, "err", err)
+		return false
+	}
+	if want == "" || got == "" {
+		return false
+	}
+	return hmac.Equal([]byte(got), []byte(want))
+}
+
+// ensureWebhookSecret generates the shared secret on first run and returns it.
+func ensureWebhookSecret(db *store.Store) (string, error) {
+	return ensureSharedSecret(db, webhookSecretSetting)
 }
 
 // webhookAuthorised validates the shared secret on a Jellyfin webhook call.
@@ -194,21 +247,175 @@ func ensureWebhookSecret(db *store.Store) (string, error) {
 // cannot use a session — Jellyfin's plugin has no way to log in — so a shared secret in
 // a custom header, which the plugin does support, is the mechanism.
 func webhookAuthorised(db *store.Store, r *http.Request) bool {
-	want, err := db.GetSetting(webhookSecretSetting)
-	if err != nil {
-		slog.Error("webhook: could not read the shared secret", "err", err)
-		return false
-	}
-	if want == "" {
-		// Fail CLOSED: no secret configured means the endpoint is closed, not open.
-		return false
-	}
 	got := r.Header.Get(WebhookHeader)
 	if got == "" {
 		// Some deployments can only add a query parameter to the webhook URL.
 		got = r.URL.Query().Get("token")
 	}
-	return got != "" && hmac.Equal([]byte(got), []byte(want))
+	return sharedSecretMatch(db, webhookSecretSetting, got)
+}
+
+// ── External-provider ingest authentication ───────────────────────────────────
+
+const ingestSecretSetting = "ingest.secret"
+
+// IngestHeader is the header a provider daemon presents its secret in.
+const IngestHeader = "X-JellyFreedom-Ingest"
+
+// ensureIngestSecret generates the ingest secret on first run and returns it.
+func ensureIngestSecret(db *store.Store) (string, error) {
+	return ensureSharedSecret(db, ingestSecretSetting)
+}
+
+// ingestAuthorised validates the shared secret on an ingest API call.
+//
+// Header ONLY, with no query-parameter fallback — which is the one place this
+// deliberately differs from webhookAuthorised. The webhook has that fallback because
+// some Jellyfin deployments genuinely cannot set a custom header; a daemon written
+// against this API always can. A secret in a query string is a secret in every access
+// log, every proxy log and every Referer, and there is no reason to accept one here.
+func ingestAuthorised(db *store.Store, r *http.Request) bool {
+	return sharedSecretMatch(db, ingestSecretSetting, r.Header.Get(IngestHeader))
+}
+
+// ── External-provider ingest input validation ─────────────────────────────────
+//
+// Everything below treats the request body as HOSTILE. The ingest caller is trusted to
+// the extent that it holds the secret, and no further: it names a file that gets
+// written, a library it gets written into, a magnet that gets handed to TorrServer, and
+// a poster URL that gets rendered in a browser. Each of those is a different sink with a
+// different dangerous character set, so each field is validated against the sink it
+// reaches rather than against one generic notion of "clean".
+
+// Field bounds. Every one of these is a length, and every one of them exists because
+// the unbounded version is a real failure and not a theoretical one:
+//
+//   - A title becomes a directory name AND a filename; unbounded, it is ENAMETOOLONG at
+//     best (internal/library caps it too — this is the earlier, louder refusal).
+//   - A poster URL is echoed into the web UI's <img src>; unbounded, it is a row that
+//     bloats every library listing for everyone.
+//   - A magnet is stored and later placed in an outbound request to TorrServer.
+//   - Season, episode and file index are rendered into a path and an upstream query.
+const (
+	maxIngestBody       = 16 << 10 // 16 KiB — the largest legitimate body is well under 2 KiB
+	maxIngestTitleLen   = 200      // runes, not bytes: a CJK title is short in runes and long in bytes
+	maxIngestPosterLen  = 512
+	maxIngestMagnetLen  = 4096
+	maxIngestReleaseLen = 300
+	maxIngestSeasonOrEp = 9999
+	maxIngestFileIndex  = 9999
+)
+
+// yearRe accepts a four-digit year or nothing at all. Tight on purpose: the year is
+// concatenated into the .strm directory name, and "any short string" would put arbitrary
+// text there for no benefit — nothing in the system reads a year that is not a year.
+var yearRe = regexp.MustCompile(`^[0-9]{4}$`)
+
+// hasControlChars reports whether s contains any C0/C1 control character.
+//
+// Applied to every free-text field that is stored and later logged. internal/library
+// strips controls out of the FILENAME, but the untouched string still reaches slog and
+// the JSON API, and a '\n' in a title is a forged extra line in the server log — the
+// oldest way there is to make an audit trail say something it did not.
+func hasControlChars(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return true
+		}
+	}
+	return false
+}
+
+// validPosterURL reports whether u is a poster URL safe to store and hand to a browser.
+//
+// The scheme allowlist is the load-bearing part. This string ends up as the src of an
+// <img> in the media UI, and "javascript:" and "data:text/html" in that position are
+// script execution in the session of whoever is looking at the library — from an input
+// supplied by a daemon that is only supposed to be naming pictures. An allowlist of
+// http and https is the only version of this check that cannot be walked around with a
+// scheme nobody thought of.
+func validPosterURL(u string) bool {
+	if len(u) > maxIngestPosterLen || hasControlChars(u) {
+		return false
+	}
+	p, err := url.Parse(u)
+	if err != nil || p.Host == "" {
+		return false
+	}
+	return p.Scheme == "http" || p.Scheme == "https"
+}
+
+// magnetInfoHash extracts the v1 info hash from a magnet link, or reports failure.
+//
+// It parses the magnet as a URL rather than pattern-matching the string, so a caller
+// cannot hide a second xt inside something that merely LOOKS like a query. url.Parse
+// also rejects raw control characters, which matters because this string is later
+// interpolated into an outbound request to TorrServer.
+//
+// Only the canonical 40-hex btih form is accepted. Base32 magnets exist, but every
+// other part of this system — the items table, /proxy/stream, torrserver.ValidInfoHash —
+// speaks 40-hex, and accepting a spelling we would then have to convert means two
+// spellings of one identity and a real chance of caching a release under a hash that
+// does not match the one playback looks up.
+func magnetInfoHash(magnet string) (string, bool) {
+	u, err := url.Parse(magnet)
+	if err != nil || !strings.EqualFold(u.Scheme, "magnet") {
+		return "", false
+	}
+	for _, xt := range u.Query()["xt"] {
+		const prefix = "urn:btih:"
+		if len(xt) <= len(prefix) || !strings.EqualFold(xt[:len(prefix)], prefix) {
+			continue
+		}
+		h := xt[len(prefix):]
+		if torrserver.ValidInfoHash(h) {
+			return strings.ToLower(h), true
+		}
+	}
+	return "", false
+}
+
+// errIngestSource is the single refusal for every way the playable source can be wrong.
+// One message for all of them so the endpoint cannot be used as an oracle that
+// distinguishes "your magnet parsed but the hash was bad" from "your hash disagreed
+// with your magnet" — and, more prosaically, so the message never contains the input.
+var errIngestSource = errors.New("a magnet with a 40-hex btih info hash, or an info_hash, is required")
+
+// ingestSource validates the caller's playable source and returns the canonical pair.
+//
+// Either field alone is enough, and both together must AGREE. That last rule is not
+// pedantry: the info hash is what /play looks the torrent up by and what the orphan
+// cleaner counts references with, while the magnet is what actually gets added to
+// TorrServer. If the two named different torrents, JellyFreedom would add one and then
+// stream, drop and account for the other — permanently, and silently.
+//
+// When only a hash is given, the magnet is synthesised from it. A bare
+// magnet:?xt=urn:btih:<hash> is a working magnet on its own (DHT and the configured
+// retrackers supply the peers), so this is a real magnet and not a placeholder.
+func ingestSource(infoHash, magnet string) (hash, canonicalMagnet string, err error) {
+	infoHash = strings.TrimSpace(infoHash)
+	magnet = strings.TrimSpace(magnet)
+	if len(magnet) > maxIngestMagnetLen {
+		return "", "", errIngestSource
+	}
+	if infoHash != "" && !torrserver.ValidInfoHash(infoHash) {
+		return "", "", errIngestSource
+	}
+	infoHash = strings.ToLower(infoHash)
+	if magnet == "" {
+		if infoHash == "" {
+			return "", "", errIngestSource
+		}
+		return infoHash, "magnet:?xt=urn:btih:" + infoHash, nil
+	}
+	fromMagnet, ok := magnetInfoHash(magnet)
+	if !ok {
+		return "", "", errIngestSource
+	}
+	if infoHash != "" && infoHash != fromMagnet {
+		return "", "", errIngestSource
+	}
+	return fromMagnet, magnet, nil
 }
 
 // ── VPN config sanitisation (privilege contract, layer 1) ─────────────────────

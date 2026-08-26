@@ -266,6 +266,43 @@ Set these in a systemd drop-in for the relevant unit if you need them.
 
 ---
 
+## External-provider ingest
+
+**There is no `config.yaml` key for this.** It is listed here so you do not go looking for
+one.
+
+A separate local daemon can register titles it has resolved itself, under its own provider
+namespace, through `PUT /api/provider/{provider}/items/{id}`. JellyFreedom stores the row,
+writes the `.strm` and plays it from the info hash the caller supplied; it performs no
+metadata lookup and no indexer search for these items. The full contract and the validation
+rules are in [`SECURITY.md`](../SECURITY.md#the-external-provider-ingest-api).
+
+The one thing you need is the **shared secret**, which the caller presents in an
+`X-JellyFreedom-Ingest` header. It follows the same rules as the Jellyfin webhook secret:
+
+| | |
+|---|---|
+| Where it lives | the `settings` table in `/var/lib/jellyfreedom/jellyfreedom.db`, key `ingest.secret` |
+| How it is created | 24 random bytes, generated automatically on first run. There is nothing to configure. |
+| How to read it | `GET /api/settings` with an admin session returns it under `ingest`. The dashboard does not render it yet. |
+| If it is missing | the endpoint is **closed**, not open — every call is refused. |
+
+To rotate it, delete the row and restart; a new one is generated on the next start, and
+every daemon using the old one stops working until you give it the new value.
+
+```bash
+sudo apt-get install -y sqlite3        # not installed by default
+sudo sqlite3 /var/lib/jellyfreedom/jellyfreedom.db \
+  "delete from settings where key = 'ingest.secret';"
+sudo systemctl restart jellyfreedom
+```
+
+The libraries a daemon may write into are exactly the ones in `libraries` above, and the
+library it names must match the media type — a `tv` item cannot be registered into a `movie`
+library. Naming no library resolves to the `default: true` library for that type.
+
+---
+
 ## Command-line flags
 
 The service runs the orchestrator with all three set; you only need these for development.

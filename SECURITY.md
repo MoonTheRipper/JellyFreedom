@@ -82,6 +82,10 @@ registered falls through to `RequireAdmin`** — the default is closed.
 - Streaming: `GET /play/movie/{tmdb}`, `GET /play/tv/{tmdb}/{season}/{episode}`, and the
   legacy `GET /proxy/stream` — see *Streaming routes* below.
 - `POST /webhook/jellyfin` — session-less by necessity, but secret-gated. See below.
+- `PUT` / `DELETE /api/provider/{provider}/items/{id}` and
+  `GET /api/provider/{provider}/items` — the external-provider ingest API. Session-less by
+  necessity (the caller is a daemon), but secret-gated and fail-closed. See
+  *The external-provider ingest API* below.
 - `POST /api/auth/login` — see *Sessions and login* below.
 
 **Session required (`RequireAuth`):** `POST /request`, `POST /request/season`, the queue
@@ -210,13 +214,108 @@ anyone who knows an infohash on your box can stream it.
 compared in constant time, failing closed (`cmd/orchestrator/helpers.go`). The secret is
 generated on first run and stored in the settings table.
 
-> **Known gap:** the secret is **not surfaced anywhere a user can reach it.** It is not in
-> `GET /api/settings`, not in the dashboard, and nothing in `web/` mentions it. The only way
-> to read it is a direct SQLite query against `/var/lib/jellyfreedom/jellyfreedom.db` — and
-> `sqlite3` is neither installed nor in the installer's package list, so you would have to
-> `apt-get install sqlite3` first. **In practice the webhook cannot currently be configured**,
-> which means it fails closed and playback-stopped torrent cleanup does not happen. This is
-> tracked in `docs/dev/roadmap.md`. It is a usability bug, not a hole.
+The secret **is** surfaced to an admin: `GET /api/settings` returns it under `webhook`
+(that whole handler is `RequireAdmin`), and the dashboard renders it read-only under
+*Settings → Jellyfin webhook*. Earlier releases did not, which made the webhook impossible
+to configure without a direct SQLite query; that is fixed.
+
+### The external-provider ingest API
+
+`PUT /api/provider/{provider}/items/{id}`, `DELETE /api/provider/{provider}/items/{id}` and
+`GET /api/provider/{provider}/items` let a **separate local daemon register titles it has
+resolved itself**, under its own provider namespace. JellyFreedom does no metadata lookup
+and no indexer search for these rows — the caller supplies the identity, the display
+metadata and the magnet, and JellyFreedom stores the row, writes the `.strm` and serves
+playback from the cached info hash. That is what makes the facility generic: it works for
+any catalogue JellyFreedom knows nothing about. It also means a stale row is the caller's
+problem to re-register, because JellyFreedom cannot re-resolve what it cannot search for.
+
+**This endpoint writes files into a Jellyfin media root and inserts library rows on behalf
+of its caller**, so it is worth understanding exactly what gates it.
+
+**Authentication.** A shared secret in an `X-JellyFreedom-Ingest` header, compared in
+constant time (`sharedSecretMatch` in `cmd/orchestrator/helpers.go` — the same comparison
+the Jellyfin webhook uses). It is **not** an admin session, because the caller is a daemon
+and has no way to log in. The secret is 24 random bytes generated on first run and stored
+in the `settings` table under `ingest.secret`; `GET /api/settings` returns it to an admin
+under `ingest`.
+
+It **fails closed** on every abnormal case: a settings read error, no stored secret at all,
+and an absent or empty header are all refusals. Unlike the webhook there is **no
+query-parameter fallback** — a secret in a query string is a secret in every access log.
+
+> **Note:** the dashboard does not yet render the `ingest` block, so today the secret has to
+> be read from `GET /api/settings` (admin session) rather than from a settings card. The API
+> exposes it; the UI has not caught up.
+
+**A holder of this secret can do everything the API describes**, for any provider namespace
+except `tmdb`, into any library the operator has configured. Treat it as a credential of the
+same weight as an admin session for library *content*, and store it as such in whatever
+daemon you point at this. It grants no dashboard access, no VPN control and no user
+management.
+
+**What is validated, and against which sink:**
+
+| Field | Rule | Why |
+|---|---|---|
+| `{provider}` | `library.ValidProvider` — `[a-z0-9]{1,16}`; `tmdb` additionally refused | The **same** function `/play/p/{provider}` and the capability-token encoder use, not a second copy. The token is an HMAC over a `:`-joined identity, so a looser charset here would mint `.strm` files whose identities collide under that encoding. `tmdb` is refused because that namespace is owned by the built-in resolve pipeline and its `.strm` URLs carry the frozen legacy tokens. |
+| `{id}` | `library.ValidProviderID` — `[A-Za-z0-9_-]{1,64}` | Same reasoning. Every allowed character is RFC 3986 unreserved, so the routed (encoded) path and the signed (decoded) identity cannot differ. |
+| `title` | required, ≤ 200 runes, no control characters; then sanitised into one path component | It reaches the **filesystem**. See *Path handling* below. Control characters are refused because the untouched string also reaches the server log, where a newline is a forged log line. |
+| `year` | four digits, or omitted | Concatenated into the directory name. Nothing reads a year that is not a year. |
+| `poster_url` | ≤ 512 bytes, no control characters, absolute, scheme **must be** `http` or `https` | It becomes an `<img src>` in the media UI. `javascript:` or `data:text/html` in that position is script execution in a viewer's session. An allowlist is the only version of this check that cannot be walked around with a scheme nobody thought of. |
+| `magnet` / `info_hash` | at least one; the hash must pass `torrserver.ValidInfoHash` (40 hex); a magnet is parsed as a URL and its `xt=urn:btih:` extracted; if both are given they must **agree** | The hash is what `/play` looks the torrent up by; the magnet is what is handed to TorrServer. If they named different torrents, JellyFreedom would add one and account for the other, permanently and silently. A bare hash synthesises `magnet:?xt=urn:btih:<hash>`. |
+| `season` / `episode` | TV only, 0–9999; **forced to 0 for a movie** | A movie play route has no season or episode to send, so it always looks up `(0, 0)`; a movie row stored under season 3 would exist and never once be found by playback. |
+| `library` | must be a configured library **of the matching type**; empty resolves to the configured default | See *Library authorisation* below. |
+| `file_index` | 0–9999 | Rendered into an upstream query. |
+| request body | **16 KiB**, well under the app-wide 1 MiB | Nothing legitimate here is close to it. |
+
+**Library authorisation.** A name that does not exist and a name whose type is wrong for the
+media both return the identical `400 unknown library` — the same value, and therefore the
+same bytes, the browser-facing request handlers return. A caller who could tell those apart
+could enumerate every library on the box by guessing names, which is the knowledge the
+per-library gate exists to withhold. There is no per-*user* check, because there is no user:
+the secret authenticates a daemon, and "which libraries may it use" is answered by "the ones
+the operator configured".
+
+**Path handling.** `title` is the only caller-supplied string that reaches the filesystem,
+and it is handled in two independent layers in `internal/library/writer.go`:
+
+1. `safeName` reduces it to exactly one path component: it strips path separators, `:`, the
+   Windows-illegal set, C0 controls, `DEL`, and zero-width/bidi-override characters; trims
+   trailing dots and spaces; caps the result at **240 bytes** on a rune boundary (so the
+   longest thing built from it, `<name> S00E00.strm`, stays under `NAME_MAX`); escapes DOS
+   device names; and substitutes a placeholder if nothing survives. It can never return `""`,
+   `.`, `..`, or any run of dots.
+2. `containedPath` then joins the result onto the library directory and **refuses the write**
+   if `filepath.Clean` shows it landed outside (`ErrUnsafePath`).
+
+Layer 2 should be unreachable, and that is the point: layer 1 is a string transformation, one
+forgotten character class away from being wrong, while layer 2 is a statement about the
+result that stays true regardless. `internal/library/writer_test.go` asserts the `safeName`
+contract directly — not merely through its callers — and `cmd/orchestrator/ingest_test.go`
+drives traversal attempts through the live endpoint with a canary file outside the library.
+
+> **Fixed as part of this work:** `safeName` used to be a character filter and nothing more.
+> `safeName("..")` returned `".."`, and `filepath.Join(dir, "..")` is *dir's parent*. It was
+> not exploitable through the two existing callers, because both format the name as
+> `"%s (%s)"` first and the parentheses survive filtering — so no input could produce a pure
+> dot run. But the safety of the whole write path rested on a format string in the caller
+> rather than on the function whose name claims to provide it, and the first caller to pass a
+> bare title through would have inherited a directory traversal with no warning. It was also
+> unbounded (an over-`NAME_MAX` name simply failed the write) and could return `""` (which
+> writes a dotfile into the library root).
+
+**Errors.** No refusal echoes caller input back, and none contains a server filesystem path;
+the underlying `*os.PathError` is logged whole server-side and answered generically. The
+several ways a magnet or hash can be wrong share **one** message, so the endpoint is not an
+oracle about which check failed.
+
+**What it deliberately does not do.** It makes no outbound call to TorrServer — dropping a
+torrent no library row references is already `taskOrphanCleanup`'s job, and putting a network
+call to another service inside a delete is how a delete starts failing for reasons unrelated
+to the delete. Rows it writes are `ready` and playable from their cached hash, but `/play`
+still answers `501` if it has to *re-resolve* one, because no metadata provider is registered
+for that identity.
 
 ### First-run admin claim is a race
 
@@ -314,7 +413,7 @@ untrusted URLs.
 | What | Path | Protection |
 |---|---|---|
 | TMDB / Prowlarr / Jellyfin API keys (file config) | `/etc/jellyfreedom/config.yaml` | mode `640`, owned by the service user |
-| Keys set via the dashboard, password hashes, sessions, the play HMAC key, the webhook secret | `/var/lib/jellyfreedom/jellyfreedom.db` | directory owned by the service user |
+| Keys set via the dashboard, password hashes, sessions, the play HMAC key, the webhook secret, the provider-ingest secret | `/var/lib/jellyfreedom/jellyfreedom.db` | directory owned by the service user |
 | Uploaded WireGuard configs, **including private keys** | `/var/lib/jellyfreedom/vpnconfigs/` | mode `700`, owned by the service user |
 
 Keys entered in the dashboard are stored server-side and never returned to the browser.
