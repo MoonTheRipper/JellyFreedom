@@ -796,3 +796,292 @@ func TestDeleteFinishedQueueRespectsOwnership(t *testing.T) {
 		}
 	})
 }
+
+// ── The provider dimension ────────────────────────────────────────────────────
+
+const testUUID = "cc5a1adf-5ba4-441f-bcf0-6ade6fcd1e6c"
+
+// TestEnqueueDerivesProviderFromTMDBID pins the invariant that makes the whole change
+// invisible to cmd/orchestrator: a caller that builds a bare QueueItem{TMDBID: n} — which
+// every call site in the orchestrator does — must come out of Enqueue with a complete,
+// canonical identity. The consistency is enforced at the write path rather than
+// documented, so there is no way to set one half and forget the other.
+func TestEnqueueDerivesProviderFromTMDBID(t *testing.T) {
+	s := newTestStore(t)
+	q := &QueueItem{TMDBID: 1622, MediaType: "tv", Title: "Supernatural",
+		Season: 14, Episode: 1, RequestedBy: "alice"}
+	id, err := s.Enqueue(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The caller's own struct is reconciled in place, so it does not go on to write a
+	// half-set identity somewhere else.
+	if q.Provider != ProviderTMDB || q.ProviderID != "1622" {
+		t.Fatalf("caller's struct left at (%q,%q), want (\"tmdb\",\"1622\")", q.Provider, q.ProviderID)
+	}
+	got, err := s.GetQueueItem(id)
+	if err != nil || got == nil {
+		t.Fatalf("GetQueueItem: %v %v", got, err)
+	}
+	if got.Provider != ProviderTMDB || got.ProviderID != "1622" || got.TMDBID != 1622 {
+		t.Fatalf("stored identity = (%q,%q,%d)", got.Provider, got.ProviderID, got.TMDBID)
+	}
+}
+
+// TestEnqueueFromProviderPairRecoversTMDBID is the mirror image: a caller that speaks in
+// provider terms about a TMDB row still gets the integer back, because the .strm URL and
+// the web UI both need it.
+func TestEnqueueFromProviderPairRecoversTMDBID(t *testing.T) {
+	s := newTestStore(t)
+	q := &QueueItem{Provider: ProviderTMDB, ProviderID: "1622", MediaType: "tv",
+		Season: 14, Episode: 1, RequestedBy: "alice"}
+	id, err := s.Enqueue(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.TMDBID != 1622 {
+		t.Fatalf("tmdb_id = %d, want 1622 recovered from the provider id", q.TMDBID)
+	}
+	got, _ := s.GetQueueItem(id)
+	if got == nil || got.TMDBID != 1622 {
+		t.Fatalf("stored tmdb_id = %+v, want 1622", got)
+	}
+}
+
+// TestTwoProvidersMayShareANumericID is the point of the entire change. TMDB's 1622 and
+// some other catalogue's 1622 are different shows; both must be able to sit in the queue
+// at once, and neither may be mistaken for the other.
+func TestTwoProvidersMayShareANumericID(t *testing.T) {
+	s := newTestStore(t)
+
+	tmdbID, err := s.Enqueue(&QueueItem{
+		TMDBID: 1622, MediaType: "tv", Title: "Supernatural",
+		Season: 14, Episode: 1, RequestedBy: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := &QueueItem{MediaType: "tv", Title: "Something Else", Season: 14, Episode: 1, RequestedBy: "alice"}
+	other.SetProviderIdentity("anidb", "1622")
+	anidbID, err := s.Enqueue(other)
+	if err != nil {
+		t.Fatalf("a second provider's identically-numbered title was rejected: %v", err)
+	}
+	if anidbID == tmdbID {
+		t.Fatal("the second provider's row collided with TMDB's — the index is still keyed on the number alone")
+	}
+
+	rows, err := s.ListAllQueue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("%d queue rows, want 2 — one of the two identities was swallowed", len(rows))
+	}
+
+	// Each lookup finds its own row and only its own.
+	fromTMDB, err := s.ActiveQueueItem(1622, "tv", 14, 1, "alice")
+	if err != nil || fromTMDB == nil {
+		t.Fatalf("ActiveQueueItem(tmdb 1622): %v %v", fromTMDB, err)
+	}
+	if fromTMDB.ID != tmdbID || fromTMDB.Title != "Supernatural" {
+		t.Fatalf("the TMDB lookup returned the other provider's row: %+v", fromTMDB)
+	}
+	fromAnidb, err := s.ActiveQueueItemByIdentity(
+		Identity{Provider: "anidb", ProviderID: "1622", MediaType: "tv", Season: 14, Episode: 1}, "alice")
+	if err != nil || fromAnidb == nil {
+		t.Fatalf("ActiveQueueItemByIdentity(anidb 1622): %v %v", fromAnidb, err)
+	}
+	if fromAnidb.ID != anidbID || fromAnidb.Title != "Something Else" {
+		t.Fatalf("the anidb lookup returned the other provider's row: %+v", fromAnidb)
+	}
+}
+
+// TestUUIDProviderIDRoundTrips: a UUID must survive storage byte for byte. Put in an
+// INTEGER column it would have been coerced to 0 without a word of complaint, which is
+// the precise failure this change exists to prevent.
+func TestUUIDProviderIDRoundTrips(t *testing.T) {
+	s := newTestStore(t)
+	q := &QueueItem{MediaType: "tv", Title: "UUID Show", Season: 1, Episode: 1, RequestedBy: "alice"}
+	q.SetProviderIdentity("anidb", testUUID)
+	id, err := s.Enqueue(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetQueueItem(id)
+	if err != nil || got == nil {
+		t.Fatalf("GetQueueItem: %v %v", got, err)
+	}
+	if got.ProviderID != testUUID {
+		t.Fatalf("provider_id came back %q, want %q", got.ProviderID, testUUID)
+	}
+	if got.TMDBID != 0 {
+		t.Fatalf("a non-TMDB row picked up tmdb_id %d", got.TMDBID)
+	}
+	// And a second UUID row is a different identity, not the same coerced zero.
+	q2 := &QueueItem{MediaType: "tv", Title: "Other UUID Show", Season: 1, Episode: 1, RequestedBy: "alice"}
+	q2.SetProviderIdentity("anidb", "11111111-2222-3333-4444-555555555555")
+	id2, err := s.Enqueue(q2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id2 == id {
+		t.Fatal("two different UUIDs collapsed onto one identity")
+	}
+}
+
+// TestUniqueIdentityIndexIsPerProvider: the index must still stop a duplicate in-flight
+// row (Enqueue hands back the incumbent), and must still do so per provider.
+func TestUniqueIdentityIndexIsPerProvider(t *testing.T) {
+	s := newTestStore(t)
+	first, err := s.Enqueue(&QueueItem{TMDBID: 1622, MediaType: "tv", Title: "Supernatural",
+		Season: 14, Episode: 1, RequestedBy: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.Enqueue(&QueueItem{TMDBID: 1622, MediaType: "tv", Title: "Supernatural",
+		Season: 14, Episode: 1, RequestedBy: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != first {
+		t.Fatalf("a repeat request inserted row %d beside the incumbent %d", again, first)
+	}
+
+	dup := &QueueItem{MediaType: "tv", Title: "Anidb Show", Season: 14, Episode: 1, RequestedBy: "alice"}
+	dup.SetProviderIdentity("anidb", testUUID)
+	a1, err := s.Enqueue(dup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dup2 := &QueueItem{MediaType: "tv", Title: "Anidb Show", Season: 14, Episode: 1, RequestedBy: "alice"}
+	dup2.SetProviderIdentity("anidb", testUUID)
+	a2, err := s.Enqueue(dup2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a2 != a1 {
+		t.Fatalf("a repeat request for a non-TMDB identity inserted row %d beside %d", a2, a1)
+	}
+	rows, _ := s.ListAllQueue()
+	if len(rows) != 2 {
+		t.Fatalf("%d queue rows, want exactly 2", len(rows))
+	}
+}
+
+// TestClearTerminalQueueDoesNotCrossProviders. This one is a DELETE, so a key that is
+// too broad destroys history rather than merely failing to find it.
+func TestClearTerminalQueueDoesNotCrossProviders(t *testing.T) {
+	s := newTestStore(t)
+	tmdbRow, err := s.Enqueue(&QueueItem{TMDBID: 1622, MediaType: "tv", Title: "Supernatural",
+		Season: 14, Episode: 1, RequestedBy: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := &QueueItem{MediaType: "tv", Title: "Anidb Show", Season: 14, Episode: 1, RequestedBy: "alice"}
+	other.SetProviderIdentity("anidb", "1622")
+	anidbRow, err := s.Enqueue(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setQueueStatus(t, s, tmdbRow, "failed")
+	setQueueStatus(t, s, anidbRow, "failed")
+
+	if err := s.ClearTerminalQueue(1622, "tv", 14, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetQueueItem(tmdbRow); got != nil {
+		t.Fatal("the TMDB terminal row was not cleared")
+	}
+	got, err := s.GetQueueItem(anidbRow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("clearing TMDB's terminal rows deleted another provider's history")
+	}
+}
+
+// TestEpisodeActiveIsProviderScoped: the auto-fetch skip check must not think another
+// catalogue's episode 1 is this one.
+func TestEpisodeActiveIsProviderScoped(t *testing.T) {
+	s := newTestStore(t)
+	other := &QueueItem{MediaType: "tv", Title: "Anidb Show", Season: 14, Episode: 1, RequestedBy: "alice"}
+	other.SetProviderIdentity("anidb", "1622")
+	if _, err := s.Enqueue(other); err != nil {
+		t.Fatal(err)
+	}
+	active, err := s.EpisodeActive(1622, 14, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active {
+		t.Fatal("EpisodeActive(tmdb 1622) was satisfied by another provider's row")
+	}
+	active, err = s.ProviderEpisodeActive("anidb", "1622", 14, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !active {
+		t.Fatal("ProviderEpisodeActive did not see its own in-flight row")
+	}
+}
+
+// TestReconcileIdentityRejectsContradictions. These are programming errors, not user
+// input, and they are refused at the write path rather than silently normalised —
+// silently picking one of two identities is how a row ends up being two different shows
+// depending on who looks it up.
+func TestReconcileIdentityRejectsContradictions(t *testing.T) {
+	s := newTestStore(t)
+	cases := []struct {
+		name string
+		item QueueItem
+	}{
+		{"a non-TMDB row with no provider_id",
+			QueueItem{Provider: "anidb", MediaType: "tv", Title: "x", RequestedBy: "alice"}},
+		{"a row claiming both a provider id and a tmdb id",
+			QueueItem{Provider: "anidb", ProviderID: testUUID, TMDBID: 1622,
+				MediaType: "tv", Title: "x", RequestedBy: "alice"}},
+		{"a TMDB row whose two spellings disagree",
+			QueueItem{Provider: ProviderTMDB, ProviderID: "99", TMDBID: 1622,
+				MediaType: "tv", Title: "x", RequestedBy: "alice"}},
+		{"a TMDB row whose provider_id is not a number",
+			QueueItem{Provider: ProviderTMDB, ProviderID: testUUID,
+				MediaType: "tv", Title: "x", RequestedBy: "alice"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			item := c.item
+			if _, err := s.Enqueue(&item); err == nil {
+				t.Fatalf("Enqueue accepted a contradictory identity: %+v", item)
+			}
+		})
+	}
+	if rows, _ := s.ListAllQueue(); len(rows) != 0 {
+		t.Fatalf("a rejected row was written anyway: %d rows", len(rows))
+	}
+}
+
+// TestSubscriptionsRefuseNonTMDBProviders. The subscriptions table is not
+// provider-partitioned yet — UNIQUE(tmdb_id, season) has no room for one — so a
+// non-TMDB subscription would be stored as tmdb_id 0 and collide with every other
+// non-TMDB subscription for that season. Failing loudly beats losing rows.
+func TestSubscriptionsRefuseNonTMDBProviders(t *testing.T) {
+	s := newTestStore(t)
+	err := s.UpsertSubscription(&Subscription{
+		Provider: "anidb", ProviderID: testUUID, Season: 1, Title: "x", RequestedBy: "alice"})
+	if err == nil {
+		t.Fatal("a non-TMDB subscription was accepted into a TMDB-keyed table")
+	}
+	// TMDB subscriptions are unaffected, and read back with a derived identity.
+	if err := s.UpsertSubscription(&Subscription{
+		TMDBID: 1622, Season: 14, Title: "Supernatural", RequestedBy: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	subs, err := s.ListSubscriptions("alice", false)
+	if err != nil || len(subs) != 1 {
+		t.Fatalf("ListSubscriptions: %v %v", subs, err)
+	}
+	if subs[0].Provider != ProviderTMDB || subs[0].ProviderID != "1622" {
+		t.Fatalf("subscription identity = (%q,%q)", subs[0].Provider, subs[0].ProviderID)
+	}
+}

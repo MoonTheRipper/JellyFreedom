@@ -229,3 +229,192 @@ func TestUserPasswordHashNeverSerialised(t *testing.T) {
 		t.Fatalf("User lost its public fields: %s", b)
 	}
 }
+
+// ── The provider dimension ────────────────────────────────────────────────────
+
+// TestUpsertDerivesProviderFromTMDBID: the same write-path invariant Enqueue has. Every
+// Upsert call site in cmd/orchestrator builds an Item{TMDBID: n} literal and knows
+// nothing about providers; it must still produce a canonical identity.
+func TestUpsertDerivesProviderFromTMDBID(t *testing.T) {
+	s := newTestStore(t)
+	it := &Item{TMDBID: 1622, MediaType: "tv", Title: "Supernatural S14E01", Year: "2018",
+		StrmPath: "/tv/s14e01.strm", Status: "ready", Season: 14, Episode: 1, Updated: time.Now()}
+	if err := s.Upsert(it); err != nil {
+		t.Fatal(err)
+	}
+	if it.Provider != ProviderTMDB || it.ProviderID != "1622" {
+		t.Fatalf("caller's struct left at (%q,%q)", it.Provider, it.ProviderID)
+	}
+	got, err := s.GetByStrmPath("/tv/s14e01.strm")
+	if err != nil || got == nil {
+		t.Fatalf("GetByStrmPath: %v %v", got, err)
+	}
+	if got.Provider != ProviderTMDB || got.ProviderID != "1622" || got.TMDBID != 1622 {
+		t.Fatalf("stored identity = (%q,%q,%d)", got.Provider, got.ProviderID, got.TMDBID)
+	}
+}
+
+// TestItemIdentityIsProviderScoped: two catalogues' identically-numbered shows are two
+// library entries, and neither lookup may reach the other.
+func TestItemIdentityIsProviderScoped(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Upsert(&Item{
+		TMDBID: 1622, MediaType: "tv", Title: "Supernatural S14E01", Year: "2018",
+		StrmPath: "/tmdb/s14e01.strm", Status: "ready", Season: 14, Episode: 1, Updated: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	other := &Item{MediaType: "tv", Title: "Something Else S14E01", Year: "2019",
+		StrmPath: "/anidb/s14e01.strm", Status: "ready", Season: 14, Episode: 1, Updated: time.Now()}
+	other.SetProviderIdentity("anidb", "1622")
+	if err := s.Upsert(other); err != nil {
+		t.Fatal(err)
+	}
+
+	// The TMDB path — the one a live /play/tv/1622/14/1 URL takes — finds its own row.
+	viaTMDB, err := s.GetByIdentity(1622, "tv", 14, 1)
+	if err != nil || viaTMDB == nil {
+		t.Fatalf("GetByIdentity: %v %v", viaTMDB, err)
+	}
+	if viaTMDB.StrmPath != "/tmdb/s14e01.strm" {
+		t.Fatalf("the TMDB identity resolved to %q", viaTMDB.StrmPath)
+	}
+	viaProvider, err := s.GetByProviderIdentity(Identity{
+		Provider: "anidb", ProviderID: "1622", MediaType: "tv", Season: 14, Episode: 1})
+	if err != nil || viaProvider == nil {
+		t.Fatalf("GetByProviderIdentity: %v %v", viaProvider, err)
+	}
+	if viaProvider.StrmPath != "/anidb/s14e01.strm" {
+		t.Fatalf("the anidb identity resolved to %q", viaProvider.StrmPath)
+	}
+
+	// GetEpisode, which series/episode removal goes through, is scoped the same way.
+	ep, err := s.GetEpisode(1622, 14, 1)
+	if err != nil || ep == nil || ep.StrmPath != "/tmdb/s14e01.strm" {
+		t.Fatalf("GetEpisode crossed providers: %+v (%v)", ep, err)
+	}
+	// And so is the whole-title fetch that "remove this show" enumerates.
+	tmdbRows, err := s.ItemsByTMDB(1622, "tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tmdbRows) != 1 || tmdbRows[0].StrmPath != "/tmdb/s14e01.strm" {
+		t.Fatalf("ItemsByTMDB(1622) returned %d rows including another provider's", len(tmdbRows))
+	}
+	anidbRows, err := s.ItemsByTitle("anidb", "1622", "tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(anidbRows) != 1 || anidbRows[0].StrmPath != "/anidb/s14e01.strm" {
+		t.Fatalf("ItemsByTitle(anidb,1622) returned %d rows", len(anidbRows))
+	}
+}
+
+// TestItemUUIDProviderIDRoundTrips: the UUID must come back byte for byte, and the row
+// must not be reachable through TMDB's zero identity.
+func TestItemUUIDProviderIDRoundTrips(t *testing.T) {
+	s := newTestStore(t)
+	const uuid = "cc5a1adf-5ba4-441f-bcf0-6ade6fcd1e6c"
+	it := &Item{MediaType: "movie", Title: "UUID Movie", Year: "2024",
+		StrmPath: "/uuid/movie.strm", Status: "ready", Updated: time.Now()}
+	it.SetProviderIdentity("anidb", uuid)
+	if err := s.Upsert(it); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetByProviderIdentity(Identity{Provider: "anidb", ProviderID: uuid, MediaType: "movie"})
+	if err != nil || got == nil {
+		t.Fatalf("GetByProviderIdentity: %v %v", got, err)
+	}
+	if got.ProviderID != uuid {
+		t.Fatalf("provider_id came back %q, want %q — it was coerced", got.ProviderID, uuid)
+	}
+	if got.TMDBID != 0 {
+		t.Fatalf("a non-TMDB item picked up tmdb_id %d", got.TMDBID)
+	}
+	// GetByIdentity(0, …) is what a TMDB lookup for "id 0" would be. It must NOT find
+	// this row: that is the collapse an INTEGER provider column would have produced.
+	miss, err := s.GetByIdentity(0, "movie", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if miss != nil {
+		t.Fatalf("a TMDB lookup for id 0 reached a UUID-identified row: %+v", miss)
+	}
+}
+
+// TestSetTMDBIdentityKeepsTheThreeFieldsTogether covers the helper directly: there is no
+// sequence of calls on it that leaves an item with half an identity.
+func TestSetTMDBIdentityKeepsTheThreeFieldsTogether(t *testing.T) {
+	var it Item
+	it.SetTMDBIdentity(1622)
+	if it.TMDBID != 1622 || it.Provider != ProviderTMDB || it.ProviderID != "1622" {
+		t.Fatalf("SetTMDBIdentity left (%d,%q,%q)", it.TMDBID, it.Provider, it.ProviderID)
+	}
+	if got := it.Identity(); got != (Identity{Provider: "tmdb", ProviderID: "1622"}) {
+		t.Fatalf("Identity() = %+v", got)
+	}
+	// Switching to another provider must drop the TMDB id rather than leave the row
+	// claiming two identities at once.
+	it.SetProviderIdentity("anidb", "abc")
+	if it.TMDBID != 0 || it.Provider != "anidb" || it.ProviderID != "abc" {
+		t.Fatalf("SetProviderIdentity left (%d,%q,%q)", it.TMDBID, it.Provider, it.ProviderID)
+	}
+
+	var q QueueItem
+	q.SetTMDBIdentity(27205)
+	if q.TMDBID != 27205 || q.Provider != ProviderTMDB || q.ProviderID != "27205" {
+		t.Fatalf("QueueItem.SetTMDBIdentity left (%d,%q,%q)", q.TMDBID, q.Provider, q.ProviderID)
+	}
+	var sub Subscription
+	sub.SetTMDBIdentity(1622)
+	if sub.TMDBID != 1622 || sub.Provider != ProviderTMDB || sub.ProviderID != "1622" {
+		t.Fatalf("Subscription.SetTMDBIdentity left (%d,%q,%q)", sub.TMDBID, sub.Provider, sub.ProviderID)
+	}
+}
+
+// TestGetStatusByTMDBIDsStaysWithinTMDB: the search-badge endpoint speaks TMDB integers
+// and returns a map keyed on them, so it must not be answered by another provider's row
+// whose tmdb_id column is 0.
+func TestGetStatusByTMDBIDsStaysWithinTMDB(t *testing.T) {
+	s := newTestStore(t)
+	it := &Item{MediaType: "movie", Title: "UUID Movie", Year: "2024",
+		StrmPath: "/uuid/movie.strm", Status: "ready", Updated: time.Now()}
+	it.SetProviderIdentity("anidb", "cc5a1adf-5ba4-441f-bcf0-6ade6fcd1e6c")
+	if err := s.Upsert(it); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetStatusByTMDBIDs([]int{0}, "alice", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := got[0]; found {
+		t.Fatal("a non-TMDB row answered a TMDB status lookup for id 0")
+	}
+}
+
+// TestItemJSONCarriesBothIdentities: tmdb_id must stay exactly where the web UI reads it
+// (214 call sites), with provider/provider_id added BESIDE it, not in place of it.
+func TestItemJSONCarriesBothIdentities(t *testing.T) {
+	var it Item
+	it.SetTMDBIdentity(1622)
+	b, err := jsonMarshal(it)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"tmdb_id":1622`, `"provider":"tmdb"`, `"provider_id":"1622"`} {
+		if !containsStr(string(b), want) {
+			t.Errorf("Item JSON is missing %s:\n%s", want, b)
+		}
+	}
+	var q QueueItem
+	q.SetTMDBIdentity(1622)
+	b, err = jsonMarshal(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"tmdb_id":1622`, `"provider":"tmdb"`, `"provider_id":"1622"`} {
+		if !containsStr(string(b), want) {
+			t.Errorf("QueueItem JSON is missing %s:\n%s", want, b)
+		}
+	}
+}
