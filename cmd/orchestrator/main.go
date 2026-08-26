@@ -1202,7 +1202,29 @@ func main() {
 	// no way to interrupt it.
 	const resolveDeadline = 90 * time.Second
 
-	playHandler := func(w http.ResponseWriter, r *http.Request, mediaType string, tmdbID, season, episode int) {
+	// playHandler serves EVERY play URL shape. The frozen TMDB routes and the
+	// provider-namespaced ones both funnel into this one function deliberately: a second
+	// copy of resolve-at-play would drift from this one, and the half that drifted would
+	// be the half nobody is watching in the logs.
+	playHandler := func(w http.ResponseWriter, r *http.Request, ref playRef) {
+		// Below this point the handler still speaks the TMDB-shaped four-tuple, because the
+		// resolve pipeline behind it does. tmdbID is 0 for a non-TMDB identity, and every
+		// use of it is gated on ref.isTMDB().
+		mediaType, season, episode := ref.mediaType, ref.season, ref.episode
+		tmdbID := ref.tmdbInt()
+
+		// Encode the identity first. This validates every externally-supplied field
+		// (provider charset, id charset and length, media type) in one place and yields the
+		// single-flight/cooldown key used further down. An identity that cannot be encoded
+		// is a bad request now, not a surprise five frames deeper.
+		key, idErr := ref.identity()
+		if idErr != nil {
+			slog.Warn("play: rejected a malformed identity",
+				"provider", ref.provider, "id", ref.providerID, "remote", r.RemoteAddr, "err", idErr)
+			http.Error(w, "bad play identity", http.StatusBadRequest)
+			return
+		}
+
 		// Log every playback attempt and its outcome.
 		//
 		// This used to log ONLY on rejection or error, so a user watching `journalctl -u
@@ -1212,11 +1234,11 @@ func main() {
 		// single most useful line this service can emit.
 		playStart := time.Now()
 		slog.Info("play: request",
-			"type", mediaType, "tmdb", tmdbID, "s", season, "e", episode,
+			"type", mediaType, "provider", ref.provider, "id", ref.providerID, "s", season, "e", episode,
 			"remote", r.RemoteAddr, "range", r.Header.Get("Range"), "ua", r.UserAgent())
 		defer func() {
 			slog.Info("play: finished",
-				"type", mediaType, "tmdb", tmdbID, "s", season, "e", episode,
+				"type", mediaType, "provider", ref.provider, "id", ref.providerID, "s", season, "e", episode,
 				"took", time.Since(playStart).Round(time.Millisecond).String())
 		}()
 
@@ -1224,9 +1246,9 @@ func main() {
 		// anonymously), so possession of the HMAC tag in the URL — which only a .strm this
 		// server wrote can contain — is the credential. Enforcement is switched on only
 		// once the startup migration has retokenised every existing .strm.
-		if playTokenEnforced() && !validPlayToken(r.URL.Query().Get("t"), mediaType, tmdbID, season, episode) {
+		if playTokenEnforced() && !ref.validToken(r.URL.Query().Get("t")) {
 			slog.Warn("play: rejected a request with a missing/invalid capability token",
-				"type", mediaType, "tmdb", tmdbID, "s", season, "e", episode, "remote", r.RemoteAddr)
+				"type", mediaType, "provider", ref.provider, "id", ref.providerID, "s", season, "e", episode, "remote", r.RemoteAddr)
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -1237,7 +1259,7 @@ func main() {
 		// TorrServer add/drop cycle behind it. Answer from the library row if we have one
 		// and decline otherwise; nothing that actually plays media uses HEAD.
 		if r.Method == http.MethodHead {
-			if it, herr := db.GetByIdentity(tmdbID, mediaType, season, episode); herr == nil && it != nil && it.Status == "ready" {
+			if it, herr := db.GetByProviderIdentity(ref.storeIdentity()); herr == nil && it != nil && it.Status == "ready" {
 				w.Header().Set("Content-Type", "video/mp4")
 				w.Header().Set("Accept-Ranges", "bytes")
 				w.WriteHeader(http.StatusOK)
@@ -1248,9 +1270,13 @@ func main() {
 		}
 
 		// This item is now playing — stop any keep-warm loop for it; real playback takes over.
-		cancelWarm(tmdbID, season, episode)
+		// Keep-warm is keyed on a TMDB integer, so only a TMDB identity can have one; asking
+		// for warmKey(0, s, e) on behalf of another provider would reach across providers.
+		if ref.isTMDB() {
+			cancelWarm(tmdbID, season, episode)
+		}
 
-		item, err := db.GetByIdentity(tmdbID, mediaType, season, episode)
+		item, err := db.GetByProviderIdentity(ref.storeIdentity())
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)
 			return
@@ -1280,10 +1306,12 @@ func main() {
 					// index again — but it IS the bug that made every play slow, so it
 					// must be visible rather than silently dropped.
 					slog.Error("play: could not persist the corrected file index",
-						"tmdb", tmdbID, "s", season, "e", episode, "err", err)
+						"provider", ref.provider, "id", ref.providerID, "s", season, "e", episode, "err", err)
 				}
 			}
-			maybePreWarm(r, worker, mediaType, tmdbID, season, episode, length)
+			if ref.isTMDB() {
+				maybePreWarm(r, worker, mediaType, tmdbID, season, episode, length)
+			}
 			streamProxy(w, r, it.InfoHash, idx)
 			return true
 		}
@@ -1295,12 +1323,21 @@ func main() {
 			return // client went away
 		}
 		slog.Info("play: cached release unusable/ghost, re-resolving",
-			"tmdb", tmdbID, "s", season, "e", episode)
+			"provider", ref.provider, "id", ref.providerID, "s", season, "e", episode)
 
-		// Single-flight the expensive resolve per identity, so a refresh-happy client (or
-		// Jellyfin probing the file while the player also requests it) does not multiply
-		// a 90-second search by the number of concurrent requests.
-		key := playIdentity(mediaType, tmdbID, season, episode)
+		// Everything past this point resolves a NEW release, which means searching indexers
+		// for a title we can only name through a metadata provider. TMDB is the only
+		// provider with that pipeline behind it today, so a non-TMDB identity gets an honest
+		// 501 rather than being handed to the TMDB path as id 0 — which would search for
+		// whatever TMDB calls title 0 and then cache the result against THIS identity.
+		// A cached release still streams above; only re-resolution is unavailable.
+		if !ref.isTMDB() {
+			slog.Warn("play: no metadata provider is registered for this identity",
+				"provider", ref.provider, "id", ref.providerID)
+			http.Error(w, "no metadata provider is registered for this identity yet",
+				http.StatusNotImplemented)
+			return
+		}
 
 		// Did this identity just fail a slow resolve? Serve that answer back rather than
 		// paying for it again. Without this, a client that retries on error (Jellyfin's
@@ -1308,7 +1345,7 @@ func main() {
 		// title we established seconds ago has nothing playable behind it.
 		if left, blocked := worker.cooldown.blocked(key); blocked {
 			slog.Info("play: identity is in resolve cooldown after a recent failure",
-				"tmdb", tmdbID, "s", season, "e", episode,
+				"provider", ref.provider, "id", ref.providerID, "s", season, "e", episode,
 				"retry_in", left.Round(time.Second).String(), "ua", r.UserAgent())
 			w.Header().Set("Retry-After", strconv.Itoa(int(left.Seconds())+1))
 			http.Error(w, "no playable release was found for this title a moment ago — try again shortly",
@@ -1316,6 +1353,11 @@ func main() {
 			return
 		}
 
+		// key — the encoded identity, computed at the top of the handler — single-flights the
+		// expensive resolve, so a refresh-happy client (or Jellyfin probing the file while
+		// the player also requests it) does not multiply a 90-second search by the number of
+		// concurrent requests. It is the identity and not the URL, so the legacy and the
+		// namespaced spelling of one TMDB title share a slot rather than racing each other.
 		slowCtx, cancelSlow := context.WithTimeout(r.Context(), resolveDeadline)
 		defer cancelSlow()
 		release, ok := worker.resolves.lock(slowCtx, key)
@@ -1326,7 +1368,7 @@ func main() {
 		defer release()
 
 		// Re-check the fast path: while we queued, the winner may have cached a live release.
-		if fresh, ferr := db.GetByIdentity(tmdbID, mediaType, season, episode); ferr == nil && fresh != nil &&
+		if fresh, ferr := db.GetByProviderIdentity(ref.storeIdentity()); ferr == nil && fresh != nil &&
 			item != nil && fresh.InfoHash != item.InfoHash {
 			recheckCtx, cancelRecheck := context.WithTimeout(r.Context(), 25*time.Second)
 			done := tryCached(recheckCtx, fresh)
@@ -1344,13 +1386,13 @@ func main() {
 		res, err := worker.resolvePlayable(slowCtx, mediaType, libName, tmdbID, season, episode, "", nil)
 		if err != nil {
 			if slowCtx.Err() != nil && r.Context().Err() == nil {
-				slog.Warn("play: resolve hit the deadline", "tmdb", tmdbID, "s", season, "e", episode)
+				slog.Warn("play: resolve hit the deadline", "provider", ref.provider, "id", ref.providerID, "s", season, "e", episode)
 				worker.cooldown.fail(key)
 				http.Error(w, "could not find a playable release within the time limit — try again shortly",
 					http.StatusGatewayTimeout)
 				return
 			}
-			slog.Warn("play: resolve failed", "tmdb", tmdbID, "s", season, "e", episode, "err", err)
+			slog.Warn("play: resolve failed", "provider", ref.provider, "id", ref.providerID, "s", season, "e", episode, "err", err)
 			worker.cooldown.fail(key)
 			// A caller-visible reason, with no transport detail or upstream URL in it.
 			http.Error(w, "no playable release available right now", http.StatusBadGateway)
@@ -1361,13 +1403,17 @@ func main() {
 		maybePreWarm(r, worker, mediaType, tmdbID, season, episode, res.lengthBytes)
 		streamProxy(w, r, res.hash, res.fileIndex)
 	}
+	// The frozen TMDB routes. These are the exact paths inside every .strm file already on
+	// disk, and each of those files carries an HMAC over the identity this path spells.
+	// Neither the paths nor the identity they map to may change. See the play URL section
+	// of internal/library/writer.go.
 	mux.HandleFunc("GET /play/movie/{tmdb}", func(w http.ResponseWriter, r *http.Request) {
 		tmdbID, err := strconv.Atoi(r.PathValue("tmdb"))
 		if err != nil || tmdbID <= 0 {
 			http.Error(w, "bad tmdb id", http.StatusBadRequest)
 			return
 		}
-		playHandler(w, r, "movie", tmdbID, 0, 0)
+		playHandler(w, r, tmdbRef("movie", tmdbID, 0, 0))
 	})
 	mux.HandleFunc("GET /play/tv/{tmdb}/{season}/{episode}", func(w http.ResponseWriter, r *http.Request) {
 		tmdbID, e1 := strconv.Atoi(r.PathValue("tmdb"))
@@ -1377,7 +1423,59 @@ func main() {
 			http.Error(w, "bad tv path", http.StatusBadRequest)
 			return
 		}
-		playHandler(w, r, "tv", tmdbID, season, episode)
+		playHandler(w, r, tmdbRef("tv", tmdbID, season, episode))
+	})
+
+	// The provider-namespaced routes, for identities whose stable id is not a TMDB integer
+	// (the next provider's is a UUID). They exist BESIDE the routes above, never instead of
+	// them, and they hand the same playRef to the same handler.
+	//
+	// /play/p/tmdb/... is legal and resolves to the identical identity and token as
+	// /play/movie/... — the namespace is a URL shape, not a second key space. That is worth
+	// keeping true: it means a future writer can emit one shape for everything without any
+	// flag day, and it is asserted by a test.
+	//
+	// The provider and id are validated here, at the edge, as well as inside the identity
+	// encoder. Two checks because they protect different things: this one turns a hostile
+	// path into a 400 before it reaches a log line or a database query, and the encoder's
+	// one guarantees no caller anywhere can mint a token over an unvalidated field.
+	providerRef := func(w http.ResponseWriter, r *http.Request, mediaType string, season, episode int) (playRef, bool) {
+		provider, id := r.PathValue("provider"), r.PathValue("id")
+		if !library.ValidProvider(provider) {
+			http.Error(w, "bad provider", http.StatusBadRequest)
+			return playRef{}, false
+		}
+		if !library.ValidProviderID(id) {
+			http.Error(w, "bad provider id", http.StatusBadRequest)
+			return playRef{}, false
+		}
+		return playRef{
+			provider:   provider,
+			mediaType:  mediaType,
+			providerID: id,
+			season:     season,
+			episode:    episode,
+		}, true
+	}
+	mux.HandleFunc("GET /play/p/{provider}/movie/{id}", func(w http.ResponseWriter, r *http.Request) {
+		ref, ok := providerRef(w, r, "movie", 0, 0)
+		if !ok {
+			return
+		}
+		playHandler(w, r, ref)
+	})
+	mux.HandleFunc("GET /play/p/{provider}/tv/{id}/{season}/{episode}", func(w http.ResponseWriter, r *http.Request) {
+		season, e1 := strconv.Atoi(r.PathValue("season"))
+		episode, e2 := strconv.Atoi(r.PathValue("episode"))
+		if e1 != nil || e2 != nil || season < 0 || episode < 0 {
+			http.Error(w, "bad tv path", http.StatusBadRequest)
+			return
+		}
+		ref, ok := providerRef(w, r, "tv", season, episode)
+		if !ok {
+			return
+		}
+		playHandler(w, r, ref)
 	})
 
 	// ------------------------------------------------------------------ //
@@ -2978,17 +3076,26 @@ func (w *queueWorker) touchTorrent(ctx context.Context, hash string, index int) 
 // no session) without letting an anonymous stranger drive resolution and torrent adds
 // for arbitrary titles over the owner's VPN.
 func playURL(publicURL, mediaType string, tmdbID, season, episode int) string {
-	base := strings.TrimRight(publicURL, "/")
-	var path string
-	if mediaType == "movie" {
-		path = fmt.Sprintf("%s/play/movie/%d", base, tmdbID)
-	} else {
-		path = fmt.Sprintf("%s/play/tv/%d/%d/%d", base, tmdbID, season, episode)
+	return playURLFor(publicURL, tmdbRef(mediaType, tmdbID, season, episode))
+}
+
+// playURLFor is the same thing for any provider's identity. The URL shape itself lives in
+// internal/library so that the writer of a .strm and the reader of one cannot disagree
+// about it, and so the frozen TMDB bytes are pinned by a test next to the code that emits
+// them.
+//
+// It returns "" rather than a half-built URL when the identity cannot be encoded. There is
+// no useful fallback: a URL without a valid token is a 403 the moment enforcement is on,
+// so writing one would only convert a loud failure into a silent one.
+func playURLFor(publicURL string, ref playRef) string {
+	u, err := library.PlayURL(publicURL, ref.provider, ref.mediaType, ref.providerID,
+		ref.season, ref.episode, ref.token())
+	if err != nil {
+		slog.Error("play url: refusing to build a URL for a malformed identity",
+			"provider", ref.provider, "id", ref.providerID, "type", ref.mediaType, "err", err)
+		return ""
 	}
-	if tok := playToken(mediaType, tmdbID, season, episode); tok != "" {
-		path += "?t=" + tok
-	}
-	return path
+	return u
 }
 
 // applyTorrCache pushes the configured cache profile to TorrServer. Returns nil
