@@ -38,6 +38,21 @@ import (
 // url2 aliases net/url; the local identifier "url" is used as a variable in several
 // handlers in this file.
 
+// The two refusals the per-library visibility gate can produce on a write path.
+//
+// errUnknownLibrary is DELIBERATELY the answer to two different questions — "there is no
+// such library" and "there is, but not for you". They have to be one message, because a
+// caller who can tell them apart can enumerate every library on the box by guessing
+// names and reading the error, which is exactly the knowledge a per-library restriction
+// exists to withhold. The wording is the one that gives away least.
+//
+// errNoLibraryAvailable can only happen when the caller named NOTHING, so there is no
+// name to protect and it can afford to be specific about what went wrong.
+var (
+	errUnknownLibrary     = errors.New("unknown library")
+	errNoLibraryAvailable = errors.New("no library is available for you to request into — ask an administrator")
+)
+
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to config file")
 	dbPath := flag.String("db", "jellyfreedom.db", "path to the SQLite database")
@@ -398,20 +413,115 @@ func main() {
 	// own password — while the handler itself was already written for the calling user.
 	mux.Handle("POST /api/auth/change-password", api.RequireAuth(http.HandlerFunc(api.ChangePasswordHandler)))
 
-	// /api/libraries — list of configured libraries for the request UI dropdown
-	mux.HandleFunc("GET /api/libraries", func(w http.ResponseWriter, r *http.Request) {
+	// /api/libraries — the libraries THIS CALLER may see, for the request UI dropdown.
+	//
+	// This is the first place a hidden library would show itself, and the cheapest to
+	// get wrong: the list is only a set of names and types, but a name is exactly what
+	// a per-library restriction is meant to withhold. It is now OptionalAuth so the
+	// handler knows who is asking, and the filtering decision is made by the store
+	// (FilterLibraries) rather than re-derived here.
+	//
+	// An anonymous caller gets an empty list. That is not a degradation of the media UI:
+	// the dropdown this feeds only appears for a signed-in user choosing where to put a
+	// request, and POST /request has always been RequireAuth.
+	mux.Handle("GET /api/libraries", api.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		type libInfo struct {
 			Name    string `json:"name"`
 			Type    string `json:"type"`
 			Default bool   `json:"default"`
 			Adult   bool   `json:"adult"`
 		}
-		out := make([]libInfo, len(cfg.Libraries))
+		names := make([]string, len(cfg.Libraries))
+		byName := make(map[string]config.Library, len(cfg.Libraries))
 		for i, l := range cfg.Libraries {
-			out[i] = libInfo{Name: l.Name, Type: l.Type, Default: l.Default, Adult: l.Adult}
+			names[i] = l.Name
+			byName[l.Name] = l
+		}
+		visible, err := db.FilterLibraries(store.ViewerOf(api.UserFromContext(r)), names)
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not read library access", err)
+			return
+		}
+		out := make([]libInfo, 0, len(visible))
+		for _, n := range visible {
+			l := byName[n]
+			out = append(out, libInfo{Name: l.Name, Type: l.Type, Default: l.Default, Adult: l.Adult})
 		}
 		jsonOK(w, out)
-	})
+	})))
+
+	// requestLibrary decides which library a request is written into, and refuses one the
+	// caller is not allowed to use. Every enqueue path goes through it.
+	//
+	// It closes the write-side half of per-library visibility, which is not optional: a
+	// gate that only hides libraries from READS still lets a restricted account push
+	// content INTO one, and .strm files landing in the adults' Jellyfin library is a
+	// worse outcome than being able to list it.
+	//
+	// TWO CASES, and the difference between them matters.
+	//
+	// A NAMED library is authorised, never redirected. Silently rewriting "Adults" to
+	// "Kids" would report success for something that did not happen, and the caller
+	// would learn just as much from the redirect as from an honest refusal. A name that
+	// does not exist and a name the caller may not use return the IDENTICAL error, so
+	// the endpoint cannot be walked to enumerate library names: both are simply
+	// "unknown library".
+	//
+	// An EMPTY library names nothing, so there is nothing to refuse — the media UI omits
+	// the picker entirely when there is only one library of a type. It resolves to the
+	// configured default for the media type when the caller may use it, otherwise to the
+	// first library of that type they can, and fails only if they can use none. For an
+	// admin this always yields exactly cfg.DefaultLibrary(mediaType), which is what the
+	// queue worker would have chosen from an empty name anyway — so the resolved name
+	// changes nothing about how a single-admin install behaves, it merely records the
+	// decision on the row instead of deferring it.
+	requestLibrary := func(v store.Viewer, name, mediaType string) (string, error) {
+		if name != "" {
+			if cfg.FindLibrary(name) == nil {
+				return "", errUnknownLibrary
+			}
+			ok, err := db.CanUseLibrary(v, name)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				return "", errUnknownLibrary
+			}
+			return name, nil
+		}
+		// Default first, then config order — FilterLibraries preserves the order, so
+		// "the default unless you cannot see it" is expressed by the ordering.
+		var candidates []string
+		if def := cfg.DefaultLibrary(mediaType); def != nil {
+			candidates = append(candidates, def.Name)
+		}
+		for i := range cfg.Libraries {
+			l := &cfg.Libraries[i]
+			if l.Type != mediaType || (len(candidates) > 0 && l.Name == candidates[0]) {
+				continue
+			}
+			candidates = append(candidates, l.Name)
+		}
+		visible, err := db.FilterLibraries(v, candidates)
+		if err != nil {
+			return "", err
+		}
+		if len(visible) == 0 {
+			return "", errNoLibraryAvailable
+		}
+		return visible[0], nil
+	}
+
+	// libraryRefusal turns a requestLibrary error into a response. A refusal is a 400
+	// about the request body, not a 403 about the caller: a 403 would confirm that the
+	// named library exists, which is the one fact the gate is there to withhold.
+	libraryRefusal := func(w http.ResponseWriter, r *http.Request, err error) {
+		if errors.Is(err, errUnknownLibrary) || errors.Is(err, errNoLibraryAvailable) {
+			jsonErr(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		httpFail(w, r, http.StatusInternalServerError, "could not check library access", err)
+	}
 
 	// /api/library — privacy-aware list of ready items (My Library strip on search page).
 	//
@@ -420,8 +530,8 @@ func main() {
 	// admin-equivalent, so logging OUT showed private items that logging IN as a
 	// non-admin correctly hid.
 	mux.Handle("GET /api/library", api.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		viewer, username, isAdmin := viewerOf(r)
-		items, err := db.ListVisible(username, isAdmin)
+		viewer, _, _ := viewerOf(r)
+		items, err := db.ListVisible(store.ViewerOf(viewer))
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)
 			return
@@ -446,7 +556,7 @@ func main() {
 			jsonOK(w, map[string]any{})
 			return
 		}
-		_, username, isAdmin := viewerOf(r)
+		viewer, _, _ := viewerOf(r)
 		var ids []int
 		for _, s := range strings.Split(raw, ",") {
 			if id, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
@@ -456,7 +566,7 @@ func main() {
 				break // bound the IN(...) list
 			}
 		}
-		statuses, err := db.GetStatusByTMDBIDs(ids, username, isAdmin)
+		statuses, err := db.GetStatusByTMDBIDs(ids, store.ViewerOf(viewer))
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)
 			return
@@ -483,7 +593,7 @@ func main() {
 	// duplicate flood at the head of the list, 100 rows covered three titles out of
 	// eighty. Scoping is the fix for the general case, not just the flood.
 	mux.Handle("GET /api/queue", api.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		viewer, username, isAdmin := viewerOf(r)
+		viewer, _, _ := viewerOf(r)
 		q := r.URL.Query()
 		filter := store.QueueFilter{
 			MediaType:  q.Get("media_type"),
@@ -511,7 +621,7 @@ func main() {
 			jsonErr(w, "media_type must be movie or tv", http.StatusBadRequest)
 			return
 		}
-		items, err := db.ListQueueFiltered(username, isAdmin, filter)
+		items, err := db.ListQueueFiltered(store.ViewerOf(viewer), filter)
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read the queue", err)
 			return
@@ -537,7 +647,7 @@ func main() {
 			return
 		}
 		user := api.UserFromContext(r)
-		n, err := db.CancelQueueItem(id, user.Username, user.IsAdmin)
+		n, err := db.CancelQueueItem(id, store.ViewerOf(user))
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not cancel that request", err)
 			return
@@ -556,7 +666,7 @@ func main() {
 			return
 		}
 		user := api.UserFromContext(r)
-		n, err := db.DeleteQueueItem(id, user.Username, user.IsAdmin)
+		n, err := db.DeleteQueueItem(id, store.ViewerOf(user))
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not delete that request", err)
 			return
@@ -581,8 +691,8 @@ func main() {
 	// in the handler. Nothing in the response carries requested_by, a magnet or a strm
 	// path, so unlike the flat feed there is nothing here to redact.
 	mux.Handle("GET /api/queue/groups", api.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, username, isAdmin := viewerOf(r)
-		groups, err := db.ListQueueGroups(username, isAdmin)
+		viewer, _, _ := viewerOf(r)
+		groups, err := db.ListQueueGroups(store.ViewerOf(viewer))
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read the queue", err)
 			return
@@ -593,8 +703,8 @@ func main() {
 	// Bulk clear, so "clear finished" is one call instead of a hundred. RequireAuth
 	// rather than OptionalAuth: this deletes, and an anonymous caller owns no rows.
 	mux.Handle("DELETE /api/queue/finished", api.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, username, isAdmin := viewerOf(r)
-		n, err := db.DeleteFinishedQueue(username, isAdmin)
+		viewer, username, isAdmin := viewerOf(r)
+		n, err := db.DeleteFinishedQueue(store.ViewerOf(viewer))
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not clear the queue", err)
 			return
@@ -609,13 +719,17 @@ func main() {
 			jsonErr(w, "bad id", http.StatusBadRequest)
 			return
 		}
-		item, err := db.GetQueueItem(id)
+		// VisibleQueueItem, not GetQueueItem: the ownership AND library predicates are
+		// in the query, so this handler cannot forget either one, and all three of
+		// "never existed", "not yours" and "in a library you cannot see" arrive here as
+		// the same nil and leave as the same 404. Distinguishing them would turn the id
+		// space into an oracle over a library the caller was told nothing about.
+		item, err := db.VisibleQueueItem(id, store.ViewerOf(api.UserFromContext(r)))
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read that request", err)
 			return
 		}
-		user := api.UserFromContext(r)
-		if item == nil || (!user.IsAdmin && item.RequestedBy != user.Username) {
+		if item == nil {
 			jsonErr(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -638,8 +752,8 @@ func main() {
 
 	// ── Subscriptions API ───────────────────────────────────────────────────────
 	mux.Handle("GET /api/subscriptions", api.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		viewer, username, isAdmin := viewerOf(r)
-		subs, err := db.ListSubscriptions(username, isAdmin)
+		viewer, _, _ := viewerOf(r)
+		subs, err := db.ListSubscriptions(store.ViewerOf(viewer))
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read subscriptions", err)
 			return
@@ -668,9 +782,18 @@ func main() {
 			return
 		}
 		user := api.UserFromContext(r)
+		// A subscription is a standing instruction to enqueue future episodes into a
+		// library, so it is a write and takes the same authorisation as one. Without it
+		// a restricted account could not request into a hidden library today but could
+		// arrange for every future episode to land there.
+		libName, err := requestLibrary(store.ViewerOf(user), req.Library, "tv")
+		if err != nil {
+			libraryRefusal(w, r, err)
+			return
+		}
 		if err := db.UpsertSubscription(&store.Subscription{
 			TMDBID: req.TMDBID, Season: req.Season, Title: req.Title,
-			PosterURL: req.PosterURL, LibraryName: req.Library, RequestedBy: user.Username,
+			PosterURL: req.PosterURL, LibraryName: libName, RequestedBy: user.Username,
 		}); err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not save the subscription", err)
 			return
@@ -685,7 +808,7 @@ func main() {
 			return
 		}
 		user := api.UserFromContext(r)
-		n, err := db.DeleteSubscription(id, user.Username, user.IsAdmin)
+		n, err := db.DeleteSubscription(id, store.ViewerOf(user))
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not unsubscribe", err)
 			return
@@ -813,12 +936,12 @@ func main() {
 
 	// ── Release calendar ────────────────────────────────────────────────────────
 	mux.Handle("GET /api/calendar", api.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		viewer := api.UserFromContext(r)
-		isAdmin := viewer != nil && viewer.IsAdmin
-		username := ""
-		if viewer != nil {
-			username = viewer.Username
-		}
+		// The calendar reads the library only through ListSubscriptions, which carries
+		// the library gate — so a show followed into a library the caller can no longer
+		// see disappears from here too, without this handler having to know that. The
+		// other two sections are TMDB's public upcoming/on-the-air feeds and describe
+		// nothing about this box.
+		v := store.ViewerOf(api.UserFromContext(r))
 
 		// Window: a few days back through ~90 days ahead.
 		now := time.Now()
@@ -841,7 +964,7 @@ func main() {
 		}
 
 		// 1) The viewer's subscribed shows — exact episode air dates.
-		if subs, err := db.ListSubscriptions(username, isAdmin); err == nil {
+		if subs, err := db.ListSubscriptions(v); err == nil {
 			for _, sub := range subs {
 				eps, err := tmdbClient.TVEpisodes(sub.TMDBID, sub.Season)
 				if err != nil {
@@ -925,6 +1048,15 @@ func main() {
 		if user != nil {
 			requestedBy = user.Username
 		}
+		// Authorise the destination BEFORE any of the idempotency lookups below. Those
+		// lookups report whether a title is already ready or already in flight, which is
+		// a fact about the library it lives in — answering them for a library the caller
+		// may not use would leak through the refusal.
+		libName, err := requestLibrary(store.ViewerOf(user), req.Library, req.MediaType)
+		if err != nil {
+			libraryRefusal(w, r, err)
+			return
+		}
 		title := req.Title
 		if title == "" {
 			title = fmt.Sprintf("TMDB #%d", req.TMDBID)
@@ -947,6 +1079,27 @@ func main() {
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)
 			return
+		}
+		// The identity lookup is library-BLIND — it has to be, because /play resolves the
+		// same way from a .strm that carries no session — so the row it returns may live
+		// in a library this caller cannot see. Answering {"status":"ready","already":true}
+		// off such a row would report the existence and readiness of a title in a hidden
+		// library, which is the same disclosure every read path above refuses to make.
+		//
+		// Treating it as absent is not merely the safe answer, it is the CORRECT one:
+		// as far as this caller's libraries are concerned the title genuinely is not
+		// there, so the request falls through and resolves a copy into a library they
+		// can actually see. Distinct libraries mean distinct .strm paths, so the two
+		// rows coexist rather than one overwriting the other.
+		if existing != nil {
+			visible, cerr := db.CanUseLibrary(store.ViewerOf(user), existing.LibraryName)
+			if cerr != nil {
+				httpFail(w, r, http.StatusInternalServerError, "could not check library access", cerr)
+				return
+			}
+			if !visible {
+				existing = nil
+			}
 		}
 		// A ready item short-circuits only for a bare re-request. With a magnet the user is
 		// deliberately swapping the release, so fall through and re-resolve.
@@ -988,7 +1141,7 @@ func main() {
 			TMDBID: req.TMDBID, MediaType: req.MediaType,
 			Title: title, Year: req.Year, PosterURL: req.PosterURL,
 			Season: req.Season, Episode: req.Episode,
-			LibraryName: req.Library, RequestedBy: requestedBy,
+			LibraryName: libName, RequestedBy: requestedBy,
 			MagnetOverride: req.Magnet,
 		}
 		id, err := db.Enqueue(qItem)
@@ -1026,12 +1179,19 @@ func main() {
 			jsonErr(w, msg, http.StatusServiceUnavailable)
 			return
 		}
+		user := api.UserFromContext(r)
+		// Before the TMDB round trip, not after: a refusal should cost the caller nothing
+		// and tell them nothing about whether the season exists.
+		libName, err := requestLibrary(store.ViewerOf(user), req.Library, "tv")
+		if err != nil {
+			libraryRefusal(w, r, err)
+			return
+		}
 		episodes, err := tmdbClient.TVEpisodes(req.TMDBID, req.Season)
 		if err != nil {
 			httpFail(w, r, http.StatusBadGateway, "could not load the episode list from TMDB", err)
 			return
 		}
-		user := api.UserFromContext(r)
 		requestedBy := ""
 		if user != nil {
 			requestedBy = user.Username
@@ -1064,7 +1224,7 @@ func main() {
 				TMDBID: req.TMDBID, MediaType: "tv",
 				Title: title, Year: req.Year, PosterURL: req.PosterURL,
 				Season: req.Season, Episode: ep.Number,
-				LibraryName: req.Library, RequestedBy: requestedBy,
+				LibraryName: libName, RequestedBy: requestedBy,
 			}
 			id, err := db.Enqueue(qItem)
 			if err != nil {
@@ -1085,7 +1245,7 @@ func main() {
 			}
 			if err := db.UpsertSubscription(&store.Subscription{
 				TMDBID: req.TMDBID, Season: req.Season, Title: title,
-				PosterURL: req.PosterURL, LibraryName: req.Library, RequestedBy: requestedBy,
+				PosterURL: req.PosterURL, LibraryName: libName, RequestedBy: requestedBy,
 			}); err != nil {
 				// The episodes are queued either way; only the auto-follow failed.
 				slog.Error("auto-subscribe failed", "tmdb", req.TMDBID, "season", req.Season, "err", err)
@@ -1587,6 +1747,19 @@ func main() {
 		return user != nil && (user.IsAdmin || it.RequestedBy == user.Username)
 	}
 
+	// visibleItem reports whether the caller may act on an item AT ALL, which is a
+	// strictly earlier question than mayRemove's "is it theirs".
+	//
+	// The ORDER of the two checks is the security-relevant part. mayRemove answers 403
+	// "that item belongs to someone else", which confirms the item exists; asked first,
+	// it would confirm the existence of items in a library the caller was told nothing
+	// about. So visibility is checked first and answers 404 — indistinguishable from an
+	// item that is not there — and only an item the caller can actually see ever reaches
+	// the ownership check.
+	visibleItem := func(user *store.User, it *store.Item) (bool, error) {
+		return db.CanUseLibrary(store.ViewerOf(user), it.LibraryName)
+	}
+
 	// removeItems deletes each item the caller is allowed to delete (row + .strm), then
 	// drops any torrent no longer referenced by a remaining library row — safe for season
 	// packs that share a hash. Returns how many were removed and how many were skipped
@@ -1650,6 +1823,13 @@ func main() {
 			return
 		}
 		user := api.UserFromContext(r)
+		if ok, err := visibleItem(user, item); err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not check library access", err)
+			return
+		} else if !ok {
+			jsonErr(w, "not found", http.StatusNotFound)
+			return
+		}
 		if !mayRemove(user, item) {
 			jsonErr(w, "that item belongs to someone else", http.StatusForbidden)
 			return
@@ -1669,12 +1849,16 @@ func main() {
 			jsonErr(w, "bad tmdb id", http.StatusBadRequest)
 			return
 		}
-		items, err := db.ItemsByTMDB(id, "tv")
+		// VisibleItemsByTMDB, not ItemsByTMDB: a row in a hidden library must be ABSENT
+		// from this list rather than filtered out of it afterwards, because the response
+		// reports a "skipped" count and a count is a measurement.
+		user := api.UserFromContext(r)
+		items, err := db.VisibleItemsByTMDB(id, "tv", store.ViewerOf(user))
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)
 			return
 		}
-		n, skipped, err := removeItems(api.UserFromContext(r), items)
+		n, skipped, err := removeItems(user, items)
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not remove that series", err)
 			return
@@ -1692,7 +1876,8 @@ func main() {
 			jsonErr(w, "tmdb_id and season required", http.StatusBadRequest)
 			return
 		}
-		all, err := db.ItemsByTMDB(req.TMDBID, "tv")
+		user := api.UserFromContext(r)
+		all, err := db.VisibleItemsByTMDB(req.TMDBID, "tv", store.ViewerOf(user))
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)
 			return
@@ -1703,7 +1888,7 @@ func main() {
 				inSeason = append(inSeason, it)
 			}
 		}
-		n, skipped, err := removeItems(api.UserFromContext(r), inSeason)
+		n, skipped, err := removeItems(user, inSeason)
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not remove that season", err)
 			return
@@ -1732,6 +1917,13 @@ func main() {
 			return
 		}
 		user := api.UserFromContext(r)
+		if ok, err := visibleItem(user, item); err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not check library access", err)
+			return
+		} else if !ok {
+			jsonErr(w, "episode not in library", http.StatusNotFound)
+			return
+		}
 		if !mayRemove(user, item) {
 			jsonErr(w, "that item belongs to someone else", http.StatusForbidden)
 			return
@@ -2379,7 +2571,7 @@ func main() {
 	// /api/update/apply runs a root-owned helper.
 	updater := update.New(version)
 
-	protected := api.RequireAdmin(buildProtectedMux(db, assets, indexerClient, jfClient, livePicker(cfg), updater))
+	protected := api.RequireAdmin(buildProtectedMux(db, cfg, assets, indexerClient, jfClient, livePicker(cfg), updater))
 
 	mux.HandleFunc("/dashboard/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -2440,7 +2632,7 @@ func main() {
 	}
 }
 
-func buildProtectedMux(db *store.Store, assets fs.FS, indexerClient *indexer.Client,
+func buildProtectedMux(db *store.Store, cfg *config.Config, assets fs.FS, indexerClient *indexer.Client,
 	jfClient *jellyfin.Client, pickerCfg picker.Config, updater *update.Service) http.Handler {
 
 	mux := http.NewServeMux()
@@ -2471,6 +2663,109 @@ func buildProtectedMux(db *store.Store, assets fs.FS, indexerClient *indexer.Cli
 	mux.HandleFunc("PATCH /api/users/{id}", api.UpdateUserHandler)
 	mux.HandleFunc("DELETE /api/users/{id}", api.DeleteUserHandler)
 	mux.HandleFunc("GET /api/jellyfin/users", api.JellyfinUsersHandler(jfClient))
+
+	// ── Per-user library access (admin only) ────────────────────────────────
+	//
+	// These sit on this mux, so they inherit RequireAdmin along with the rest of
+	// /api/users* — see SECURITY.md. That is not incidental: the response NAMES every
+	// configured library, which is the single fact the gate exists to withhold from
+	// everyone else, so nothing less than an admin session may reach it.
+	//
+	// The pair is read-then-replace rather than grant/revoke. The admin UI edits a whole
+	// checkbox list, and a full replacement is the only shape that cannot lose a
+	// concurrent revocation: two incremental edits interleave into a set neither admin
+	// asked for, while two replacements leave the set one of them did.
+
+	// GET /api/users/{id}/libraries — what this account may see, and what there is to
+	// grant. "available" is included so the UI can render the checkbox list from one
+	// call instead of joining this against GET /api/settings.
+	mux.HandleFunc("GET /api/users/{id}/libraries", func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			jsonErr(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		user, err := db.GetUserByID(id)
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not read that user", err)
+			return
+		}
+		if user == nil {
+			jsonErr(w, "user not found", http.StatusNotFound)
+			return
+		}
+		granted, err := db.LibraryAccess(id)
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not read library access", err)
+			return
+		}
+		type libInfo struct {
+			Name string `json:"name"`
+			Type string `json:"type"`
+		}
+		available := make([]libInfo, 0, len(cfg.Libraries))
+		for _, l := range cfg.Libraries {
+			available = append(available, libInfo{Name: l.Name, Type: l.Type})
+		}
+		jsonOK(w, map[string]any{
+			"user_id":  id,
+			"username": user.Username,
+			// An admin bypasses the gate entirely, so their stored grants — which may be
+			// none — say nothing about what they can see. The flag is here so the UI can
+			// say "administrator: sees every library" rather than drawing an empty
+			// checkbox list that looks like a lockout.
+			"is_admin":  user.IsAdmin,
+			"libraries": granted,
+			"available": available,
+		})
+	})
+
+	// PUT /api/users/{id}/libraries — replace this account's grants with exactly this set.
+	mux.HandleFunc("PUT /api/users/{id}/libraries", func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			jsonErr(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		user, err := db.GetUserByID(id)
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not read that user", err)
+			return
+		}
+		if user == nil {
+			jsonErr(w, "user not found", http.StatusNotFound)
+			return
+		}
+		var req struct {
+			Libraries []string `json:"libraries"`
+		}
+		if err := decodeBody(w, r, &req); err != nil {
+			jsonErr(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		// Every name must be a library that actually exists. A typo would otherwise be
+		// stored as a grant that grants nothing, and the admin would see a ticked box
+		// beside a user who cannot see the library they just "granted" — a silent deny
+		// is the worst possible outcome for a permissions UI, so it is a 400 instead.
+		for _, name := range req.Libraries {
+			if cfg.FindLibrary(name) == nil {
+				jsonErr(w, fmt.Sprintf("no library named %q is configured", name), http.StatusBadRequest)
+				return
+			}
+		}
+		if err := db.SetLibraryAccess(id, req.Libraries); err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not save library access", err)
+			return
+		}
+		granted, err := db.LibraryAccess(id)
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not read library access back", err)
+			return
+		}
+		slog.Info("set per-user library access", "user_id", id, "username", user.Username,
+			"libraries", granted, "admin_account", user.IsAdmin)
+		jsonOK(w, map[string]any{"user_id": id, "libraries": granted, "is_admin": user.IsAdmin})
+	})
 
 	mux.HandleFunc("POST /api/library/{hash}/toggle-private", func(w http.ResponseWriter, r *http.Request) {
 		hash := strings.ToLower(strings.TrimSpace(r.PathValue("hash")))

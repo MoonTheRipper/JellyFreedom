@@ -85,7 +85,7 @@ func TestConcurrentMixedReadWrite(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			for j := 0; j < 25; j++ {
-				if _, err := s.ListVisible("", false); err != nil {
+				if _, err := s.ListVisible(vw("", false)); err != nil {
 					errCh <- err
 				}
 				if err := s.SetSetting(fmt.Sprintf("k%d", i), fmt.Sprint(j)); err != nil {
@@ -164,7 +164,7 @@ func TestVisibility(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			items, err := s.ListVisible(tc.viewer, tc.isAdmin)
+			items, err := s.ListVisible(vw(tc.viewer, tc.isAdmin))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -195,7 +195,7 @@ func TestVisibilityAnonymousNeverBeatsAuthenticated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	anon, err := s.ListVisible("", false)
+	anon, err := s.ListVisible(vw("", false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestVisibilityAnonymousNeverBeatsAuthenticated(t *testing.T) {
 		t.Fatalf("anonymous saw %d items, want 0 — a private item leaked to an unauthenticated caller", len(anon))
 	}
 
-	bob, err := s.ListVisible("bob", false)
+	bob, err := s.ListVisible(vw("bob", false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestGetStatusByTMDBIDsFiltersPrivacy(t *testing.T) {
 		{"admin", "root", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := s.GetStatusByTMDBIDs([]int{42}, tc.viewer, tc.isAdmin)
+			got, err := s.GetStatusByTMDBIDs([]int{42}, vw(tc.viewer, tc.isAdmin))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -274,14 +274,14 @@ func TestListQueueAndSubscriptionsVisibility(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			q, err := s.ListQueue(tc.viewer, tc.isAdmin)
+			q, err := s.ListQueue(vw(tc.viewer, tc.isAdmin))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(q) != tc.wantQueue {
 				t.Errorf("queue: got %d, want %d", len(q), tc.wantQueue)
 			}
-			subs, err := s.ListSubscriptions(tc.viewer, tc.isAdmin)
+			subs, err := s.ListSubscriptions(vw(tc.viewer, tc.isAdmin))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -339,7 +339,7 @@ func TestListQueueGroupsVisibility(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			g, err := s.ListQueueGroups(tc.viewer, tc.isAdmin)
+			g, err := s.ListQueueGroups(vw(tc.viewer, tc.isAdmin))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -420,7 +420,7 @@ func TestListQueueFilteredCannotWidenVisibility(t *testing.T) {
 		{"an admin", "root", true, 1, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rows, err := s.ListQueueFiltered(tc.viewer, tc.isAdmin, QueueFilter{TMDBID: tc.tmdb, MediaType: "movie"})
+			rows, err := s.ListQueueFiltered(vw(tc.viewer, tc.isAdmin), QueueFilter{TMDBID: tc.tmdb, MediaType: "movie"})
 			if err != nil {
 				t.Fatal(err)
 			}

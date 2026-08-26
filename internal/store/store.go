@@ -292,6 +292,220 @@ type User struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+// ── Library visibility ────────────────────────────────────────────────────────
+//
+// An admin decides which libraries each account may see. A library a user cannot see
+// has to be invisible EVERYWHERE — not merely absent from one list — which is why the
+// rule lives in the SQL of every viewer-scoped read rather than in the handlers. A
+// predicate in a handler is a predicate the next handler forgets.
+//
+// THE DEFAULT IS DENY, and the choice is not a close call.
+//
+// The two candidates fail in opposite directions. Default-ALLOW means the moment an
+// operator adds an "Adults" library to config.yaml it is visible to every account on
+// the box, including the child's, until somebody remembers to go and revoke it — the
+// system is wrong by default and is only made right by an action nobody is prompted to
+// take. Default-DENY means a freshly created account opens onto an empty app until the
+// admin grants it something — the system is useless by default and is made useful by an
+// action the admin is already taking (they just created the account and are looking at
+// its settings). One failure mode shows a child content the household meant to withhold;
+// the other shows a new user a blank page for as long as it takes to tick a box. Only
+// one of those is recoverable after the fact, so: deny.
+//
+// The default install is untouched by this, which is the point. It has one account, that
+// account is the admin, and an admin bypasses the gate entirely — the single-user case
+// never sees a grant, never needs a grant, and requires no configuration.
+//
+// TWO CONSEQUENCES WORTH STATING PLAINLY:
+//
+//  1. An ANONYMOUS caller is denied every library. Viewer's zero value carries UserID 0,
+//     users.id is AUTOINCREMENT and therefore never 0, so the grant subquery matches
+//     nothing and the deny falls out of the same predicate with no special case. This is
+//     deliberate and it is load-bearing: if logging out revealed a library that logging
+//     in hid, the child simply logs out. This project has already been bitten by exactly
+//     that shape of bug once (see the Visibility block below the Items section), and
+//     ListQueue, ListQueueGroups and ListSubscriptions already return nothing at all to
+//     an anonymous caller. The change here is that /api/library and /api/library/status
+//     now do too, for any item that belongs to a named library.
+//
+//  2. An EMPTY library_name is exempt. It is not a library: config.Load refuses a
+//     library with an empty name (internal/config/config.go), so no configured library
+//     can ever be called "", and a row carrying '' is either a legacy row written before
+//     libraries existed or a request that named no destination. Such a row names nothing
+//     to hide, and it stays governed by the per-item and per-owner rules that already
+//     applied to it. Nor is '' a hole a user can climb through: the request handlers
+//     resolve an empty library to a concrete library the caller may actually use before
+//     the row is ever written, and the queue worker always stores the resolved
+//     library's real name, so nothing a non-admin does can produce a '' row any more.
+//
+// The gate COMPOSES with the existing per-item is_private/requested_by gate rather than
+// replacing it. Both predicates are ANDed: hiding a library never exposes a private
+// item, and owning a private item never reveals a library you were not granted.
+
+// Viewer is who is asking. Every read that can reveal a library's existence or its
+// contents takes one, by value, instead of a pair of loose strings and bools — so a
+// caller cannot reach the "show me everything" branch by forgetting an argument.
+//
+// The ZERO VALUE IS THE MOST RESTRICTIVE ONE: an anonymous, non-admin viewer with no
+// user id and therefore no grants. That is not an accident of Go's defaults, it is the
+// property being relied on. A handler that neglects to fill this in denies rather than
+// discloses, and the tests below assert it.
+//
+// UserID is what the library gate keys on; Username is what the pre-existing ownership
+// gate (requested_by) keys on. Both are needed because the two gates key on different
+// things for good reasons — see the block above.
+type Viewer struct {
+	UserID   int64
+	Username string
+	IsAdmin  bool
+}
+
+// ViewerOf builds a Viewer from an authenticated user, or the anonymous Viewer from nil.
+// It is the ONLY conversion, so "logged out" cannot be spelled two ways.
+func ViewerOf(u *User) Viewer {
+	if u == nil {
+		return Viewer{}
+	}
+	return Viewer{UserID: u.ID, Username: u.Username, IsAdmin: u.IsAdmin}
+}
+
+// Anonymous reports whether nobody is signed in. Kept as a method so the meaning of
+// "anonymous" is defined once rather than re-derived at each call site.
+func (v Viewer) Anonymous() bool { return v.UserID == 0 && v.Username == "" }
+
+// libraryScopeSQL is the predicate that restricts a query to the libraries the viewer
+// may see. It takes exactly one argument, the viewer's user id.
+//
+// It is a correlated subquery rather than an IN(...) list built in Go on purpose. A list
+// built in Go needs a second round trip and, worse, needs the caller to remember to make
+// it — and a caller who forgets gets an unfiltered query rather than an empty one. As a
+// literal fragment spliced into the WHERE clause, the only way to omit the filter is to
+// omit it visibly.
+//
+// See the Library visibility block for why an empty library_name is exempt.
+const libraryScopeSQL = `(library_name='' OR library_name IN (` +
+	`SELECT library_name FROM user_library_access WHERE user_id=?))`
+
+// libraryScope returns the predicate and its arguments for this viewer, or ("", nil) for
+// an admin, who bypasses the gate. Callers append both to the WHERE clause they are
+// already building, so the admin bypass is one branch in one place.
+func (v Viewer) libraryScope() (string, []any) {
+	if v.IsAdmin {
+		return "", nil
+	}
+	return libraryScopeSQL, []any{v.UserID}
+}
+
+// LibraryAccess returns the library names granted to one user, in name order. It is the
+// read side of the admin API; it says nothing about admin status, because an admin's
+// access is not stored as grants — it is the absence of the gate.
+func (s *Store) LibraryAccess(userID int64) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT library_name FROM user_library_access WHERE user_id=? ORDER BY library_name`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	// Never nil: the handler marshals this straight to JSON, and `null` and `[]` mean
+	// different things to a UI drawing a list of checkboxes.
+	names := []string{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
+}
+
+// SetLibraryAccess REPLACES a user's grants with exactly the named set.
+//
+// Replace rather than add/remove because the admin UI edits a whole checkbox list, and a
+// PUT of the full set is the only shape that cannot lose a concurrent revocation: an
+// incremental "remove X" that races a "remove Y" leaves one of them applied, while two
+// full replacements leave the state one of the admins actually asked for.
+//
+// It runs in a transaction so a caller can never observe the DELETE without the INSERTs
+// — the window between them is a window in which the user can see NOTHING, which is at
+// least the safe direction, but a half-applied grant set is still not a state anybody
+// asked for.
+func (s *Store) SetLibraryAccess(userID int64, libraries []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
+	if _, err := tx.Exec(`DELETE FROM user_library_access WHERE user_id=?`, userID); err != nil {
+		return fmt.Errorf("clear library access: %w", err)
+	}
+	for _, name := range libraries {
+		if name == "" {
+			// '' is not a library (see the Library visibility block); storing it would
+			// be a grant that grants nothing and reads back as a phantom entry.
+			continue
+		}
+		// OR IGNORE rather than an error: a caller sending the same name twice means
+		// the same thing as sending it once, and the primary key would otherwise turn
+		// a harmless duplicate into a failed save.
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO user_library_access (user_id, library_name) VALUES (?,?)`,
+			userID, name); err != nil {
+			return fmt.Errorf("grant library access: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// CanUseLibrary reports whether the viewer may see, request into, or act on a named
+// library. It is the single-value form of the gate, for the paths that are handed one
+// library name rather than filtering a set of rows.
+//
+// It FAILS CLOSED on a database error: an unanswerable question about permission is
+// answered "no", never "probably fine". (EpisodeActive above takes the same position for
+// the same reason.)
+func (s *Store) CanUseLibrary(v Viewer, name string) (bool, error) {
+	if v.IsAdmin {
+		return true, nil
+	}
+	if name == "" {
+		return true, nil // not a library — see the Library visibility block
+	}
+	var n int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM user_library_access WHERE user_id=? AND library_name=?`,
+		v.UserID, name).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// FilterLibraries returns the subset of names the viewer may see, in the order given.
+//
+// The order is the caller's, and it is meaningful: the request handlers pass the default
+// library first and use the first survivor, so "the default library, unless you cannot
+// see it" is expressed by the ordering rather than by a second lookup.
+func (s *Store) FilterLibraries(v Viewer, names []string) ([]string, error) {
+	out := make([]string, 0, len(names))
+	if v.IsAdmin {
+		return append(out, names...), nil
+	}
+	granted, err := s.LibraryAccess(v.UserID)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]bool, len(granted))
+	for _, g := range granted {
+		allowed[g] = true
+	}
+	for _, n := range names {
+		if allowed[n] {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
 // Subscription auto-fetches newly-aired episodes of a TV season for airing shows.
 //
 // Provider and ProviderID are present on the struct so the API shape matches Item and
@@ -406,6 +620,29 @@ func (s *Store) migrate() error {
 		auth_source      TEXT     NOT NULL DEFAULT 'local',
 		is_admin         INTEGER  NOT NULL DEFAULT 0,
 		created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+	-- user_library_access is an ALLOW-LIST: one row per library a user may see.
+	-- Absence of a row is a DENIAL, not an omission. See the Library visibility
+	-- block further down for why the default is deny rather than allow.
+	--
+	-- The key is (user_id, library_name) and NOT (username, library_name), so
+	-- renaming a user through PATCH /api/users/{id} carries their grants with them
+	-- instead of silently revoking every one. users.id is AUTOINCREMENT, so an id is
+	-- never reused and a newly created account can never inherit a deleted account's
+	-- grants; ON DELETE CASCADE removes them when the account goes (foreign_keys is
+	-- ON in DSN(), so the cascade is real and not decorative).
+	--
+	-- library_name is a config value, not a row in a table we own, so there is
+	-- deliberately no foreign key on it: a library removed from config.yaml leaves a
+	-- dangling grant that grants nothing, and re-adding the library restores it. That
+	-- is the behaviour an operator editing YAML expects, and a dangling grant can only
+	-- ever be inert — it names something that does not exist.
+	CREATE TABLE IF NOT EXISTS user_library_access (
+		user_id      INTEGER NOT NULL,
+		library_name TEXT    NOT NULL,
+		granted_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (user_id, library_name),
+		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 	);
 	CREATE TABLE IF NOT EXISTS items (
 		id         INTEGER  PRIMARY KEY AUTOINCREMENT,
@@ -929,6 +1166,32 @@ func (s *Store) ItemsByTitle(provider, providerID, mediaType string) ([]*Item, e
 		provider, providerID, mediaType)
 }
 
+// VisibleItemsByTitle returns the rows of one provider-qualified title that the viewer
+// may see. It is the gated counterpart of ItemsByTitle, for the bulk removal handlers.
+//
+// The gate belongs in the QUERY rather than in the loop that follows it, because those
+// handlers report how many rows they removed and how many they skipped. A row filtered
+// out here is absent; a row filtered out in the handler's loop would be counted as
+// "skipped", and a skipped count is a measurement of a library the caller was told does
+// not exist.
+func (s *Store) VisibleItemsByTitle(provider, providerID, mediaType string, v Viewer) ([]*Item, error) {
+	if provider == "" {
+		provider = ProviderTMDB
+	}
+	q := `SELECT ` + itemCols + ` FROM items WHERE provider=? AND provider_id=? AND media_type=?`
+	args := []any{provider, providerID, mediaType}
+	if scope, scopeArgs := v.libraryScope(); scope != "" {
+		q += ` AND ` + scope
+		args = append(args, scopeArgs...)
+	}
+	return s.queryItems(q, args...)
+}
+
+// VisibleItemsByTMDB is VisibleItemsByTitle for a TMDB integer id.
+func (s *Store) VisibleItemsByTMDB(tmdbID int, mediaType string, v Viewer) ([]*Item, error) {
+	return s.VisibleItemsByTitle(ProviderTMDB, strconv.Itoa(tmdbID), mediaType, v)
+}
+
 // GetEpisode returns a specific TMDB TV episode item (used for per-episode removal).
 func (s *Store) GetEpisode(tmdbID, season, episode int) (*Item, error) {
 	return s.GetByProviderIdentity(TMDBIdentity(tmdbID, "tv", season, episode))
@@ -1028,7 +1291,13 @@ func (s *Store) SetPrivate(strmPath string, private bool) error {
 // viewer may see. This endpoint feeds the search-result badges and was previously
 // UNFILTERED, so a private item's existence, title and library leaked to anyone who
 // guessed its TMDB id.
-func (s *Store) GetStatusByTMDBIDs(ids []int, viewer string, isAdmin bool) (map[int]Item, error) {
+//
+// It is the sharpest library leak in the whole read surface and needs the gate more than
+// the list does: the response literally names the library each id lives in, and the
+// caller chooses the ids. Without the library predicate a child could paste a list of
+// TMDB ids and read back "this one is in Adults" for each — the exact map of a library
+// they were told does not exist.
+func (s *Store) GetStatusByTMDBIDs(ids []int, v Viewer) (map[int]Item, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -1044,9 +1313,13 @@ func (s *Store) GetStatusByTMDBIDs(ids []int, viewer string, isAdmin bool) (map[
 		args = append(args, id)
 	}
 	where := ""
-	if !isAdmin {
+	if !v.IsAdmin {
 		where = ` AND (is_private=0 OR (requested_by=? AND ?<>''))`
-		args = append(args, viewer, viewer)
+		args = append(args, v.Username, v.Username)
+	}
+	if scope, scopeArgs := v.libraryScope(); scope != "" {
+		where += ` AND ` + scope
+		args = append(args, scopeArgs...)
 	}
 	q := fmt.Sprintf(
 		`SELECT `+itemCols+` FROM items WHERE provider=? AND tmdb_id IN (%s)%s
@@ -1165,17 +1438,28 @@ func (s *Store) ListAllItems() ([]*Item, error) {
 // 'ready' (live) and 'stale' (expired but revivable) items — stale items are the
 // user's request history and surface in the UI with an "Expired" badge.
 //
-// viewer=="" means ANONYMOUS: public items only, never private ones.
-func (s *Store) ListVisible(viewer string, isAdmin bool) ([]*Item, error) {
-	if isAdmin {
+// An anonymous Viewer (the zero value) sees public items in no named library, which
+// after the library gate means: nothing, on any install that has libraries configured.
+//
+// TWO independent predicates, ANDed, and they must stay independent. The privacy one
+// asks "may this person see this ITEM"; the library one asks "may this person see this
+// LIBRARY at all". Collapsing them into one would let either weaken the other — an owner
+// would drag their own private item out of a library they cannot see, or a public item
+// would escape a hidden library because nobody marked it private.
+func (s *Store) ListVisible(v Viewer) ([]*Item, error) {
+	if v.IsAdmin {
 		return s.ListAllItems()
 	}
-	// The `?<>''` guard makes the anonymous case (viewer=="") collapse to
+	// The `?<>''` guard makes the anonymous case (Username=="") collapse to
 	// "public items only" instead of matching rows whose requested_by is blank.
-	return s.queryItems(
-		`SELECT `+itemCols+` FROM items
-		 WHERE status IN ('ready','stale') AND (is_private=0 OR (requested_by=? AND ?<>''))`,
-		viewer, viewer)
+	q := `SELECT ` + itemCols + ` FROM items
+		 WHERE status IN ('ready','stale') AND (is_private=0 OR (requested_by=? AND ?<>''))`
+	args := []any{v.Username, v.Username}
+	if scope, scopeArgs := v.libraryScope(); scope != "" {
+		q += ` AND ` + scope
+		args = append(args, scopeArgs...)
+	}
+	return s.queryItems(q, args...)
 }
 
 func (s *Store) queryItems(q string, args ...any) ([]*Item, error) {
@@ -1365,8 +1649,35 @@ func (s *Store) UpdateQueue(item *QueueItem) error {
 	return err
 }
 
+// GetQueueItem is the UNFILTERED read, for the queue worker and other background code
+// that has no viewer and must see every row. It must never be reached from an HTTP
+// handler — the HTTP path is VisibleQueueItem below. This is the same ListAll*/List*
+// split the rest of this file uses, and for the same reason: "the job view" and "a
+// person's view" are different questions and should not share one function with a
+// sentinel argument.
 func (s *Store) GetQueueItem(id int64) (*QueueItem, error) {
 	return scanQueueItem(s.db.QueryRow(`SELECT `+queueCols+` FROM queue WHERE id=?`, id))
+}
+
+// VisibleQueueItem returns one queue row only if the viewer may see it, and (nil, nil)
+// otherwise — the SAME answer as for a row that does not exist.
+//
+// Indistinguishability is the whole design here. The caller (GET /api/queue/{id}/diagnosis)
+// turns nil into a 404, so "not yours", "in a library you cannot see" and "never existed"
+// are one response. A 403 that meant "this exists but is not for you" would hand a child
+// a working oracle over the id space: walk the integers, collect the 403s, and you have
+// counted a hidden library without ever being allowed to read it.
+func (s *Store) VisibleQueueItem(id int64, v Viewer) (*QueueItem, error) {
+	if v.IsAdmin {
+		return s.GetQueueItem(id)
+	}
+	if v.Username == "" {
+		return nil, nil
+	}
+	scope, scopeArgs := v.libraryScope()
+	args := append([]any{id, v.Username}, scopeArgs...)
+	return scanQueueItem(s.db.QueryRow(
+		`SELECT `+queueCols+` FROM queue WHERE id=? AND requested_by=? AND `+scope, args...))
 }
 
 const (
@@ -1406,28 +1717,38 @@ type QueueFilter struct {
 // number of pending rows.
 func (f QueueFilter) scoped() bool { return f.TMDBID != 0 }
 
-// ListQueue returns queue rows visible to the caller. requester=="" means ANONYMOUS,
-// which sees nothing — a queue row is a named person's viewing request.
-func (s *Store) ListQueue(requester string, isAdmin bool) ([]*QueueItem, error) {
-	return s.ListQueueFiltered(requester, isAdmin, QueueFilter{})
+// ListQueue returns queue rows visible to the caller. An anonymous Viewer sees nothing
+// — a queue row is a named person's viewing request.
+func (s *Store) ListQueue(v Viewer) ([]*QueueItem, error) {
+	return s.ListQueueFiltered(v, QueueFilter{})
 }
 
 // ListQueueFiltered is ListQueue with the grouped tree's filters applied. Both go
 // through this one body deliberately, so the visibility rule cannot drift between
-// them: ANONYMOUS (requester=="") sees nothing, a named user sees only their own rows,
-// an admin sees everything. A filter can only ever NARROW what the caller was already
-// allowed to see — passing a TMDBID never reaches another person's rows.
-func (s *Store) ListQueueFiltered(requester string, isAdmin bool, f QueueFilter) ([]*QueueItem, error) {
+// them: ANONYMOUS sees nothing, a named user sees only their own rows, an admin sees
+// everything. A filter can only ever NARROW what the caller was already allowed to see
+// — passing a TMDBID never reaches another person's rows.
+//
+// The library gate applies here as well as to the library list, and it has to. A queue
+// row carries library_name, and the flat feed serialises it: a user whose access to
+// "Adults" was revoked would otherwise keep reading that library's name off their own
+// historical rows, which is precisely the "invisible everywhere, not merely in one list"
+// property this feature exists to provide.
+func (s *Store) ListQueueFiltered(v Viewer, f QueueFilter) ([]*QueueItem, error) {
 	var (
 		where []string
 		args  []any
 	)
-	if !isAdmin {
-		if requester == "" {
+	if !v.IsAdmin {
+		if v.Username == "" {
 			return nil, nil
 		}
 		where = append(where, `requested_by=?`)
-		args = append(args, requester)
+		args = append(args, v.Username)
+	}
+	if scope, scopeArgs := v.libraryScope(); scope != "" {
+		where = append(where, scope)
+		args = append(args, scopeArgs...)
 	}
 	if f.TMDBID != 0 {
 		where = append(where, `tmdb_id=?`)
@@ -1567,11 +1888,11 @@ type QueueGroups struct {
 // another user requested a title. A consequence worth knowing at the UI: a non-admin's
 // "8 of 12 done" counts only their own requests for that show, exactly as their flat
 // queue list only ever showed their own rows.
-func (s *Store) ListQueueGroups(requester string, isAdmin bool) (*QueueGroups, error) {
+func (s *Store) ListQueueGroups(v Viewer) (*QueueGroups, error) {
 	// Always a real object with real slices, even when the answer is "nothing" — the
 	// handler marshals this straight through and the UI iterates both lists blind.
 	groups := &QueueGroups{Shows: []QueueShowGroup{}, Movies: []QueueShowGroup{}}
-	if !isAdmin && requester == "" {
+	if !v.IsAdmin && v.Username == "" {
 		return groups, nil
 	}
 	q := `SELECT tmdb_id, media_type, season,
@@ -1579,10 +1900,24 @@ func (s *Store) ListQueueGroups(requester string, isAdmin bool) (*QueueGroups, e
                  SUM(status='pending'), SUM(status='processing'),
                  SUM(status='done'), SUM(status='failed'), SUM(status='cancelled')
           FROM queue`
-	var args []any
-	if !isAdmin {
-		q += ` WHERE requested_by=?`
-		args = append(args, requester)
+	// Both predicates go INSIDE the aggregate, for the same reason the requester one
+	// always did: a COUNT computed over rows the viewer may not see and filtered
+	// afterwards has already leaked: "3 pending" is enough to establish that a title
+	// exists in a library the viewer was told nothing about.
+	var (
+		where []string
+		args  []any
+	)
+	if !v.IsAdmin {
+		where = append(where, `requested_by=?`)
+		args = append(args, v.Username)
+	}
+	if scope, scopeArgs := v.libraryScope(); scope != "" {
+		where = append(where, scope)
+		args = append(args, scopeArgs...)
+	}
+	if len(where) > 0 {
+		q += ` WHERE ` + strings.Join(where, ` AND `)
 	}
 	// MAX(title) and MAX(poster_url) are not a heuristic. Both columns are DENORMALISED
 	// copies of one TMDB lookup, written identically onto every row of a title, so any
@@ -1714,24 +2049,30 @@ func parseSQLiteTimestamp(s string) time.Time {
 // CancelQueueItem cancels a pending row. Returns the number of rows affected so the
 // handler can distinguish "cancelled" from "not yours / not pending / gone" instead of
 // reporting success on an unchanged row.
-func (s *Store) CancelQueueItem(id int64, requester string, isAdmin bool) (int64, error) {
-	var (
-		res sql.Result
-		err error
-	)
-	if isAdmin {
-		res, err = s.db.Exec(
+//
+// The library gate applies to the mutation as well as to the read, and the reason is the
+// rows-affected count: it is a one-bit oracle. A row in a hidden library that answered
+// "1 row cancelled" would confirm to the caller that the row is there, which is the same
+// disclosure the read paths refuse to make. Gated, every such attempt returns 0 — the
+// same answer as for a row that never existed.
+func (s *Store) CancelQueueItem(id int64, v Viewer) (int64, error) {
+	if v.IsAdmin {
+		res, err := s.db.Exec(
 			`UPDATE queue SET status='cancelled', stage=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'`,
 			StageCancelled, id)
-	} else {
-		if requester == "" {
-			return 0, nil
+		if err != nil {
+			return 0, err
 		}
-		res, err = s.db.Exec(
-			`UPDATE queue SET status='cancelled', stage=?, updated_at=CURRENT_TIMESTAMP
-			 WHERE id=? AND status='pending' AND requested_by=?`,
-			StageCancelled, id, requester)
+		return res.RowsAffected()
 	}
+	if v.Username == "" {
+		return 0, nil
+	}
+	scope, scopeArgs := v.libraryScope()
+	args := append([]any{StageCancelled, id, v.Username}, scopeArgs...)
+	res, err := s.db.Exec(
+		`UPDATE queue SET status='cancelled', stage=?, updated_at=CURRENT_TIMESTAMP
+			 WHERE id=? AND status='pending' AND requested_by=? AND `+scope, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -1750,42 +2091,49 @@ func (s *Store) CancelQueueItem(id int64, requester string, isAdmin bool) (int64
 // The ownership rule matches DeleteQueueItem exactly: an admin clears everything, a
 // signed-in user clears only their own, and an anonymous caller clears nothing. In-flight
 // rows are never touched, so this cannot cancel work by accident.
-func (s *Store) DeleteFinishedQueue(requester string, isAdmin bool) (int64, error) {
-	var (
-		res sql.Result
-		err error
-	)
-	if isAdmin {
-		res, err = s.db.Exec(`DELETE FROM queue WHERE status IN ('done','failed','cancelled')`)
-	} else {
-		if requester == "" {
-			return 0, nil
+func (s *Store) DeleteFinishedQueue(v Viewer) (int64, error) {
+	if v.IsAdmin {
+		res, err := s.db.Exec(`DELETE FROM queue WHERE status IN ('done','failed','cancelled')`)
+		if err != nil {
+			return 0, err
 		}
-		res, err = s.db.Exec(
-			`DELETE FROM queue WHERE requested_by=? AND status IN ('done','failed','cancelled')`,
-			requester)
+		return res.RowsAffected()
 	}
+	if v.Username == "" {
+		return 0, nil
+	}
+	// Library-gated like every other queue path, which here means a "clear finished"
+	// leaves behind the caller's own terminal rows in libraries they can no longer see.
+	// That is the correct trade: those rows are already invisible to them, so leaving
+	// them costs nothing visible, while deleting them would make the reported count a
+	// measure of how much is hidden.
+	scope, scopeArgs := v.libraryScope()
+	args := append([]any{v.Username}, scopeArgs...)
+	res, err := s.db.Exec(
+		`DELETE FROM queue WHERE requested_by=? AND status IN ('done','failed','cancelled')
+		     AND `+scope, args...)
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
 }
 
-func (s *Store) DeleteQueueItem(id int64, requester string, isAdmin bool) (int64, error) {
-	var (
-		res sql.Result
-		err error
-	)
-	if isAdmin {
-		res, err = s.db.Exec(`DELETE FROM queue WHERE id=?`, id)
-	} else {
-		if requester == "" {
-			return 0, nil
+func (s *Store) DeleteQueueItem(id int64, v Viewer) (int64, error) {
+	if v.IsAdmin {
+		res, err := s.db.Exec(`DELETE FROM queue WHERE id=?`, id)
+		if err != nil {
+			return 0, err
 		}
-		res, err = s.db.Exec(
-			`DELETE FROM queue WHERE id=? AND requested_by=? AND status IN ('done','failed','cancelled')`,
-			id, requester)
+		return res.RowsAffected()
 	}
+	if v.Username == "" {
+		return 0, nil
+	}
+	scope, scopeArgs := v.libraryScope()
+	args := append([]any{id, v.Username}, scopeArgs...)
+	res, err := s.db.Exec(
+		`DELETE FROM queue WHERE id=? AND requested_by=? AND status IN ('done','failed','cancelled')
+		     AND `+scope, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -1909,16 +2257,28 @@ func (s *Store) SubscriptionExists(tmdbID, season int) (bool, error) {
 	return n > 0, err
 }
 
-// ListSubscriptions returns subscriptions visible to the caller. requester=="" means
-// ANONYMOUS, which sees nothing — a subscription names who requested it.
-func (s *Store) ListSubscriptions(requester string, isAdmin bool) ([]*Subscription, error) {
-	if isAdmin {
+// ListSubscriptions returns subscriptions visible to the caller. An anonymous Viewer
+// sees nothing — a subscription names who requested it.
+//
+// It is library-gated too, and that also gates the release CALENDAR: GET /api/calendar
+// builds its "your subscribed shows" section out of this exact call, so a show followed
+// into a library the viewer can no longer see stops appearing there as well. That is the
+// read path most easily missed, because the calendar looks like a TMDB feature rather
+// than a library one.
+func (s *Store) ListSubscriptions(v Viewer) ([]*Subscription, error) {
+	if v.IsAdmin {
 		return s.querySubs(`SELECT ` + subCols + ` FROM subscriptions ORDER BY created_at DESC`)
 	}
-	if requester == "" {
+	if v.Username == "" {
 		return nil, nil
 	}
-	return s.querySubs(`SELECT `+subCols+` FROM subscriptions WHERE requested_by=? ORDER BY created_at DESC`, requester)
+	q := `SELECT ` + subCols + ` FROM subscriptions WHERE requested_by=?`
+	args := []any{v.Username}
+	if scope, scopeArgs := v.libraryScope(); scope != "" {
+		q += ` AND ` + scope
+		args = append(args, scopeArgs...)
+	}
+	return s.querySubs(q+` ORDER BY created_at DESC`, args...)
 }
 
 // ListAiringSubscriptions returns subscriptions still flagged as airing (for the checker task).
@@ -1951,19 +2311,20 @@ func (s *Store) MarkSubscriptionChecked(id int64, isAiring bool) error {
 
 // DeleteSubscription removes a subscription the caller owns (or any, for an admin).
 // Returns rows affected so the handler can report "not yours" rather than success.
-func (s *Store) DeleteSubscription(id int64, requester string, isAdmin bool) (int64, error) {
-	var (
-		res sql.Result
-		err error
-	)
-	if isAdmin {
-		res, err = s.db.Exec(`DELETE FROM subscriptions WHERE id=?`, id)
-	} else {
-		if requester == "" {
-			return 0, nil
+func (s *Store) DeleteSubscription(id int64, v Viewer) (int64, error) {
+	if v.IsAdmin {
+		res, err := s.db.Exec(`DELETE FROM subscriptions WHERE id=?`, id)
+		if err != nil {
+			return 0, err
 		}
-		res, err = s.db.Exec(`DELETE FROM subscriptions WHERE id=? AND requested_by=?`, id, requester)
+		return res.RowsAffected()
 	}
+	if v.Username == "" {
+		return 0, nil
+	}
+	scope, scopeArgs := v.libraryScope()
+	args := append([]any{id, v.Username}, scopeArgs...)
+	res, err := s.db.Exec(`DELETE FROM subscriptions WHERE id=? AND requested_by=? AND `+scope, args...)
 	if err != nil {
 		return 0, err
 	}
