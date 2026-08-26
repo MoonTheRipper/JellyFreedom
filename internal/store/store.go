@@ -1192,6 +1192,43 @@ func (s *Store) VisibleItemsByTMDB(tmdbID int, mediaType string, v Viewer) ([]*I
 	return s.VisibleItemsByTitle(ProviderTMDB, strconv.Itoa(tmdbID), mediaType, v)
 }
 
+// ItemsByProvider returns every row registered under one provider, newest first.
+//
+// It exists for the external ingest API, whose whole model is that a provider owns a
+// namespace: the daemon that registered these rows is the only thing that can refresh
+// them, so it needs to be able to ask what it has already put here. Scoping the answer
+// to the provider is the point — a caller holding the ingest secret for "anidb" has no
+// business enumerating the TMDB library, and a query that took no provider would let it.
+//
+// This is deliberately NOT visibility-filtered. There is no Viewer: the caller is a
+// daemon authenticated by a server-held shared secret, not a logged-in person, so there
+// is no per-user library grant to apply. The gate that matters for it is the one on the
+// WRITE side, which refuses to register into a library that is not configured.
+func (s *Store) ItemsByProvider(provider string) ([]*Item, error) {
+	if provider == "" {
+		provider = ProviderTMDB
+	}
+	return s.queryItems(
+		`SELECT `+itemCols+` FROM items WHERE provider=? ORDER BY updated DESC`, provider)
+}
+
+// ItemsByProviderID returns every row of one provider-qualified title, across BOTH
+// media types.
+//
+// ItemsByTitle already does this for a known media type, and every internal caller has
+// one because it came from a /play route that spelled it. The ingest API's delete does
+// not: "unregister this id" is the natural shape of a DELETE on an item URL, and making
+// the caller restate whether the thing it is deleting is a movie or a series would turn
+// a successful delete into a silent no-op whenever it got that wrong.
+func (s *Store) ItemsByProviderID(provider, providerID string) ([]*Item, error) {
+	if provider == "" {
+		provider = ProviderTMDB
+	}
+	return s.queryItems(
+		`SELECT `+itemCols+` FROM items WHERE provider=? AND provider_id=?`,
+		provider, providerID)
+}
+
 // GetEpisode returns a specific TMDB TV episode item (used for per-episode removal).
 func (s *Store) GetEpisode(tmdbID, season, episode int) (*Item, error) {
 	return s.GetByProviderIdentity(TMDBIdentity(tmdbID, "tv", season, episode))

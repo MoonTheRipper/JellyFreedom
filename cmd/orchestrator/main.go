@@ -142,6 +142,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Shared secret for the external-provider ingest API (generated on first run).
+	//
+	// Fatal on failure, exactly like the webhook's. sharedSecretMatch fails closed on an
+	// empty stored secret, so a silently-skipped initialisation would not open the
+	// endpoint — it would make it permanently unusable instead, and an operator would
+	// have no way to tell that from "my daemon's secret is wrong".
+	if _, err := ensureIngestSecret(db); err != nil {
+		slog.Error("failed to initialise the provider ingest secret", "err", err)
+		os.Exit(1)
+	}
+
 	// Apply the cache profile to TorrServer so the same binary adapts to the host.
 	// Retries in the background: at boot we can win the race against TorrServer.
 	applyTorrCacheAtStartup(ctx, tsClient, cfg)
@@ -2027,6 +2038,10 @@ func main() {
 		// it — sqlite3 is not installed on a stock box. Without this, an upgrade would
 		// silently stop cleaning up torrents with no recoverable path.
 		webhookSecret := get(webhookSecretSetting)
+		// The provider-ingest secret, for the same reason and under the same admin-only
+		// gate: it is generated on first run, a daemon cannot call the API without it,
+		// and there is otherwise no way to read it off a box with no sqlite3 installed.
+		ingestSecret := get(ingestSecretSetting)
 		if readErr != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read the saved settings", readErr)
 			return
@@ -2043,6 +2058,12 @@ func main() {
 				"secret": webhookSecret,
 				"header": WebhookHeader,
 				"url":    strings.TrimRight(cfg.Server.PublicURL, "/") + "/webhook/jellyfin",
+			},
+			// Everything a provider daemon needs to call the ingest API.
+			"ingest": map[string]any{
+				"secret": ingestSecret,
+				"header": IngestHeader,
+				"url":    strings.TrimRight(cfg.Server.PublicURL, "/") + "/api/provider/{provider}/items/{id}",
 			},
 			"quality":   quality,
 			"cache":     cache,
@@ -2497,6 +2518,13 @@ func main() {
 	})))
 
 	// ------------------------------------------------------------------ //
+	// External-provider ingest API — authenticated by a shared secret, not a session.
+	// Registered on the PUBLIC mux on purpose: the "/api/" catch-all below hands
+	// everything else under /api/ to the admin-session-protected mux, and a daemon has no
+	// session to hand it. These patterns are strictly more specific than "/api/", so
+	// ServeMux routes them here and everything else still reaches the protected mux.
+	registerProviderIngest(mux, db, cfg, jfClient)
+
 	// Jellyfin webhook — public (called by Jellyfin server, no session)
 	// ------------------------------------------------------------------ //
 	// This endpoint is state-changing and cannot carry a session (Jellyfin's webhook
@@ -2630,6 +2658,409 @@ func main() {
 		// exit. Exiting 0 here would leave JellyFreedom stopped. See selfrestart.go.
 		os.Exit(selfRestartExitCode)
 	}
+}
+
+// ── External-provider ingest API ──────────────────────────────────────────────
+//
+// Everything else that puts a row in the library goes through the same pipeline: TMDB
+// says what a title is, Prowlarr says what releases exist, the picker chooses one. That
+// pipeline is the reason only TMDB identities can enter the library — /play is already
+// provider-namespaced and will happily stream a non-TMDB row from its cached info hash,
+// but nothing can CREATE such a row.
+//
+// This is the generic way in. A separate local process that has already done its own
+// metadata lookup and its own release selection registers the finished result: here is
+// an identity, here is what to call it, here is the magnet that plays it. JellyFreedom
+// stores it, writes the .strm, and serves playback from the cached hash. It performs no
+// metadata lookup and runs no indexer search for these rows — which is precisely what
+// makes it work for a provider JellyFreedom knows nothing about, and precisely why a
+// stale row is the CALLER's problem: re-register it, because JellyFreedom cannot
+// re-resolve what it cannot search for.
+//
+// Nothing here names a provider or assumes anything about one. An anime database, a
+// personal archive and a public-domain film collection are all the same shape to it.
+//
+// The threat model is the whole design. This endpoint writes files into a Jellyfin media
+// root and inserts rows into the library, on behalf of a caller holding one shared
+// secret, so every field is validated against the sink it actually reaches — see the
+// validation block in helpers.go — and the two identity fields are validated with the
+// SAME functions the /play routes use, not a second copy that could drift away from them.
+func registerProviderIngest(mux *http.ServeMux, db *store.Store, cfg *config.Config, jf *jellyfin.Client) {
+	// ingestProvider validates the {provider} path segment and writes the refusal itself.
+	//
+	// library.ValidProvider is the same allowlist the /play/p/{provider} routes and the
+	// capability-token encoder use. Reusing it is not tidiness: the token that authorises
+	// playback is an HMAC over a ':'-joined identity, and its unforgeability depends on no
+	// field being able to contain the delimiter. A second, looser charset here would mint
+	// .strm files whose identities collide with somebody else's under that encoding.
+	ingestProvider := func(w http.ResponseWriter, r *http.Request) (string, bool) {
+		p := r.PathValue("provider")
+		if !library.ValidProvider(p) {
+			jsonErr(w, "bad provider", http.StatusBadRequest)
+			return "", false
+		}
+		// The TMDB namespace is owned by the built-in resolve pipeline and is closed to
+		// this API. Two independent reasons, either of which is sufficient:
+		//
+		// Its rows are the ones /play can genuinely re-resolve, and their identity is
+		// mirrored into the legacy tmdb_id column — so a row written here would be found
+		// by TMDB-shaped lookups all over the program as a title that TMDB never
+		// described. And its .strm URLs are the frozen legacy shape carrying ~1,000 live
+		// capability tokens; letting an external caller mint rows in that space means
+		// letting it choose the identity those tokens authorise.
+		if p == library.ProviderTMDB {
+			jsonErr(w, "that provider namespace is not writable through this API", http.StatusBadRequest)
+			return "", false
+		}
+		return p, true
+	}
+
+	// ingestItemID validates the {id} path segment. Same reasoning as the provider: this
+	// is library.ValidProviderID, the function /play and the token encoder use, so an id
+	// that can be registered is by construction an id that can be routed and signed.
+	ingestItemID := func(w http.ResponseWriter, r *http.Request) (string, bool) {
+		id := r.PathValue("id")
+		if !library.ValidProviderID(id) {
+			jsonErr(w, "bad item id", http.StatusBadRequest)
+			return "", false
+		}
+		return id, true
+	}
+
+	// ingestLibrary resolves and AUTHORISES the destination library.
+	//
+	// It returns errUnknownLibrary — the identical value, and therefore the identical
+	// message, that the browser-facing request handlers return — for a name that does not
+	// exist AND for a name whose type is wrong for the media. Indistinguishable answers
+	// are the point: a caller that can tell those two apart can enumerate the operator's
+	// library names one guess at a time, which is the exact knowledge the per-library
+	// gate exists to withhold. There is no per-user check here because there is no user;
+	// the secret authenticates a daemon, and "which libraries may this daemon use" is
+	// answered by "the ones the operator configured".
+	ingestLibrary := func(name, mediaType string) (*config.Library, error) {
+		if name != "" {
+			lib := cfg.FindLibrary(name)
+			if lib == nil || lib.Type != mediaType {
+				return nil, errUnknownLibrary
+			}
+			return lib, nil
+		}
+		// An empty name names nothing, so there is nothing to refuse: fall back to the
+		// configured default for the media type, exactly as the queue worker would.
+		lib := cfg.DefaultLibrary(mediaType)
+		if lib == nil || lib.Path == "" {
+			return nil, errNoLibraryAvailable
+		}
+		return lib, nil
+	}
+
+	// ingestRefusal mirrors libraryRefusal: a 400 about the body, never a 403 about the
+	// caller. A 403 would confirm that the named library exists.
+	ingestRefusal := func(w http.ResponseWriter, err error) {
+		if errors.Is(err, errUnknownLibrary) || errors.Is(err, errNoLibraryAvailable) {
+			jsonErr(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		jsonErr(w, "could not resolve the destination library", http.StatusInternalServerError)
+	}
+
+	// ------------------------------------------------------------------ //
+	// PUT /api/provider/{provider}/items/{id} — upsert one item
+	// ------------------------------------------------------------------ //
+	mux.HandleFunc("PUT /api/provider/{provider}/items/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !ingestAuthorised(db, r) {
+			// No detail, and the same answer for a missing header as for a wrong one.
+			slog.Warn("ingest: rejected an unauthenticated call", "remote", r.RemoteAddr)
+			jsonErr(w, "unauthorised", http.StatusUnauthorized)
+			return
+		}
+		provider, ok := ingestProvider(w, r)
+		if !ok {
+			return
+		}
+		id, ok := ingestItemID(w, r)
+		if !ok {
+			return
+		}
+		var req struct {
+			MediaType    string `json:"type"`
+			Title        string `json:"title"`
+			Year         string `json:"year"`
+			PosterURL    string `json:"poster_url"`
+			Season       int    `json:"season"`
+			Episode      int    `json:"episode"`
+			Library      string `json:"library"`
+			Magnet       string `json:"magnet"`
+			InfoHash     string `json:"info_hash"`
+			ReleaseTitle string `json:"release_title"`
+			FileIndex    int    `json:"file_index"`
+		}
+		// A tighter bound than the app-wide 1 MiB, for the same reason the WireGuard
+		// upload has its own: the largest legitimate body here is a few hundred bytes, so
+		// anything approaching the general limit is not a request this endpoint has a use
+		// for. MaxBytesReader makes the decode fail rather than buffering the excess.
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxIngestBody)).Decode(&req); err != nil {
+			jsonErr(w, "malformed or oversized request body", http.StatusBadRequest)
+			return
+		}
+		if !library.ValidMediaType(req.MediaType) {
+			jsonErr(w, "type must be 'movie' or 'tv'", http.StatusBadRequest)
+			return
+		}
+		// Season and episode are FORCED to zero for a movie rather than merely ignored.
+		// The identity a movie is stored under has to be the identity
+		// /play/p/{provider}/movie/{id} looks up, and that route has no season or episode
+		// to pass, so it always asks for (0, 0). A row written with season 3 on a movie
+		// would exist, be listed, and never once be found by playback.
+		season, episode := 0, 0
+		if req.MediaType == "tv" {
+			season, episode = req.Season, req.Episode
+			// Zero season is legal (specials); negative is not routable, since the /play
+			// route parses these back out of a path and rejects a negative there.
+			if season < 0 || episode < 0 || season > maxIngestSeasonOrEp || episode > maxIngestSeasonOrEp {
+				jsonErr(w, "season and episode must be between 0 and 9999", http.StatusBadRequest)
+				return
+			}
+		}
+		title := strings.TrimSpace(req.Title)
+		if title == "" || len([]rune(title)) > maxIngestTitleLen || hasControlChars(title) {
+			jsonErr(w, "title is required and must be at most 200 printable characters", http.StatusBadRequest)
+			return
+		}
+		if req.Year != "" && !yearRe.MatchString(req.Year) {
+			jsonErr(w, "year must be four digits, or omitted", http.StatusBadRequest)
+			return
+		}
+		if req.PosterURL != "" && !validPosterURL(req.PosterURL) {
+			jsonErr(w, "poster_url must be an absolute http(s) URL", http.StatusBadRequest)
+			return
+		}
+		if len(req.ReleaseTitle) > maxIngestReleaseLen || hasControlChars(req.ReleaseTitle) {
+			jsonErr(w, "release_title is too long", http.StatusBadRequest)
+			return
+		}
+		if req.FileIndex < 0 || req.FileIndex > maxIngestFileIndex {
+			jsonErr(w, "file_index is out of range", http.StatusBadRequest)
+			return
+		}
+		hash, magnet, err := ingestSource(req.InfoHash, req.Magnet)
+		if err != nil {
+			jsonErr(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		lib, err := ingestLibrary(req.Library, req.MediaType)
+		if err != nil {
+			ingestRefusal(w, err)
+			return
+		}
+
+		// Build the .strm contents BEFORE touching the disk. playURLFor returns "" for an
+		// identity it cannot encode or sign, and a .strm holding a URL with no capability
+		// token is a 403 at playback — a silent failure discovered by a user, days later.
+		ref := playRef{provider: provider, mediaType: req.MediaType, providerID: id, season: season, episode: episode}
+		streamURL := playURLFor(cfg.Server.PublicURL, ref)
+		if streamURL == "" {
+			slog.Error("ingest: could not build a play URL", "provider", provider, "type", req.MediaType)
+			jsonErr(w, "could not build a play URL for that identity", http.StatusInternalServerError)
+			return
+		}
+
+		// The row this identity already has, if any — needed to clean up after a RENAME.
+		// The items table's conflict key is strm_path, so re-registering the same identity
+		// under a different title inserts a second row and orphans the first file rather
+		// than replacing it. Read it before the write; act on it after.
+		existing, err := db.GetByProviderIdentity(ref.storeIdentity())
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)
+			return
+		}
+
+		var strmPath string
+		if req.MediaType == "movie" {
+			strmPath, err = library.WriteMovieStrm(lib.Path, title, req.Year, streamURL)
+		} else {
+			strmPath, err = library.WriteTVStrm(lib.Path, title, req.Year, season, episode, streamURL)
+		}
+		if err != nil {
+			// The error is logged whole and answered generically: it is an *os.PathError
+			// carrying an absolute server path, which is not a fact this caller is owed.
+			httpFail(w, r, http.StatusInternalServerError, "could not write the library file", err)
+			return
+		}
+
+		item := &store.Item{
+			MediaType: req.MediaType, Title: title, Year: req.Year,
+			InfoHash: hash, FileIndex: req.FileIndex, StrmPath: strmPath,
+			LibraryName: lib.Name, Status: "ready", Updated: time.Now(),
+			PosterURL: req.PosterURL, Magnet: magnet, ReleaseTitle: req.ReleaseTitle,
+			Season: season, Episode: episode,
+		}
+		// SetProviderIdentity rather than assigning the fields: it also clears TMDBID, and
+		// the store REFUSES a row that carries both a provider identity and a tmdb_id,
+		// because such a row would be found by two different lookups as two different things.
+		item.SetProviderIdentity(provider, id)
+		if err := db.Upsert(item); err != nil {
+			// Roll the .strm back, but ONLY if we just created it. Deleting the file when
+			// the row already pointed at it would turn a failed refresh into a broken
+			// library entry — strictly worse than the state we started in.
+			if existing == nil || existing.StrmPath != strmPath {
+				if rerr := library.RemoveStrm(strmPath); rerr != nil {
+					slog.Error("ingest: could not roll back the .strm after a failed upsert", "err", rerr)
+				}
+			}
+			httpFail(w, r, http.StatusInternalServerError, "could not record that item", err)
+			return
+		}
+
+		// Renamed: the old file and row are now unreachable from this identity, so remove
+		// them. Failures here are logged, not returned — the registration SUCCEEDED, and
+		// reporting failure for a leftover file would make the caller retry a write that
+		// already happened.
+		if existing != nil && existing.StrmPath != "" && existing.StrmPath != strmPath {
+			if rerr := library.RemoveStrm(existing.StrmPath); rerr != nil {
+				slog.Error("ingest: could not remove the superseded .strm", "err", rerr)
+			}
+			if derr := db.DeleteItem(existing.StrmPath); derr != nil {
+				slog.Error("ingest: could not remove the superseded library row", "err", derr)
+			}
+		}
+
+		notifyJellyfinScan(jf)
+		slog.Info("ingest: registered an item",
+			"provider", provider, "id", id, "type", req.MediaType, "s", season, "e", episode, "library", lib.Name)
+		// The response deliberately carries no strm_path and no play URL. The path is a
+		// server filesystem path, and the play URL embeds a capability token — neither is
+		// needed to register an item, and an endpoint that hands out capability tokens is
+		// a larger thing than one that does not.
+		jsonOK(w, map[string]any{
+			"status": "ok", "provider": provider, "id": id, "type": req.MediaType,
+			"season": season, "episode": episode, "library": lib.Name, "info_hash": hash,
+		})
+	})
+
+	// ------------------------------------------------------------------ //
+	// DELETE /api/provider/{provider}/items/{id} — unregister
+	// ------------------------------------------------------------------ //
+	//
+	// Removes every row this provider registered under that id, plus each row's .strm.
+	// Optional ?season=&episode= narrows it to a single episode, which is the delete that
+	// matches a single PUT; without them, "delete this id" means the whole title, which is
+	// what a caller retiring a series wants and is otherwise a loop of N requests.
+	//
+	// It is IDEMPOTENT: deleting something that is not there is a 200 with removed:0, not
+	// a 404. A daemon reconciling its own state re-issues deletes freely, and an error for
+	// "already gone" would only teach it to ignore errors.
+	//
+	// No TorrServer drop happens here. taskOrphanCleanup already drops every torrent that
+	// no library row references, so the cleanup is covered — and doing it inline would put
+	// a network call to another service inside a delete, which is how a delete starts
+	// failing for reasons that have nothing to do with the delete.
+	mux.HandleFunc("DELETE /api/provider/{provider}/items/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !ingestAuthorised(db, r) {
+			slog.Warn("ingest: rejected an unauthenticated call", "remote", r.RemoteAddr)
+			jsonErr(w, "unauthorised", http.StatusUnauthorized)
+			return
+		}
+		provider, ok := ingestProvider(w, r)
+		if !ok {
+			return
+		}
+		id, ok := ingestItemID(w, r)
+		if !ok {
+			return
+		}
+		// Both or neither. One alone would silently mean "season 0" or "episode 0" and
+		// delete something the caller did not name.
+		q := r.URL.Query()
+		var season, episode int
+		narrowed := q.Has("season") && q.Has("episode")
+		if q.Has("season") != q.Has("episode") {
+			jsonErr(w, "season and episode must be given together, or not at all", http.StatusBadRequest)
+			return
+		}
+		if narrowed {
+			var e1, e2 error
+			season, e1 = strconv.Atoi(q.Get("season"))
+			episode, e2 = strconv.Atoi(q.Get("episode"))
+			if e1 != nil || e2 != nil || season < 0 || episode < 0 {
+				jsonErr(w, "season and episode must be non-negative integers", http.StatusBadRequest)
+				return
+			}
+		}
+		items, err := db.ItemsByProviderID(provider, id)
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)
+			return
+		}
+		removed := 0
+		for _, it := range items {
+			if narrowed && (it.Season != season || it.Episode != episode) {
+				continue
+			}
+			if rerr := library.RemoveStrm(it.StrmPath); rerr != nil {
+				// Log and carry on: leaving the ROW behind for a file we could not delete
+				// would leave a library entry that plays nothing.
+				slog.Error("ingest: could not remove a .strm", "provider", provider, "err", rerr)
+			}
+			if derr := db.DeleteItem(it.StrmPath); derr != nil {
+				httpFail(w, r, http.StatusInternalServerError, "could not remove that item", derr)
+				return
+			}
+			removed++
+		}
+		if removed > 0 {
+			notifyJellyfinScan(jf)
+			slog.Info("ingest: unregistered items", "provider", provider, "id", id, "count", removed)
+		}
+		jsonOK(w, map[string]any{"status": "ok", "removed": removed})
+	})
+
+	// ------------------------------------------------------------------ //
+	// GET /api/provider/{provider}/items — what this provider has registered
+	// ------------------------------------------------------------------ //
+	//
+	// Scoped to the provider in the path, so a secret holder sees its own namespace and
+	// nothing else. The shape is purpose-built rather than store.Item: strm_path is a
+	// server filesystem path and magnet carries a tracker list, and neither is needed to
+	// answer "what have I already registered".
+	mux.HandleFunc("GET /api/provider/{provider}/items", func(w http.ResponseWriter, r *http.Request) {
+		if !ingestAuthorised(db, r) {
+			slog.Warn("ingest: rejected an unauthenticated call", "remote", r.RemoteAddr)
+			jsonErr(w, "unauthorised", http.StatusUnauthorized)
+			return
+		}
+		provider, ok := ingestProvider(w, r)
+		if !ok {
+			return
+		}
+		items, err := db.ItemsByProvider(provider)
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)
+			return
+		}
+		type row struct {
+			ID        string    `json:"id"`
+			MediaType string    `json:"type"`
+			Title     string    `json:"title"`
+			Year      string    `json:"year"`
+			Season    int       `json:"season"`
+			Episode   int       `json:"episode"`
+			Library   string    `json:"library"`
+			InfoHash  string    `json:"info_hash"`
+			PosterURL string    `json:"poster_url"`
+			Status    string    `json:"status"`
+			Updated   time.Time `json:"updated"`
+		}
+		out := make([]row, 0, len(items))
+		for _, it := range items {
+			out = append(out, row{
+				ID: it.ProviderID, MediaType: it.MediaType, Title: it.Title, Year: it.Year,
+				Season: it.Season, Episode: it.Episode, Library: it.LibraryName,
+				InfoHash: it.InfoHash, PosterURL: it.PosterURL, Status: it.Status, Updated: it.Updated,
+			})
+		}
+		jsonOK(w, out)
+	})
 }
 
 func buildProtectedMux(db *store.Store, cfg *config.Config, assets fs.FS, indexerClient *indexer.Client,

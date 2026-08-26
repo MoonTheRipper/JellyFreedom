@@ -1,29 +1,182 @@
 package library
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
+
+// ErrUnsafePath is returned when a computed .strm path would land outside the library
+// directory it was supposed to go into.
+//
+// It should be unreachable: safeName strips every path separator and refuses a name
+// made only of dots, so nothing it produces can traverse. That is exactly why the check
+// exists. safeName is a string transformation, and a string transformation is one
+// forgotten character class away from being wrong — while the containment check is a
+// statement about the RESULT, which stays true no matter what safeName does. The
+// library directory is a Jellyfin media root; a caller who could write one byte outside
+// it could write into any of them.
+var ErrUnsafePath = errors.New("library: refusing to write outside the library directory")
+
+// MaxNameLen bounds ONE path component, in bytes, before the ".strm" suffix and the
+// " S00E00" infix are appended.
+//
+// It is not cosmetic. Every filesystem this runs on caps a single name at 255 bytes
+// (NAME_MAX on ext4/xfs/btrfs, and the same figure on APFS and on SMB shares), and a
+// name over that limit fails the write with ENAMETOOLONG rather than being trimmed —
+// so an unbounded title is a broken library entry, not merely an ugly one. 240 is
+// chosen so that the LONGEST thing built from a safe name still fits: the TV episode
+// file is "<name> S00E00.strm", which is name + 12 bytes, i.e. at most 252.
+//
+// Truncation cannot change the path of anything already in a live library: at 241 bytes
+// or more, every name this package would have produced was already unwritable.
+const MaxNameLen = 240
+
+// unsafeChars is the set of bytes that must never reach a filename.
+//
+// Deliberately an ALLOW-nothing denylist of the characters that carry meaning to a
+// filesystem or a shell-adjacent consumer, rather than an allowlist of printable ASCII:
+// titles are real-world text in every script, and an allowlist would mangle most of the
+// world's film names into underscores. The classes, and why each is here:
+//
+//   - '/' and '\\' are path separators. Removing them is what makes traversal
+//     impossible in the first place — "../../etc" becomes "....etc", a single component.
+//   - ':' separates a volume on macOS and an alternate data stream on SMB.
+//   - '<' '>' '"' '|' '?' '*' are illegal on Windows/SMB and are wildcards to a shell.
+//   - \x00-\x1f are C0 controls: NUL truncates a C string, and \n \r turn one filename
+//     into two lines in every log this path is ever printed to.
+//   - \x7f is DEL, which is invisible in a terminal and belongs to no title.
+//   - U+200B-U+200F and U+202A-U+202E and U+2066-U+2069 are zero-width and
+//     bidirectional-override characters. They are legal in a filename and invisible in
+//     one, which is precisely the problem: they let a supplied title render in a file
+//     manager as a completely different name from the bytes on disk.
+//
+// What is NOT stripped, on purpose: unicode characters that merely LOOK like a
+// separator, e.g. U+2044 FRACTION SLASH or U+FF0F FULLWIDTH SOLIDUS. They are ordinary
+// letters to every filesystem — they cannot traverse anything — and removing them would
+// corrupt titles that legitimately contain them. Their risk is visual spoofing of a
+// name a human reads, which is not a risk this function can meaningfully address and
+// not one that reaches outside the library directory.
+var unsafeChars = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f\x7f\x{200b}-\x{200f}\x{202a}-\x{202e}\x{2066}-\x{2069}]`)
+
+// reservedNames are the DOS device names. Windows and SMB refuse them as a filename
+// with or without an extension, so "NUL.strm" on a CIFS-mounted library is a write that
+// fails for a reason nobody will guess. Free to handle, and unreachable from this
+// package's own callers (which always append " (year)"), so no existing path moves.
+var reservedNames = map[string]bool{
+	"con": true, "prn": true, "aux": true, "nul": true,
+	"com1": true, "com2": true, "com3": true, "com4": true, "com5": true,
+	"com6": true, "com7": true, "com8": true, "com9": true,
+	"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true, "lpt5": true,
+	"lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
+}
+
+// safeName turns arbitrary supplied text into ONE filesystem path component.
+//
+// The contract it owes its callers, and which its tests assert directly rather than
+// through the callers that happen to satisfy it today:
+//
+//  1. The result contains no path separator, so it is exactly one component.
+//  2. The result is never "." or ".." or any run of dots, so joining it onto a
+//     directory can only ever go DOWNWARDS.
+//  3. The result is never empty, so a caller cannot end up writing to the directory
+//     itself or to a dotfile named ".strm".
+//  4. The result is at most MaxNameLen bytes and is valid UTF-8.
+//
+// Point 2 deserves the emphasis. Before this, safeName was a character filter and
+// nothing more: safeName("..") returned "..", and filepath.Join(dir, "..") is dir's
+// PARENT. That was not exploitable through the callers in this repo, because both of
+// them format the name as "%s (%s)" first and the parentheses survive filtering — so no
+// input could ever produce a pure dot run. But the safety of the whole write path then
+// rested on a format string in the caller rather than on the function whose name claims
+// to provide it, and the first caller to pass a bare title through would have inherited
+// a directory traversal with no warning. Point 2 moves the guarantee to where it is
+// named. WriteMovieStrm and WriteTVStrm then check containment independently anyway.
+func safeName(s string) string {
+	s = unsafeChars.ReplaceAllString(s, "")
+	// TrimSpace is unicode-aware, so a title padded with U+00A0 or an ideographic space
+	// is trimmed too. Trailing dots go with it: they are stripped by Windows/SMB on
+	// creation, which would silently make the written path differ from the recorded one.
+	s = strings.TrimSpace(s)
+	s = strings.TrimRight(s, ". ")
+	s = truncateRunes(s, MaxNameLen)
+	// Truncation can expose a new trailing dot or space, so re-trim after it, not before.
+	s = strings.TrimRight(strings.TrimSpace(s), ". ")
+	if s == "" || reservedNames[strings.ToLower(s)] {
+		// "" is the empty-after-sanitising case (a title of "///" or "..." or " ").
+		// There is no meaningful name left to preserve, so use a fixed placeholder
+		// rather than inventing one from the rejected input.
+		if s == "" {
+			return "untitled"
+		}
+		return "_" + s
+	}
+	return s
+}
+
+// truncateRunes cuts s to at most n bytes without splitting a UTF-8 sequence.
+//
+// A byte-wise cut would leave a partial rune, which is not valid UTF-8; SQLite stores
+// the untruncated title so the two would disagree, and some filesystems reject the
+// name outright. Cutting on a rune boundary keeps the result a well-formed string.
+func truncateRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// containedPath joins elems onto dir and refuses the result if it escaped dir.
+//
+// filepath.Join cleans as it joins, so a ".." anywhere in elems is resolved BEFORE this
+// comparison — which is what makes the comparison meaningful rather than a substring
+// check on unnormalised text. dir itself is cleaned for the same reason.
+//
+// This is a lexical check, not a filesystem one: it does not resolve symlinks, and it
+// is not trying to. The threat it answers is a supplied string steering the path, and a
+// symlink inside the library directory was put there by the operator, not by a caller.
+func containedPath(dir string, elems ...string) (string, error) {
+	base := filepath.Clean(dir)
+	p := filepath.Join(append([]string{base}, elems...)...)
+	if p != base && !strings.HasPrefix(p, base+string(filepath.Separator)) {
+		return "", ErrUnsafePath
+	}
+	if p == base {
+		// Joining produced the directory itself, so there is no file to write.
+		return "", ErrUnsafePath
+	}
+	return p, nil
+}
 
 // WriteMovieStrm writes a .strm for a movie into dir and returns its path.
 // Layout: <dir>/<Title> (<Year>)/<Title> (<Year>).strm
 func WriteMovieStrm(dir, title, year, streamURL string) (string, error) {
 	safe := safeName(fmt.Sprintf("%s (%s)", title, year))
-	d := filepath.Join(dir, safe)
-	if err := os.MkdirAll(d, 0o755); err != nil {
+	path, err := containedPath(dir, safe, safe+".strm")
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create movie dir: %w", err)
 	}
-	path := filepath.Join(d, safe+".strm")
 	return path, os.WriteFile(path, []byte(streamURL), 0o644)
 }
 
 // WriteTVStrm writes a .strm for a TV episode into dir and returns its path.
 // Layout: <dir>/<Show> (<Year>)/Season <NN>/<Show> (<Year>) S<NN>E<NN>.strm
 func WriteTVStrm(dir, show, year string, season, episode int, streamURL string) (string, error) {
-	path := TVStrmPath(dir, show, year, season, episode)
+	path, err := TVStrmPath(dir, show, year, season, episode)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create tv dir: %w", err)
 	}
@@ -31,10 +184,18 @@ func WriteTVStrm(dir, show, year string, season, episode int, streamURL string) 
 }
 
 // TVStrmPath returns the path that WriteTVStrm would write, without creating anything.
-func TVStrmPath(dir, show, year string, season, episode int) string {
+//
+// It returns an error rather than a bare string so that "where would this go" and
+// "where did this go" cannot disagree: a caller that only wanted the path still learns
+// that the name was unusable, instead of being handed a plausible-looking string.
+func TVStrmPath(dir, show, year string, season, episode int) (string, error) {
 	showSafe := safeName(fmt.Sprintf("%s (%s)", show, year))
-	episodeName := fmt.Sprintf("%s S%02dE%02d", showSafe, season, episode)
-	return filepath.Join(dir, showSafe, fmt.Sprintf("Season %02d", season), episodeName+".strm")
+	// %02d on a negative or very large season still contains no separator and no dot —
+	// it is only ever '-' and digits — so the season directory needs no sanitising of
+	// its own. The HTTP edge rejects negatives before it gets here.
+	seasonDir := fmt.Sprintf("Season %02d", season)
+	episodeName := fmt.Sprintf("%s S%02dE%02d.strm", showSafe, season, episode)
+	return containedPath(dir, showSafe, seasonDir, episodeName)
 }
 
 // RemoveStrm deletes a .strm file and its parent directory if empty.
@@ -47,12 +208,6 @@ func RemoveStrm(path string) error {
 		os.Remove(dir)
 	}
 	return nil
-}
-
-var unsafeChars = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
-
-func safeName(s string) string {
-	return strings.TrimSpace(unsafeChars.ReplaceAllString(s, ""))
 }
 
 // ── Play URL shapes ───────────────────────────────────────────────────────────
