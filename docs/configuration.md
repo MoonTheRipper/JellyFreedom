@@ -266,6 +266,54 @@ Set these in a systemd drop-in for the relevant unit if you need them.
 
 ---
 
+## `web_sources`
+
+Paste a video page URL in the dashboard's **Links** section and it becomes an entry in your
+Jellyfin library.
+
+```yaml
+web_sources:
+  enabled: true
+  ytdlp_path: ""                        # blank = find yt-dlp on PATH
+  temp_dir: /var/lib/jellyfreedom/tmp
+  proxy_addr: "10.42.0.2:1080"
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `enabled` | `false` | Off unless set. A fresh install's sample config sets it to `true`; an existing config is never rewritten by an upgrade, so after updating you add it yourself — `jellyfreedom doctor` prints the exact block. |
+| `ytdlp_path` | *(empty)* | Where yt-dlp lives. Blank means "look on `PATH`"; the installer puts it in `/usr/local/bin/yt-dlp`. |
+| `temp_dir` | `/var/lib/jellyfreedom/tmp` | Scratch space for the extractor. **Do not point this at `/tmp`** — see below. |
+| `proxy_addr` | `10.42.0.2:1080` | The SOCKS proxy inside the VPN namespace (`jf-netnsproxy.service`). |
+
+**There is no "direct" setting, and there will not be one.** Fetching the page identifies you
+to the site exactly as thoroughly as fetching the video does, so both go through the tunnel.
+With no proxy configured the feature switches itself off rather than fetching anything
+outside it.
+
+**Why `temp_dir` matters more than it looks.** The official yt-dlp build is a self-extracting
+bundle: every single invocation unpacks about 76 MB of interpreter and libraries into its
+temporary directory before doing any work. `/tmp` on a stock Ubuntu is a RAM-backed tmpfs, so
+leaving it there spends memory per extraction and — once that tmpfs is full — fails with a
+PyInstaller decompression error that says nothing whatsoever about disk space.
+
+**Keeping it working.** Extractors break when sites change their players, which they do
+often. The fix is almost always a newer extractor:
+
+```bash
+sudo yt-dlp -U
+sudo systemctl restart jellyfreedom
+```
+
+The dashboard shows the running yt-dlp version in the Links section, and each added link
+records why it last failed.
+
+**What is not supported.** Videos a site offers only as an adaptive stream (HLS or DASH) are
+refused with a message saying so: those are a manifest of thousands of separately-signed
+segments, not one seekable file. Live streams are refused too — they have no length to seek.
+
+---
+
 ## External-provider ingest
 
 **There is no `config.yaml` key for this.** It is listed here so you do not go looking for

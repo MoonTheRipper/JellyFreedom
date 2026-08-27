@@ -129,6 +129,26 @@ Nothing needs to be forwarded on your router, and nothing here should be exposed
 internet. If your provider offers NAT-PMP port forwarding, that mapping is made **inside the
 VPN tunnel** — it does not open anything on your own router.
 
+### Can I add a video by pasting its address instead of searching?
+
+Yes — dashboard → **Links**. Paste the page you would normally watch on, press Preview, and
+it becomes a Jellyfin entry. It uses no indexer at all, which makes it the way in for
+anything indexers cover badly.
+
+Three things to know:
+
+- **The link is looked up again every time you press play.** Sites sign their video
+  addresses with a short expiry, so anything saved once would break within hours. Only the
+  *page* is stored, never the video address.
+- **The lookup and the stream both go through your VPN**, with the same kill switch as
+  torrent traffic. There is no setting to turn that off.
+- **It can still die.** If the uploader deletes the video, nothing brings it back. If a link
+  that used to work stops extracting, that is nearly always a stale extractor:
+  `sudo yt-dlp -U && sudo systemctl restart jellyfreedom`.
+
+Videos a site offers only as an adaptive stream (HLS or DASH) are refused with a message
+saying so, and so are live streams.
+
 ### Does it replace Radarr and Sonarr?
 
 For a streaming library, yes — and it deliberately does not integrate with them. Radarr and

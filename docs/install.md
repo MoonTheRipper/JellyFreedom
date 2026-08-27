@@ -164,6 +164,7 @@ one.)
 | Component | Where it goes | Port |
 |---|---|---|
 | TorrServer | `/usr/local/bin/torrserver`, data in `/var/lib/torrserver` | 8090, inside the VPN namespace |
+| yt-dlp | `/usr/local/bin/yt-dlp`, scratch in `/var/lib/jellyfreedom/tmp` | — (used by the Links feature) |
 | FlareSolverr | `/opt/flaresolverr`, home `/var/lib/flaresolverr` | 8191, bound to `127.0.0.1` |
 | Jellyfin | via the official upstream apt installer | 8096 |
 | Prowlarr | `/opt/Prowlarr`, data in `/var/lib/prowlarr` | 9696 |
@@ -172,9 +173,14 @@ TorrServer's version is resolved from the upstream "latest release" API rather t
 because a pinned tag was removed upstream once and every fresh install silently ended up with
 no streaming engine.
 
+yt-dlp is the only **optional** one: nothing else depends on it, so a failed download is a
+warning and the install still completes. A box without it simply has the dashboard's Links
+section switched off, with one sentence saying why. Keep it current with `sudo yt-dlp -U` —
+a pasted link that used to work and stopped is nearly always a stale extractor.
+
 **6. systemd units** — `jellyfreedom`, `vpntorrent-netns`, `torrserver-netns`,
-`vpntorrent-portforward`, `vpntorrent-watchdog.{service,timer}`, plus `flaresolverr` and
-`prowlarr` where installed.
+`jf-netnsproxy`, `vpntorrent-portforward`, `vpntorrent-watchdog.{service,timer}`, plus
+`flaresolverr` and `prowlarr` where installed.
 
 **7. A scoped sudoers policy** at `/etc/sudoers.d/jellyfreedom` — five fixed `systemctl
 restart` commands and six verbs on the root-owned helper. **No wildcards.** See

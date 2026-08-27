@@ -9,6 +9,50 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Added
+- **Paste a link to a video page and it becomes a library entry.** A new **Links** section in
+  the dashboard takes a video page URL, extracts what the video is, shows you the title,
+  thumbnail, duration and resolution, and writes a `.strm` that Jellyfin plays like anything
+  else. It needs no indexer, which is the point: indexers are good at films and episodes and
+  poor at everything else.
+
+  The link is re-resolved **at play time**, exactly as the torrent path re-resolves a
+  release. Sites sign their video addresses with an expiry measured in hours, so anything
+  frozen into a `.strm` would stop working by Friday — saving the *page* is what makes the
+  entry last. Nothing but the page URL is written to disk.
+
+  Both the extraction and the stream go **through the VPN**, with the same fail-closed kill
+  switch as torrent traffic, and there is no direct-connection fallback: with no proxy
+  configured the feature switches itself off rather than fetching anything outside the
+  tunnel. See [security.md](docs/security.md) for how that works and what it does and does
+  not hide.
+
+  New: `web_sources` config section, `jf-netnsproxy.service`, `/play/p/web/{id}`,
+  `/api/websources*` (admin only), a `web_sources` table, and a `jellyfreedom doctor
+  websources` section.
+
+- **`orchestrator netns-proxy`** — a minimal SOCKS5 proxy that runs inside the `vpntorrent`
+  namespace and lends it to the orchestrator, which has to stay outside to serve the LAN. It
+  refuses every non-public destination, so it cannot be turned around into a route back into
+  the host or the LAN, and it inherits the namespace's kill switch rather than having one of
+  its own.
+
+- **yt-dlp** is installed by the installer to `/usr/local/bin`, with its own scratch
+  directory at `/var/lib/jellyfreedom/tmp`. It is the only optional third-party component: a
+  failed download is a warning, and the install still completes.
+
+### Fixed
+- A movie with no year no longer produces a folder and file called `Title ()`. Only reachable
+  since something other than TMDB could create a movie entry — a pasted link has an upload
+  date, not a release year.
+
+### Upgrading
+- **Web sources are off until you switch them on.** An upgrade never rewrites your existing
+  `config.yaml`, so the new `web_sources` block is not added for you. Run `sudo jellyfreedom
+  doctor websources` — it prints the exact block to paste, then restart the orchestrator.
+- Do **not** point `web_sources.temp_dir` at `/tmp`. The yt-dlp binary unpacks ~76 MB of
+  itself there on every run, and `/tmp` is a RAM-backed tmpfs on stock Ubuntu.
+
 ## [0.5.2] - 2026-08-27
 
 ### Added

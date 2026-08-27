@@ -466,6 +466,66 @@ installed binary matches the CPU.
 
 ---
 
+## Pasted links (web sources)
+
+Start with `sudo jellyfreedom doctor websources` — it separates the three things that fail
+independently here.
+
+**The Links section says "web sources are switched off in the configuration."**
+The feature is opt-in and an upgrade never rewrites your existing config. Add the block
+`doctor` prints, then `sudo systemctl restart jellyfreedom`. See
+[configuration.md](configuration.md#web_sources).
+
+**"yt-dlp is not installed."**
+`sudo jellyfreedom repair websources` fetches it to `/usr/local/bin/yt-dlp`. Nothing else
+depends on it, which is why the installer treats a failed download as a warning.
+
+**A link that used to work now fails to extract.**
+Almost always a stale extractor — sites change their players constantly:
+
+```bash
+sudo yt-dlp -U
+sudo systemctl restart jellyfreedom
+```
+
+The dashboard shows the running version, and each link records why it last failed and when it
+last worked. If updating does not fix it, the site's extractor is genuinely broken upstream.
+
+**"Failed to extract … decompression resulted in return code -1"**
+This is not a video problem. The yt-dlp binary unpacks ~76 MB of itself into its scratch
+directory on every run, and that directory has no room:
+
+```bash
+df -h /var/lib/jellyfreedom          # where temp_dir lives
+ls -ld /var/lib/jellyfreedom/tmp     # must exist and be writable by the service user
+grep -A4 '^web_sources:' /etc/jellyfreedom/config.yaml
+```
+
+If `temp_dir` is unset or points at `/tmp`, fix it — `/tmp` is a RAM-backed tmpfs on stock
+Ubuntu, so it is both small and expensive to fill.
+
+**Nothing plays, and the log says "could not reach the video (is the VPN up?)".**
+Exactly what it says. Web sources fail closed with the tunnel, like everything else:
+
+```bash
+sudo jellyfreedom doctor vpn
+systemctl status jf-netnsproxy
+curl -s --socks5-hostname 10.42.0.2:1080 -o /dev/null -w '%{http_code}\n' https://api.github.com/
+```
+
+That last command is the honest end-to-end test of the proxy: a code means the namespace can
+reach the internet, `000` means it cannot.
+
+**"that video is only offered as an adaptive stream."**
+The site publishes it as HLS or DASH only — a manifest of thousands of separately-signed
+segments rather than one seekable file. There is nothing to configure; that video cannot be
+proxied yet.
+
+**A link plays in the browser but the entry vanished from Jellyfin.**
+Jellyfin has not rescanned. Trigger a scan from the dashboard's Tasks section.
+
+---
+
 ## Service-by-service quick reference
 
 ```bash
@@ -473,13 +533,14 @@ installed binary matches the CPU.
 sudo jellyfreedom doctor services
 
 systemctl status jellyfreedom
-systemctl status vpntorrent-netns torrserver-netns vpntorrent-portforward
+systemctl status vpntorrent-netns torrserver-netns vpntorrent-portforward jf-netnsproxy
 systemctl status flaresolverr prowlarr jellyfin
 systemctl status vpntorrent-watchdog.timer
 
 curl -s http://127.0.0.1:1990/healthz          # orchestrator
 curl -s http://127.0.0.1:1990/api/configured   # what is wired up
 curl -s http://10.42.0.2:8090/echo             # TorrServer, inside the netns
+curl -s --socks5-hostname 10.42.0.2:1080 -o /dev/null -w '%{http_code}\n' https://api.github.com/  # the VPN proxy
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8096/System/Info/Public  # Jellyfin
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9696/ping                # Prowlarr
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8191/health              # FlareSolverr

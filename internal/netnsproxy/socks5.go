@@ -88,10 +88,17 @@ const dialTimeout = 20 * time.Second
 
 // Server is a SOCKS5 CONNECT proxy. Build one with New.
 type Server struct {
-	// allowFrom is the set of client addresses permitted to use the proxy. A connection
+	// allowFrom is the set of client prefixes permitted to use the proxy. A connection
 	// from anything else is closed before a byte is read from it. Empty means "anyone",
 	// which is only ever correct in a test.
-	allowFrom []netip.Addr
+	//
+	// Prefixes rather than bare addresses because the thing being described is the
+	// host↔namespace veth link, and that link is what setup-netns.sh configures as a
+	// subnet — /30 by default, overridable. Allowing the link subnet is the same rule the
+	// namespace's own kill switch uses for traffic in the other direction
+	// (`-o veth-vpn -d $VETH_SUBNET -j ACCEPT`), so the two cannot drift apart. A single
+	// address is still expressible: /32 is a prefix.
+	allowFrom []netip.Prefix
 
 	// dial opens the outbound connection. Overridable for tests; nil means a plain
 	// net.Dialer — which, because this process runs inside the namespace, dials through
@@ -106,19 +113,25 @@ type Server struct {
 	wg sync.WaitGroup
 }
 
-// New returns a Server that will accept only from the given client addresses.
+// New returns a Server that will accept only from the given client addresses, each of
+// which may be a bare address or a CIDR prefix.
 //
-// It parses the allow-list eagerly so that a typo in a unit file is a startup failure
+// The allow-list is parsed eagerly so that a typo in a unit file is a startup failure
 // with a clear message, rather than a proxy that silently refuses every connection and
 // looks like a networking problem.
 func New(allowFrom []string) (*Server, error) {
 	s := &Server{}
 	for _, a := range allowFrom {
+		if p, err := netip.ParsePrefix(a); err == nil {
+			s.allowFrom = append(s.allowFrom, p.Masked())
+			continue
+		}
 		addr, err := netip.ParseAddr(a)
 		if err != nil {
-			return nil, fmt.Errorf("allowed client address %q: %w", a, err)
+			return nil, fmt.Errorf("allowed client %q: not an address or CIDR prefix", a)
 		}
-		s.allowFrom = append(s.allowFrom, addr.Unmap())
+		addr = addr.Unmap()
+		s.allowFrom = append(s.allowFrom, netip.PrefixFrom(addr, addr.BitLen()))
 	}
 	return s, nil
 }
@@ -167,7 +180,7 @@ func (s *Server) permitted(a net.Addr) bool {
 	}
 	client = client.Unmap()
 	for _, allowed := range s.allowFrom {
-		if client == allowed {
+		if allowed.Contains(client) {
 			return true
 		}
 	}

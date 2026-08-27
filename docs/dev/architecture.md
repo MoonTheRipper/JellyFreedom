@@ -25,7 +25,9 @@ media item and fetches that URL on play.
 | **FlareSolverr** | Cloudflare bypass for indexers that need it | No |
 | **TMDB** | Metadata and search | No (cloud API) |
 | **WireGuard** | Privacy for torrent traffic, plus the kill switch | No (any provider) |
+| **yt-dlp** | Extracts a media URL from a video page, for pasted web sources | No (single binary) |
 | **Orchestrator** | Search → pick a release → drive TorrServer → write `.strm` → serve playback | **Yes (Go)** |
+| **Namespace proxy** | Lends the VPN namespace to the orchestrator, which lives outside it | **Yes** — `orchestrator netns-proxy` |
 
 Two notes that matter when reading the code:
 
@@ -43,6 +45,25 @@ piece and seed the whole file, and storage fills up. TorrServer is purpose-built
 streaming — a bounded **ring-buffer cache** keeps a window around the playhead and evicts the
 rest. Storage stays flat, and there is never a complete file to seed. It is also a single Go
 binary, which fits the no-Docker constraint.
+
+### Two sources of bytes, one playback contract
+
+Everything above describes the torrent path. There is a second one — a **web source**: a
+video page URL somebody pasted into the dashboard, which becomes a library entry like any
+other.
+
+The two share more than they differ. Both are keyed on a provider identity, both write a
+`.strm` holding `/play/…` with a capability token, both are gated by per-library visibility,
+and both re-derive what actually delivers bytes at play time. They diverge only in what that
+derivation is: the torrent path searches indexers and picks a release; the web path runs
+yt-dlp against the saved page and takes the media URL it returns.
+
+The reason the second one exists is coverage. Indexers are good at films and episodes and
+poor at everything else, and a pasted link needs no index at all.
+
+The reason it re-resolves rather than storing a URL is the same reason the torrent path does.
+A frozen info hash rots because seeders leave; a frozen CDN link rots because the site signed
+it with an expiry measured in hours. Same failure, same fix. See §4.
 
 ## 3. The data flow
 

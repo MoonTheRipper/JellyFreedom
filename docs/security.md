@@ -17,6 +17,7 @@ leaves over your normal connection.
 | DNS lookups made by TorrServer | resolvers reached **through** the tunnel | **Yes** |
 | **Indexer searches** (Prowlarr, FlareSolverr) | host network | **No — your real IP** |
 | **Metadata lookups** (TMDB posters, episode data, from both the orchestrator and Jellyfin) | host network | **No — your real IP** |
+| **Web sources** — extracting a pasted link, and streaming it | orchestrator → `jf-netnsproxy` inside the namespace → `wg0-vpntorrent` | **Yes**, with the same kill switch |
 | Jellyfin ↔ your Apple TV, phone, browser | your LAN | **No**, deliberately — tunnelling it would only add latency |
 | Orchestrator ↔ TorrServer | the `10.42.0.0/30` link between host and namespace | Never leaves the machine |
 
@@ -26,6 +27,38 @@ looked up. If that matters to you, route Prowlarr through a namespace of its own
 same pattern — nothing in the design prevents it, it is simply not done for you.
 
 No torrent hashes or magnet links are ever sent to TMDB.
+
+### Web sources are tunnelled, and cannot be un-tunnelled by accident
+
+A pasted link is fetched twice over: once to work out what the video is, and again to stream
+it. Both identify you to the site, so both go through the tunnel — and the mechanism is not a
+setting that could be flipped.
+
+The orchestrator itself runs in the host namespace, because it has to serve your LAN. It
+cannot enter the `vpntorrent` namespace without `CAP_SYS_ADMIN`, which is root by another
+name. So instead of moving the orchestrator, one socket moves: `jf-netnsproxy.service` runs a
+SOCKS proxy **inside** the namespace and dials on the orchestrator's behalf. Its connections
+are subject to the same fail-closed rules as TorrServer's, because they are the same rules —
+when the tunnel is down, the namespace's `iptables` policy drops the packets and playback
+fails rather than falling back.
+
+Three details are worth knowing:
+
+- **The DNS lookup is tunnelled too.** The proxy is addressed as `socks5h://`, which sends
+  the *hostname* to be resolved inside the namespace. Resolving it locally first would put a
+  lookup for the site's domain on your home connection — the leak, minus the video.
+- **The proxy is not reachable from your LAN.** It binds only the namespace's end of the
+  `10.42.0.0/30` link and accepts connections only from the host's end of it, which is the
+  one other address that exists on a /30.
+- **It will only dial the public internet.** A `CONNECT` to a loopback, RFC 1918, link-local
+  or carrier-NAT address is refused, so it cannot be used as a way back into your host or
+  your LAN. The check runs on the *resolved* address, in the same process that then dials it.
+
+The site still learns everything a visitor normally would — your VPN's address, and that
+somebody there watched that video. Proxying hides where you are, not that it happened.
+
+**Nothing about the link is written to disk except the page URL.** The media URL — the signed,
+expiring CDN link — exists only in memory, and only for as long as it is valid.
 
 ---
 

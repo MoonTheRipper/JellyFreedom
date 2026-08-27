@@ -259,7 +259,36 @@ If nothing plays, or searches come back empty, go to [troubleshooting.md](troubl
 
 ---
 
-## 10. A final check
+## 10. Optional: add a video by pasting its link
+
+Everything above is the search-an-indexer path. There is a second way in, and it needs no
+indexer at all: paste the address of a video page and JellyFreedom turns it into a library
+entry.
+
+1. Dashboard → **Links**.
+2. If it says the feature is off, your config predates it. Run `sudo jellyfreedom doctor
+   websources`, add the block it prints to `/etc/jellyfreedom/config.yaml`, and
+   `sudo systemctl restart jellyfreedom`.
+3. Paste the page you would normally watch on — the page, not a direct file address — and
+   press **Preview**. Extraction runs through the VPN, so give it a few seconds.
+4. You get the title, thumbnail, duration and resolution. Change the title if you want to,
+   then **Add to library**.
+5. Trigger a Jellyfin scan (dashboard → Tasks) and it appears alongside everything else.
+
+Two things worth knowing:
+
+- **The link is looked up again every time you press play.** Sites sign their video
+  addresses with an expiry, so anything saved once would stop working within hours. Saving
+  the *page* instead is what makes the entry last.
+- **It can still die.** If the uploader deletes the video, nothing can bring it back. The
+  Links list shows why each entry last failed and when it last worked.
+
+If a link that used to work stops extracting, the fix is nearly always a newer extractor:
+`sudo yt-dlp -U && sudo systemctl restart jellyfreedom`.
+
+---
+
+## 11. A final check
 
 ```bash
 sudo jellyfreedom doctor

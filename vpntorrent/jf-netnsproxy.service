@@ -26,9 +26,11 @@ NetworkNamespacePath=/var/run/netns/vpntorrent
 # name lookups inside the namespace hit the host's 127.0.0.53 stub, which nothing answers
 # in there, and every extraction fails to resolve its site.
 BindReadOnlyPaths=/etc/netns/vpntorrent/resolv.conf:/etc/resolv.conf
-# No arguments: the listen address and the client allow-list are read from
-# /run/vpntorrent/netns.env, which setup-netns.sh writes. That is what keeps the veth
-# addressing configurable in one place instead of hardcoded in three.
+# No arguments: it derives its own addressing from the veth interface it finds inside the
+# namespace, so an operator who overrides VPNTORRENT_VETH_SUBNET is followed with nothing
+# to keep in sync. (It prefers /run/vpntorrent/netns.env when it can read it — but that
+# directory is 0700 root, because it also holds the sanitised WireGuard config, so a
+# service user cannot traverse into it. Deriving is the path that actually runs.)
 ExecStart=/opt/jellyfreedom/bin/orchestrator netns-proxy
 Restart=on-failure
 RestartSec=3

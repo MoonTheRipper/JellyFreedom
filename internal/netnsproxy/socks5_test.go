@@ -139,15 +139,48 @@ func TestClientForwardsHostnameUnresolved(t *testing.T) {
 }
 
 func TestRefusesClientsOutsideTheAllowList(t *testing.T) {
-	// 10.42.0.1 is the host's veth address in production. A test connecting from
+	// 10.42.0.0/30 is the host↔namespace link in production. A test connecting from
 	// loopback is therefore not on the list, which is the case being asserted.
 	proxy := startProxy(t, func(s *Server) {
-		s.allowFrom = []netip.Addr{netip.MustParseAddr("10.42.0.1")}
+		s.allowFrom = []netip.Prefix{netip.MustParsePrefix("10.42.0.0/30")}
 	})
 	d := Dialer{Addr: proxy, Timeout: 3 * time.Second}
 	_, err := d.DialContext(context.Background(), "tcp", "127.0.0.1:9")
 	if err == nil {
 		t.Fatal("a client outside the allow-list was served")
+	}
+}
+
+// The allow-list describes the veth LINK, which setup-netns.sh configures as a subnet, so
+// it has to take a prefix — and a bare address has to keep working, because that is what a
+// hand-written --allow-from will usually be.
+func TestAllowListTakesPrefixesAndBareAddresses(t *testing.T) {
+	s, err := New([]string{"10.42.0.0/30", "192.0.2.7"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	permitted := func(ip string) bool {
+		return s.permitted(&net.TCPAddr{IP: net.ParseIP(ip), Port: 1234})
+	}
+	for _, tc := range []struct {
+		ip   string
+		want bool
+	}{
+		{"10.42.0.1", true},  // the host side of the default /30
+		{"10.42.0.2", true},  // ourselves
+		{"10.42.0.4", false}, // outside the /30 — the next link, not this one
+		{"10.42.1.1", false},
+		{"192.0.2.7", true}, // the bare address, as a /32
+		{"192.0.2.8", false},
+		{"127.0.0.1", false},
+	} {
+		if got := permitted(tc.ip); got != tc.want {
+			t.Errorf("permitted(%s) = %v, want %v", tc.ip, got, tc.want)
+		}
+	}
+
+	if _, err := New([]string{"not-an-address"}); err == nil {
+		t.Error("a malformed allow-list entry was accepted — it would silently refuse every client")
 	}
 }
 

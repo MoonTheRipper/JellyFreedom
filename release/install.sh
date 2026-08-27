@@ -888,7 +888,9 @@ NetworkNamespacePath=/var/run/netns/vpntorrent
 # does, so bind it in — otherwise lookups hit the host's 127.0.0.53 stub, which nothing
 # answers inside the namespace, and every extraction fails to resolve its site.
 BindReadOnlyPaths=/etc/netns/vpntorrent/resolv.conf:/etc/resolv.conf
-# No arguments: the listen address and client allow-list come from /run/vpntorrent/netns.env.
+# No arguments: it derives its addressing from the veth inside the namespace. It prefers
+# /run/vpntorrent/netns.env, but that directory is 0700 root (it holds the sanitised
+# WireGuard config), so a service user cannot read it — deriving is the real path.
 ExecStart=${APP_DIR#"$D"}/bin/orchestrator netns-proxy
 Restart=on-failure
 RestartSec=3
