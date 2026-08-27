@@ -903,7 +903,11 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is required, not optional: the proxy derives its own listen address from
+# the namespace's veth, and Go's net.Interfaces() does that over a NETLINK_ROUTE socket.
+# Without it the call fails with "address family not supported by protocol", the service
+# cannot find 10.42.0.2, and it exits 1 on every start until the restart limit is hit.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
@@ -1052,8 +1056,14 @@ else
   # trap the orchestrator's own line below documents.
   if [ -x "$YTDLP_BIN" ]; then
     systemctl enable jf-netnsproxy.service >/dev/null 2>&1 || true
-    if systemctl restart jf-netnsproxy.service; then ok "jf-netnsproxy.service"
-    else warn "jf-netnsproxy did not start — web sources will be unavailable"
+    # `systemctl restart` returns once the process has forked, not once it has stayed up.
+    # This unit fails ~200ms in when it cannot read the veth, so restart reported success
+    # while the service was already dead and "websources ready" was printed over a service
+    # that had failed. Ask again after it has had a moment to fall over.
+    systemctl restart jf-netnsproxy.service >/dev/null 2>&1 || true
+    sleep 1
+    if systemctl is-active --quiet jf-netnsproxy.service; then ok "jf-netnsproxy.service"
+    else warn "jf-netnsproxy did not stay up — web sources will be unavailable"
          hint "journalctl -u jf-netnsproxy -n 50 --no-pager"
          mark websources "proxy failed to start"; fi
   fi

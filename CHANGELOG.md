@@ -9,6 +9,20 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **Web sources did not work at all on a real install.** `jf-netnsproxy.service` — the VPN
+  proxy every paste-a-link extraction and stream is dialled through — exited immediately on
+  every start. Its sandbox granted `AF_INET AF_INET6 AF_UNIX`, but the service works out its
+  own listen address from the namespace's veth using `net.Interfaces()`, and that is a
+  `NETLINK_ROUTE` socket. Without `AF_NETLINK` the lookup failed with "address family not
+  supported by protocol", the proxy could not find `10.42.0.2`, and systemd gave up after
+  five restarts. Adding the family fixes it.
+- **The installer reported the proxy as started when it had already died.** `systemctl
+  restart` returns once the process has forked, not once it has stayed up, so a service that
+  failed 200ms later still printed a tick — and `websources` was summarised as *ready* on a
+  system where it could not work. The installer now re-checks with `is-active` a moment
+  later and says plainly when the proxy did not stay up.
+
 ## [0.5.3] - 2026-08-27
 
 ### Added
