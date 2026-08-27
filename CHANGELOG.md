@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-08-27
+
 ### Added
 - **Paste a link to a video page and it becomes a library entry.** A new **Links** section in
   the dashboard takes a video page URL, extracts what the video is, shows you the title,
@@ -465,7 +467,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.4.2...v0.5.0
