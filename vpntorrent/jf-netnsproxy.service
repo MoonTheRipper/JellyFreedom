@@ -1,0 +1,56 @@
+[Unit]
+Description=JellyFreedom VPN proxy (inside the vpntorrent netns)
+Documentation=file:///opt/jellyfreedom/docs/security.md
+After=vpntorrent-netns.service network-online.target
+Requires=vpntorrent-netns.service
+# BindsTo for the same reason TorrServer uses it: `systemctl restart vpntorrent-netns`
+# DELETES and recreates the namespace, and a process that merely Requires= it would keep a
+# handle on the old, orphaned namespace — looking healthy, having no VPN, and quietly
+# unable to reach anything. BindsTo makes the two move together.
+BindsTo=vpntorrent-netns.service
+# A crash loop must not restart every 3s forever: five failures in five minutes and
+# systemd leaves the unit failed, where `jellyfreedom status` can actually show it.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=jellyfreedom
+# systemd enters the named netns before dropping privileges, so this process is inside the
+# tunnel and behind the kill switch without ever holding a capability of its own. It is the
+# entire mechanism: web sources are fetched by THIS process, on behalf of the orchestrator
+# running out in the host namespace, which cannot enter a netns without CAP_SYS_ADMIN.
+NetworkNamespacePath=/var/run/netns/vpntorrent
+# The namespace pins its own resolvers. `ip netns exec` applies /etc/netns/<ns>/resolv.conf
+# automatically but NetworkNamespacePath= does not, so bind it in by hand — without this,
+# name lookups inside the namespace hit the host's 127.0.0.53 stub, which nothing answers
+# in there, and every extraction fails to resolve its site.
+BindReadOnlyPaths=/etc/netns/vpntorrent/resolv.conf:/etc/resolv.conf
+# No arguments: the listen address and the client allow-list are read from
+# /run/vpntorrent/netns.env, which setup-netns.sh writes. That is what keeps the veth
+# addressing configurable in one place instead of hardcoded in three.
+ExecStart=/opt/jellyfreedom/bin/orchestrator netns-proxy
+Restart=on-failure
+RestartSec=3
+
+# --- Hardening -------------------------------------------------------------
+# This process needs a socket and nothing else: no files it can write, no home, no
+# devices. It is an unauthenticated proxy by design (access is positional — see
+# internal/netnsproxy), so the smallest possible blast radius is the point.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

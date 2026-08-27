@@ -44,6 +44,23 @@ picker:
   max_size_gb: 20
   reject_cam: true
 
+# Paste a video page URL in the dashboard (Links) and it becomes a Jellyfin entry. The
+# link is re-resolved every time you press play, and BOTH the lookup and the stream go
+# through the VPN namespace, so the site never sees your home address.
+web_sources:
+  enabled: true
+  # Where yt-dlp lives. Blank means "find yt-dlp on PATH"; the installer puts it in
+  # /usr/local/bin. Keep it current with `sudo yt-dlp -U` — a site that used to work and
+  # stopped is nearly always a stale extractor.
+  ytdlp_path: ""
+  # Scratch space for the extractor. Do NOT point this at /tmp: the yt-dlp binary unpacks
+  # ~76MB of itself there on every run, and /tmp is a RAM-backed tmpfs on stock Ubuntu.
+  temp_dir: /var/lib/jellyfreedom/tmp
+  # The SOCKS proxy inside the vpntorrent namespace (jf-netnsproxy.service). There is no
+  # "direct" setting on purpose — with no proxy the feature switches itself off rather
+  # than fetching anything outside the tunnel.
+  proxy_addr: "10.42.0.2:1080"
+
 vpn:
   # Orchestrator-owned dir for dashboard-uploaded WireGuard configs (set up by install.sh).
   config_dir: /var/lib/jellyfreedom/vpnconfigs

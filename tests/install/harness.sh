@@ -167,6 +167,7 @@ assert_not_ran()   { _check; grep -qF -- "$1" "$LOG" && _fail "did NOT run: $1" 
 assert_ran_re()    { _check; grep -qE -- "$1" "$LOG" && _pass "ran =~ $1" || _fail "ran =~ $1" "no match in command log"; }
 assert_file()      { _check; [ -f "$1" ] && _pass "file: ${1#$DEST}" || _fail "file: ${1#$DEST}" "missing"; }
 assert_no_file()   { _check; [ -f "$1" ] && _fail "no file: ${1#$DEST}" "exists" || _pass "no file: ${1#$DEST}"; }
+assert_dir()       { _check; [ -d "$1" ] && _pass "dir: ${1#$DEST}" || _fail "dir: ${1#$DEST}" "missing"; }
 assert_exec()      { _check; [ -x "$1" ] && _pass "executable: ${1#$DEST}" || _fail "executable: ${1#$DEST}" "missing or not +x"; }
 assert_contains()  { _check; grep -qF -- "$2" "$1" 2>/dev/null && _pass "${1#$DEST} contains: $2" || _fail "${1#$DEST} contains: $2" "not found"; }
 # Matches only ACTIVE lines, ignoring comments — so a file may explain WHY a directive is

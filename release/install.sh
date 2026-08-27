@@ -55,6 +55,12 @@ LOGFILE="$D/var/log/jellyfreedom-install.log"
 # `set -u` aborts the run partway. `--only flaresolverr` skipped the TorrServer section and
 # then died on an unbound TS_BIN while enabling services — before verification could run.
 TS_BIN="$D/usr/local/bin/torrserver"
+YTDLP_BIN="$D/usr/local/bin/yt-dlp"
+# The extractor's scratch space. NOT /tmp: the official yt-dlp binary is a self-extracting
+# bundle that unpacks ~76MB into TMPDIR on every single run, and /tmp is a RAM-backed
+# tmpfs on a stock Ubuntu — so leaving it there spends memory per extraction and fails
+# with an unreadable PyInstaller error the moment that tmpfs is full.
+YTDLP_TMP="$DATA_DIR/tmp"
 
 
 # Ownership requires root. Under JF_DESTDIR the installer runs unprivileged against a fake
@@ -117,7 +123,7 @@ summary(){
   local rc=$?
   printf '\n\033[1;36m── Components ─────────────────────────────\033[0m\n'
   local k bad=0
-  for k in orchestrator torrserver flaresolverr jellyfin prowlarr vpn; do
+  for k in orchestrator torrserver websources flaresolverr jellyfin prowlarr vpn; do
     case "${STATUS[$k]:-skipped}" in
       ok)       printf '  \033[1;32m✓\033[0m %-14s ready\n' "$k" ;;
       degraded) printf '  \033[1;33m!\033[0m %-14s installed but NOT working\n' "$k"; bad=1 ;;
@@ -171,9 +177,9 @@ BANNER
 # ==========================================================================================
 ARCH_GO=""; ARCH_OK=1
 case "$(uname -m)" in
-  x86_64|amd64)  ARCH_GO=amd64; TS_ARCH=amd64; PW_ARCH=x64 ;;
-  aarch64|arm64) ARCH_GO=arm64; TS_ARCH=arm64; PW_ARCH=arm64 ;;
-  armv7l|armhf)  ARCH_GO=arm;   TS_ARCH=arm7;  PW_ARCH=arm ;;
+  x86_64|amd64)  ARCH_GO=amd64; TS_ARCH=amd64; PW_ARCH=x64;   YTDLP_ASSET=yt-dlp_linux ;;
+  aarch64|arm64) ARCH_GO=arm64; TS_ARCH=arm64; PW_ARCH=arm64; YTDLP_ASSET=yt-dlp_linux_aarch64 ;;
+  armv7l|armhf)  ARCH_GO=arm;   TS_ARCH=arm7;  PW_ARCH=arm;   YTDLP_ASSET=yt-dlp_linux_armv7l ;;
   *) ARCH_OK=0 ;;
 esac
 
@@ -312,6 +318,7 @@ say "Directories"
 xinstall -d -o root -g root -m 755 "$APP_DIR" "$APP_DIR/bin"
 xinstall -d -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR"
 xinstall -d -o "$SVC_USER" -g "$SVC_USER" -m 700 "$VPNCONF_DIR"
+xinstall -d -o "$SVC_USER" -g "$SVC_USER" -m 700 "$YTDLP_TMP"
 xinstall -d "$VPN_DIR" "$CONF_DIR"
 xinstall -d -o "$TS_USER" -g "$TS_USER" "$D/var/lib/torrserver"
 xinstall -d -o "$FS_USER" -g "$FS_USER" "$FS_HOME"
@@ -417,6 +424,41 @@ else
   fi
 fi
 fi
+
+# ==========================================================================================
+# yt-dlp — the extractor behind paste-a-link web sources.
+#
+# OPTIONAL, unlike TorrServer: nothing else depends on it, and a box without it simply has
+# the Links section disabled with one sentence explaining why. So a failure here is a
+# warning, never fatal.
+#
+# The official self-contained build is used rather than the distro package. apt's yt-dlp is
+# routinely months stale, and a stale extractor is precisely the thing that breaks — sites
+# change their players constantly, and "update yt-dlp" is the fix for most of it. This one
+# also updates itself in place with `yt-dlp -U`.
+# ==========================================================================================
+if want websources; then
+say "yt-dlp (web sources)"
+if [ -x "$YTDLP_BIN" ] && ! repairing websources; then
+  ok "present at ${YTDLP_BIN#"$D"} — left alone"
+  mark websources ok
+else
+  say "  fetching yt-dlp ($YTDLP_ASSET)"
+  if curl -4 -fsSL --retry 3 --max-time 300 \
+       "https://github.com/yt-dlp/yt-dlp/releases/latest/download/$YTDLP_ASSET" \
+       -o "$YTDLP_BIN.new"; then
+    chmod +x "$YTDLP_BIN.new"; mv -f "$YTDLP_BIN.new" "$YTDLP_BIN"
+    ok "yt-dlp installed"
+    mark websources ok
+  else
+    rm -f "$YTDLP_BIN.new"
+    warn "could not download yt-dlp for $YTDLP_ASSET — web sources will be unavailable"
+    hint "everything else works without it. Install it later and re-run: sudo jellyfreedom repair websources"
+    mark websources "download failed"
+  fi
+fi
+fi
+
 
 
 # ==========================================================================================
@@ -822,6 +864,54 @@ StartLimitBurst=5
 WantedBy=multi-user.target
 EOF
 
+cat > "$UNIT_DIR/jf-netnsproxy.service" <<EOF
+[Unit]
+Description=JellyFreedom VPN proxy (inside the vpntorrent netns)
+After=vpntorrent-netns.service network-online.target
+Requires=vpntorrent-netns.service
+# BindsTo for the same reason TorrServer uses it: restarting the netns deletes and
+# recreates the namespace, and a process that only Requires= it would keep a handle on the
+# old, orphaned one — looking healthy while having no VPN at all.
+BindsTo=vpntorrent-netns.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=$RUN_USER
+# systemd enters the namespace before dropping privileges, so this process is inside the
+# tunnel and behind the kill switch without holding a capability of its own. That is the
+# whole mechanism: the orchestrator runs in the HOST namespace (it serves the LAN) and
+# cannot enter a netns without CAP_SYS_ADMIN, so it dials through this instead.
+NetworkNamespacePath=/var/run/netns/vpntorrent
+# NetworkNamespacePath= does not apply /etc/netns/<ns>/resolv.conf the way `ip netns exec`
+# does, so bind it in — otherwise lookups hit the host's 127.0.0.53 stub, which nothing
+# answers inside the namespace, and every extraction fails to resolve its site.
+BindReadOnlyPaths=/etc/netns/vpntorrent/resolv.conf:/etc/resolv.conf
+# No arguments: the listen address and client allow-list come from /run/vpntorrent/netns.env.
+ExecStart=${APP_DIR#"$D"}/bin/orchestrator netns-proxy
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 cat > "$UNIT_DIR/vpntorrent-portforward.service" <<EOF
 [Unit]
 Description=vpntorrent port-forward keeper (NAT-PMP; optional, provider-dependent)
@@ -938,6 +1028,7 @@ if [ -n "$D" ]; then
   if [ -x "$TS_BIN" ]; then systemctl enable --now torrserver-netns.service; else warn "skipping torrserver-netns — no TorrServer binary"; fi
   if [ -x "$FS_DIR/flaresolverr" ]; then systemctl enable --now flaresolverr.service; fi
   systemctl enable --now vpntorrent-portforward.service vpntorrent-watchdog.timer
+  if [ -x "$YTDLP_BIN" ]; then systemctl enable --now jf-netnsproxy.service; fi
   systemctl enable --now jellyfreedom.service
 else
   systemctl daemon-reload
@@ -950,6 +1041,20 @@ else
   else warn "skipping torrserver-netns — no TorrServer binary"; fi
   if [ -x "$FS_DIR/flaresolverr" ]; then start_unit flaresolverr.service || mark flaresolverr "failed to start"; fi
   start_unit vpntorrent-portforward.service || true
+  # The in-namespace proxy. Started BEFORE the orchestrator so the first extraction has
+  # somewhere to dial; only started at all when there is an extractor to use it, since
+  # without yt-dlp it would be a listening socket with no caller.
+  #
+  # A restart, not enable --now: on an upgrade the unit is already active and running the
+  # OLD binary, and `enable --now` would report success while leaving it there — the same
+  # trap the orchestrator's own line below documents.
+  if [ -x "$YTDLP_BIN" ]; then
+    systemctl enable jf-netnsproxy.service >/dev/null 2>&1 || true
+    if systemctl restart jf-netnsproxy.service; then ok "jf-netnsproxy.service"
+    else warn "jf-netnsproxy did not start — web sources will be unavailable"
+         hint "journalctl -u jf-netnsproxy -n 50 --no-pager"
+         mark websources "proxy failed to start"; fi
+  fi
   systemctl enable --now vpntorrent-watchdog.timer >/dev/null 2>&1 || true
   for u in jellyfin.service prowlarr.service; do
     if systemctl cat "$u" >/dev/null 2>&1; then systemctl enable --now "$u" >/dev/null 2>&1 || warn "$u did not start"; fi
