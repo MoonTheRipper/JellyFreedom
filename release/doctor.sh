@@ -4,7 +4,8 @@
 #   jellyfreedom doctor            run every check
 #   jellyfreedom doctor --quiet    only show problems
 #   jellyfreedom doctor <name>     run one section (system|install|privs|services|ports|
-#                                  orchestrator|prowlarr|flaresolverr|torrserver|jellyfin|vpn|library)
+#                                  orchestrator|prowlarr|flaresolverr|torrserver|websources|
+#                                  jellyfin|vpn|library)
 #
 # Exit status: 0 = no failures, 1 = at least one FAIL.
 #
@@ -323,6 +324,72 @@ if section torrserver "TorrServer"; then
   else fail "TorrServer not answering on $TS_URL" \
             "systemctl status torrserver-netns ; journalctl -u torrserver-netns -n 50
         It runs inside the VPN namespace, so check the VPN section below first."; fi
+fi
+
+# ---------------------------------------------------------------- web sources
+#
+# Three things have to line up for a pasted link to play, and they fail independently:
+# the extractor has to exist, the in-namespace proxy has to be listening, and the config
+# has to switch the feature on. Reporting them separately is the point — "web sources
+# don't work" is otherwise three different problems wearing one symptom.
+if section websources "Web sources (paste-a-link)"; then
+  ws_on=""
+  if [ -f "$CONF_DIR/config.yaml" ]; then
+    # The `enabled:` under web_sources:, not any other enabled: in the file. awk rather
+    # than grep because the key name is not unique and indentation is what scopes it.
+    ws_on="$(awk '/^web_sources:/{inblk=1; next} /^[^[:space:]#]/{inblk=0}
+                  inblk && /^[[:space:]]+enabled:/{gsub(/[^a-z]/,"",$2); print $2; exit}' \
+             "$CONF_DIR/config.yaml" 2>/dev/null)"
+  fi
+
+  ytdlp=""
+  for c in /usr/local/bin/yt-dlp /usr/bin/yt-dlp; do [ -x "$c" ] && { ytdlp="$c"; break; }; done
+  [ -n "$ytdlp" ] || ytdlp="$(command -v yt-dlp 2>/dev/null)"
+
+  if [ "$ws_on" != "true" ]; then
+    # Not a failure: this is the state of every install that predates the feature, and of
+    # anyone who does not want it. Say exactly how to turn it on.
+    info "web sources are off — web_sources.enabled is not true in $CONF_DIR/config.yaml"
+    if [ "$QUIET" != 1 ]; then
+      printf '      %s→ to switch them on, add this and restart (sudo systemctl restart jellyfreedom):%s\n' "$C_D" "$C_0"
+      printf '        %sweb_sources:%s\n' "$C_D" "$C_0"
+      printf '        %s  enabled: true%s\n' "$C_D" "$C_0"
+      printf '        %s  temp_dir: %s/tmp%s\n' "$C_D" "$DATA_DIR" "$C_0"
+      printf '        %s  proxy_addr: "%s:1080"%s\n' "$C_D" "$TS_HOST" "$C_0"
+    fi
+  else
+    if [ -n "$ytdlp" ]; then
+      # --version runs the whole self-extracting bundle, so it also proves TMPDIR works.
+      v="$(TMPDIR="$DATA_DIR/tmp" "$ytdlp" --version 2>/dev/null | head -1)"
+      if [ -n "$v" ]; then pass "yt-dlp $v at $ytdlp"
+      else fail "yt-dlp is present but will not run" \
+                "usually no space in its scratch dir. Check: df -h $DATA_DIR ; ls -ld $DATA_DIR/tmp
+        It unpacks ~76MB on every run, so it must NOT be pointed at a small or full /tmp."; fi
+    else
+      fail "yt-dlp is not installed" "sudo jellyfreedom repair websources"
+    fi
+
+    if have systemctl; then
+      st="$(systemctl is-active jf-netnsproxy.service 2>/dev/null)"
+      case "$st" in
+        active) pass "jf-netnsproxy active (the VPN proxy web sources dial through)" ;;
+        "")     fail "jf-netnsproxy unit is missing" "sudo jellyfreedom repair" ;;
+        *)      fail "jf-netnsproxy is $st" "journalctl -u jf-netnsproxy -n 50 --no-pager
+        It runs inside the VPN namespace, so check the VPN section below first." ;;
+      esac
+    fi
+
+    # The proxy listens on the namespace's veth address, so the host CAN reach it — the
+    # same way it reaches TorrServer. A refused connection here is the difference between
+    # "the feature is misconfigured" and "the tunnel is down".
+    if have curl; then
+      pst="$(curl -4 -s -o /dev/null --max-time 8 --socks5-hostname "$TS_HOST:1080" \
+             -w '%{http_code}' https://api.github.com/ 2>/dev/null)"
+      if [ -n "$pst" ] && [ "$pst" != "000" ]; then pass "the VPN proxy reaches the internet (HTTP $pst)"
+      else warn "the VPN proxy did not reach the internet through $TS_HOST:1080" \
+                "that is expected while the tunnel is down — see the VPN section. Web sources fail closed."; fi
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------- jellyfin

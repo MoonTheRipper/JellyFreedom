@@ -96,6 +96,33 @@ database. Either install it, or stop needing it by surfacing those values proper
 
 ---
 
+## Web sources: what is not covered yet
+
+The paste-a-link path handles one shape well — a page whose video is offered as a single
+progressive HTTP file. What it does not do:
+
+**Adaptive streams.** A site that publishes only HLS or DASH is refused with its own error
+([decisions.md](decisions.md) D23). Supporting it means remuxing segments into a stream on
+the fly, which is a real feature rather than a flag. Worth doing if enough sites go
+adaptive-only; that is a measurement, not a guess.
+
+**Anything that needs a login.** yt-dlp takes cookies and credentials; nothing here passes
+them, and doing so means storing someone's site credentials, which is a decision with its own
+weight.
+
+**Playlists and channels.** `--no-playlist` is passed deliberately, so a channel URL yields
+one video. "Add every video on this page" is a different feature with a different failure
+mode.
+
+**Refreshing an entry that has gone bad.** A dead link records why it failed and when it last
+worked, but nothing re-checks it in the background or tells you before you press play. A
+periodic health check over web sources would fit the existing task registry.
+
+**Only movie libraries.** A web source is a single video, so it goes into a movie library.
+There is no way to place one as an episode of a show.
+
+---
+
 ## Deliberately not planned
 
 - **Docker.** No.

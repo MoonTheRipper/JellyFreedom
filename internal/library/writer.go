@@ -159,7 +159,7 @@ func containedPath(dir string, elems ...string) (string, error) {
 // WriteMovieStrm writes a .strm for a movie into dir and returns its path.
 // Layout: <dir>/<Title> (<Year>)/<Title> (<Year>).strm
 func WriteMovieStrm(dir, title, year, streamURL string) (string, error) {
-	safe := safeName(fmt.Sprintf("%s (%s)", title, year))
+	safe := safeName(movieFolderName(title, year))
 	path, err := containedPath(dir, safe, safe+".strm")
 	if err != nil {
 		return "", err
@@ -168,6 +168,20 @@ func WriteMovieStrm(dir, title, year, streamURL string) (string, error) {
 		return "", fmt.Errorf("create movie dir: %w", err)
 	}
 	return path, os.WriteFile(path, []byte(streamURL), 0o644)
+}
+
+// movieFolderName is the "<Title> (<Year>)" convention Jellyfin's movie scanner expects
+// — but only when there IS a year.
+//
+// A blank year used to yield "Big Buck Bunny ()", which is the name a user then sees on
+// their TV. It arose the moment something other than TMDB could create a movie entry: a
+// pasted web link has an upload date, not a release year, and inventing one would have
+// Jellyfin's metadata agents match the entry against a film of that name and year.
+func movieFolderName(title, year string) string {
+	if strings.TrimSpace(year) == "" {
+		return title
+	}
+	return fmt.Sprintf("%s (%s)", title, year)
 }
 
 // WriteTVStrm writes a .strm for a TV episode into dir and returns its path.
@@ -234,6 +248,11 @@ func RemoveStrm(path string) error {
 // ProviderTMDB names the provider every identity in the library had before a second
 // metadata provider was possible. Its URLs and tokens are the ones that must not move.
 const ProviderTMDB = "tmdb"
+
+// ProviderWeb names identities that came from a pasted video page URL rather than from a
+// metadata database. Its ids are opaque digests of the page (store.WebSourceID), and its
+// playback path resolves the media URL fresh at play time instead of searching indexers.
+const ProviderWeb = "web"
 
 // Bounds on the two externally-supplied identity fields. Both land in a URL path AND in
 // the HMAC input that authorises playback, so they are validated before either is built —

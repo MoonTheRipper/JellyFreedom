@@ -42,6 +42,11 @@ top.
 
 ![The request queue](docs/img/queue.png)
 
+**Paste a link to a video page** and it becomes an entry in your library. JellyFreedom
+works out what the video is, shows you the title and thumbnail, and adds it to Jellyfin —
+and it looks the link up again every time you press play, so it keeps working when the site
+changes its addresses. Both the lookup and the stream go through your VPN.
+
 **A dashboard that tells you what is left to do.** Every row links to the thing that fixes
 it.
 
@@ -101,6 +106,9 @@ Later on, `sudo jellyfreedom --update` upgrades in place.
 4. **VPN → Configurations** → upload your WireGuard file and press **Activate**. Until you
    do, nothing will download at all. That is deliberate, not a fault.
 5. In Jellyfin, add the two folders JellyFreedom created as libraries.
+
+Want to add a video by pasting its address instead of searching? **Links** in the dashboard
+does that.
 
 Then search for something and press play. The first few seconds of a new title are spent
 connecting, after that it plays normally.

@@ -678,6 +678,22 @@ func (s *Store) migrate() error {
 		created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+	-- web_sources: where a provider="web" library row came from. See websources.go for
+	-- why the page URL lives here and not in a column on items, and for why the MEDIA
+	-- url is not stored anywhere at all.
+	CREATE TABLE IF NOT EXISTS web_sources (
+		id         TEXT     PRIMARY KEY,
+		page_url   TEXT     NOT NULL,
+		title      TEXT     NOT NULL DEFAULT '',
+		uploader   TEXT     NOT NULL DEFAULT '',
+		extractor  TEXT     NOT NULL DEFAULT '',
+		duration_s INTEGER  NOT NULL DEFAULT 0,
+		thumbnail  TEXT     NOT NULL DEFAULT '',
+		added_by   TEXT     NOT NULL DEFAULT '',
+		added_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		last_ok_at DATETIME,
+		last_error TEXT     NOT NULL DEFAULT ''
+	);
 	CREATE TABLE IF NOT EXISTS subscriptions (
 		id           INTEGER  PRIMARY KEY AUTOINCREMENT,
 		tmdb_id      INTEGER  NOT NULL,

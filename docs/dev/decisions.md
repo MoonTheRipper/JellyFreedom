@@ -297,3 +297,98 @@ URLs.
 message rather than installing a binary that cannot exec. Running it from source against a
 distribution `chromium` is the arm64 path — that is what the official multi-arch container does
 internally, and it needs no Docker to replicate.
+
+---
+
+## D20 — Web sources are proxied, never redirected
+
+**Decision:** When a pasted link plays, the orchestrator fetches the media and forwards the
+bytes. It does not answer with a `302` to the CDN.
+
+**Why:** Redirecting is free — no bandwidth crosses this box, and it is four lines of code.
+It also defeats the entire point. The Apple TV would connect to the site directly, so the
+site would see the viewer's home address, which is the one thing the namespace exists to
+prevent. It breaks on the merits too: many sites refuse a CDN request whose `Referer` does
+not match the one their player sends, and a redirected client sends its own.
+
+**Consequence:** every byte crosses the machine twice, and the orchestrator holds an open
+upstream connection for the length of a video. Accepted deliberately — it is the same cost
+the torrent path already pays through TorrServer.
+
+**What would change my mind:** nothing about bandwidth. Only a case where the client itself
+is already inside the tunnel, which is not this architecture.
+
+---
+
+## D21 — A SOCKS proxy inside the namespace, not a privileged orchestrator
+
+**Decision:** `jf-netnsproxy.service` runs `orchestrator netns-proxy` — a minimal SOCKS5
+CONNECT proxy — inside the `vpntorrent` namespace. The orchestrator dials through it.
+
+**Why:** The orchestrator must stay in the host namespace, because it serves the LAN. A
+process cannot enter a network namespace it did not start in without `CAP_SYS_ADMIN`, and
+granting the service user that is granting it root — which [D16](#d16--one-root-owned-helper-with-a-closed-verb-set-and-two-layer-config-sanitisation)
+exists to avoid. So rather than moving the process, one socket moves.
+
+Alternatives considered and rejected:
+
+- **`ip netns exec` through the privileged helper.** It would mean a sudo verb that runs an
+  arbitrary command inside the namespace, which is the exact shape D16 removed.
+- **A third-party proxy (tinyproxy, dante).** A package to install, configure, harden and keep
+  patched, for ~250 lines of Go that has no configuration file at all.
+- **An HTTP `CONNECT` proxy instead of SOCKS.** yt-dlp speaks SOCKS natively, and `socks5h://`
+  is a one-character way to say "resolve the hostname at the far end", which is what keeps the
+  DNS lookup inside the tunnel.
+
+**Consequence:** an unauthenticated proxy exists on the box. Access is positional and enforced
+twice — it binds only the namespace's end of a `/30` and accepts only from the host's end —
+and it refuses to connect to any non-public address, so it cannot be turned around into a way
+back into the host or the LAN.
+
+**Why it fails closed for free:** it is inside the namespace, so its connections are subject
+to the same `iptables OUTPUT DROP` policy as TorrServer's. There is no second kill switch to
+keep in sync, because there is no second mechanism.
+
+---
+
+## D22 — yt-dlp as the official binary, with its own scratch directory
+
+**Decision:** The installer fetches the upstream self-contained `yt-dlp_linux` build to
+`/usr/local/bin`. It does not use the distribution package or pip.
+
+**Why:** apt's yt-dlp is routinely months out of date, and a stale extractor is precisely the
+thing that breaks — sites change their players constantly and "update yt-dlp" is the fix for
+most of it. The official build updates itself in place with `yt-dlp -U`, needs no Python on
+the box, and is a single binary, which is the same shape as TorrServer and fits the no-Docker
+constraint.
+
+**The catch, learned the hard way:** that build is a self-extracting PyInstaller bundle. Every
+invocation unpacks about 76 MB into `TMPDIR` before doing any work. The orchestrator runs it
+with a deliberately empty environment, so with no `TMPDIR` it falls back to `/tmp` — which on
+a stock Ubuntu is a RAM-backed tmpfs. On a box whose `/tmp` was full, this surfaced as
+`Failed to extract Cryptodome/Cipher/_ARC4.abi3.so: decompression resulted in return code -1`,
+which says nothing whatsoever about disk space.
+
+**Consequence:** `web_sources.temp_dir` defaults to `/var/lib/jellyfreedom/tmp`, the installer
+creates it, and `doctor` runs `yt-dlp --version` — which unpacks the whole bundle, and so is a
+genuine test of that directory rather than of the file's existence.
+
+---
+
+## D23 — A web source is refused unless it is one seekable file
+
+**Decision:** Only progressive HTTP formats are accepted. A video offered solely as HLS or
+DASH is refused with its own error, and so is a live stream.
+
+**Why:** Everything downstream assumes one URL that answers `Range` requests with bytes of a
+playable file — forwarding the client's range, reporting `Content-Range`, letting Jellyfin
+seek. An adaptive manifest is a playlist of thousands of separately-signed segments; handing
+one to Jellyfin as though it were a video file produces a library entry that fails at play,
+days after it was added, for a reason nobody can see.
+
+**Consequence:** some videos cannot be added, and the user is told the site is the reason
+rather than being given something broken. Supporting them means remuxing segments into a
+stream on the fly, which is a real feature and not a small one.
+
+**What would change my mind:** enough sites going adaptive-only that the feature stops being
+useful. That is a measurement, not a guess.

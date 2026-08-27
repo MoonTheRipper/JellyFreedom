@@ -1,12 +1,12 @@
 /* ==========================================================================
    Dashboard section routing.
 
-   Sections are hash-addressable now (#setup, #health, #vpn, #logs, #users,
-   #tasks, #settings) so the public app's setup banner and the checklist can
+   Sections are hash-addressable now (#setup, #health, #vpn, #websources,
+   #logs, #users, #tasks, #settings) so the public app's setup banner and the checklist can
    deep-link straight at the thing that needs fixing.
    ========================================================================== */
 
-const SECTIONS = ['setup', 'health', 'vpn', 'logs', 'users', 'tasks', 'settings'];
+const SECTIONS = ['setup', 'health', 'vpn', 'websources', 'logs', 'users', 'tasks', 'settings'];
 
 const enter = new Map();   // section -> fn run when it becomes visible
 const leave = new Map();   // section -> fn run when it stops being visible

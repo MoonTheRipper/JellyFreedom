@@ -270,3 +270,22 @@ pre.log{background:#090b10;border:1px solid var(--border);border-radius:var(--r-
 @media (max-width: 820px){
   .update-strip{padding:12px max(14px,var(--sal)) 0 max(14px,var(--sal))}
 }
+
+/* ── Links (web sources) ─────────────────────────────────────────────────── */
+.ws-add{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.ws-add input{flex:1 1 320px;min-width:0}
+.ws-preview{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);padding:13px}
+/* A fixed box for the thumbnail: it comes from a third-party site at whatever
+   aspect ratio that site chose, and an unconstrained img would reflow the whole
+   panel differently for every link. */
+.ws-thumb{width:180px;height:101px;object-fit:cover;border-radius:var(--r-sm);
+  background:var(--bg);flex-shrink:0}
+.ws-preview-body{flex:1 1 260px;min-width:0;display:flex;flex-direction:column;gap:9px}
+.ws-preview-body input{width:100%}
+.ws-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+.ws-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ws-actions input{flex:1 1 220px;min-width:0}
+.ws-broken{border-color:rgba(248,113,113,.4)}
+.ws-error{display:flex;gap:6px;align-items:flex-start;font-size:11px;color:var(--red);margin-top:4px}
+.ws-error .ic{width:14px;height:14px;flex-shrink:0}

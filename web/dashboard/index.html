@@ -63,6 +63,9 @@
     <button type="button" class="nav-item" data-section="vpn">
       <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-shield"></use></svg></span>
       VPN</button>
+    <button type="button" class="nav-item" data-section="websources">
+      <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-link"></use></svg></span>
+      Links</button>
     <button type="button" class="nav-item" data-section="logs">
       <span class="nav-icon"><svg class="ic" aria-hidden="true"><use href="#i-list"></use></svg></span>
       Logs</button>
@@ -131,6 +134,36 @@
         <h3 class="sub-title">Leak check</h3>
         <button class="btn" type="button" id="leak-btn" data-leak-run="1">Run check</button>
         <div id="leak-result" class="leak-result"></div>
+      </div>
+    </section>
+
+    <!-- ── Links (web sources) ───────────────────────────────────────────── -->
+    <section id="section-websources" class="section">
+      <div class="section-header">
+        <h2>Links</h2>
+        <button class="btn" type="button" data-ws-refresh="1">Refresh</button>
+      </div>
+      <p class="section-lead">Paste the address of a video page and it becomes an entry in your
+        Jellyfin library. The link is resolved fresh every time you press play, so it keeps
+        working when the site re-signs its URLs — and both the lookup and the stream go through
+        the VPN, so the site never sees your home address.</p>
+      <div id="ws-status"></div>
+
+      <div class="subsection" id="ws-form" hidden>
+        <h3 class="sub-title">Add a link</h3>
+        <p class="hint">Paste the page you would normally watch on — not a direct file URL.
+          Extraction runs over the VPN and takes a few seconds.</p>
+        <div class="ws-add">
+          <label class="sr-only" for="ws-url">Video page URL</label>
+          <input type="url" id="ws-url" placeholder="https://…" autocomplete="off" spellcheck="false">
+          <button class="btn" type="button" data-ws-preview="1">Preview</button>
+        </div>
+        <div id="ws-preview"></div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="sub-title">Added links</h3>
+        <div id="ws-list" class="vpn-configs"></div>
       </div>
     </section>
 

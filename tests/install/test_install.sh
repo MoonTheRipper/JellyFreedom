@@ -302,6 +302,50 @@ grep -aqiE 'unbound variable|command not found|syntax error' "$OUTPUT" \
   || _pass "--repair runs clean"
 assert_exit 0
 
+# ---------------------------------------------------------------- web sources
+describe "web sources: the extractor, its scratch dir and the in-namespace proxy"
+sandbox_new websources
+mock_standard
+run_installer
+assert_exit 0
+assert_exec "$DEST/usr/local/bin/yt-dlp"
+# NOT /tmp. The yt-dlp binary unpacks ~76MB of itself into TMPDIR on every run, and /tmp
+# is a RAM-backed tmpfs on stock Ubuntu — pointing it there spends memory per extraction
+# and fails unreadably once that tmpfs fills.
+assert_dir "$DEST/var/lib/jellyfreedom/tmp"
+assert_contains "$DEST/etc/jellyfreedom/config.yaml" 'temp_dir: /var/lib/jellyfreedom/tmp'
+assert_not_contains "$DEST/etc/jellyfreedom/config.yaml" 'temp_dir: /tmp'
+
+assert_file "$DEST/etc/systemd/system/jf-netnsproxy.service"
+# The three lines that make it work at all: it must run INSIDE the namespace, it must get
+# the namespace's resolvers, and it must be torn down with the namespace rather than left
+# holding an orphaned handle to a deleted one.
+assert_contains "$DEST/etc/systemd/system/jf-netnsproxy.service" 'NetworkNamespacePath=/var/run/netns/vpntorrent'
+assert_contains "$DEST/etc/systemd/system/jf-netnsproxy.service" 'BindReadOnlyPaths=/etc/netns/vpntorrent/resolv.conf'
+assert_contains "$DEST/etc/systemd/system/jf-netnsproxy.service" 'BindsTo=vpntorrent-netns.service'
+assert_contains "$DEST/etc/systemd/system/jf-netnsproxy.service" 'orchestrator netns-proxy'
+assert_ran_re 'systemctl (enable|restart) .*jf-netnsproxy'
+assert_no_shell_errors
+
+describe "web sources: a failed yt-dlp download is a warning, never fatal"
+sandbox_new websources-nodl
+mock_standard
+# The installer's other downloads succeed; only yt-dlp's URL fails, with curl's
+# HTTP-error exit code.
+mock_script curl '
+  case "$*" in *yt-dlp*) exit 22 ;; esac
+  out=""; prev=""
+  for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
+  if [ -n "$out" ]; then mkdir -p "$(dirname "$out")"; printf "mock-artifact\n" > "$out"; fi
+  exit 0'
+run_installer
+# Nothing else depends on the extractor, so the install must still finish and still
+# start. A box without it simply has the Links section switched off with one sentence.
+assert_exit 0
+assert_no_file "$DEST/usr/local/bin/yt-dlp"
+assert_ran_re 'systemctl (enable|restart) .*jellyfreedom'
+assert_output 'web sources will be unavailable'
+
 # ---------------------------------------------------------------- logging
 describe "the installer writes a transcript the user can be pointed at"
 sandbox_new logging

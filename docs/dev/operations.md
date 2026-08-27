@@ -17,6 +17,7 @@ Everything here is native — systemd units and binaries, no containers.
 | Prowlarr | `prowlarr` | 9696, localhost | `prowlarr` |
 | FlareSolverr | `flaresolverr` | 8191, localhost | `flaresolverr` |
 | TorrServer | `torrserver-netns` | 8090, **inside the `vpntorrent` namespace** | `torrserver` |
+| VPN proxy (web sources) | `jf-netnsproxy` | 1080, **inside the `vpntorrent` namespace** | `jellyfreedom` |
 | VPN namespace setup | `vpntorrent-netns` (oneshot) | — | root |
 | Port-forward keeper | `vpntorrent-portforward` | — | root |
 | Watchdog | `vpntorrent-watchdog.timer` (60s) | — | root |
@@ -28,8 +29,21 @@ change the subnet, change `torrserver.base_url` to match.
 
 Unit dependencies worth knowing:
 
-- `torrserver-netns` has **`BindsTo=vpntorrent-netns`**. Without it, restarting the namespace
-  deletes and recreates it while TorrServer keeps a handle on the orphaned original.
+- `torrserver-netns` and `jf-netnsproxy` both have **`BindsTo=vpntorrent-netns`**. Without it,
+  restarting the namespace deletes and recreates it while those processes keep a handle on
+  the orphaned original — healthy-looking, with no VPN at all.
+- `jf-netnsproxy` takes **no arguments**. It derives its listen address and its client
+  allow-list from the veth interface it finds inside the namespace, so overriding
+  `VPNTORRENT_VETH_SUBNET` is followed automatically. It prefers `/run/vpntorrent/netns.env`
+  when it can read it — but that directory is `0700 root` because it also holds the
+  sanitised WireGuard config, and the service user cannot traverse into it, so deriving is
+  the path that actually runs. It listens on the namespace's veth address and trusts the
+  link subnet, which on the default `/30` is exactly one other host.
+- `jf-netnsproxy` also needs **`BindReadOnlyPaths=/etc/netns/vpntorrent/resolv.conf:/etc/resolv.conf`**.
+  `ip netns exec` applies the per-namespace resolvers automatically; systemd's
+  `NetworkNamespacePath=` does not. Without the bind, lookups inside the namespace hit the
+  host's `127.0.0.53` stub, which nothing answers in there, and every extraction fails to
+  resolve its site.
 - The namespace unit is written to **succeed whenever the namespace itself is healthy**. A
   missing or broken VPN config is a loud warning, not a unit failure — the namespace fails
   closed either way, and failing the unit would stop TorrServer and take the dashboard's own

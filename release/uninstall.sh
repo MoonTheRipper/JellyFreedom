@@ -30,7 +30,7 @@ if [ "$PURGE" = 1 ] && [ "${ASSUME_YES:-0}" != 1 ]; then
 fi
 
 say "stopping and disabling services"
-UNITS="jellyfreedom.service vpntorrent-watchdog.timer vpntorrent-watchdog.service
+UNITS="jellyfreedom.service jf-netnsproxy.service vpntorrent-watchdog.timer vpntorrent-watchdog.service
        vpntorrent-portforward.service torrserver-netns.service vpntorrent-netns.service"
 [ "$ALL" = 1 ] && UNITS="$UNITS flaresolverr.service prowlarr.service"
 for u in $UNITS; do systemctl disable --now "$u" 2>/dev/null || true; done
@@ -45,6 +45,7 @@ rm -f /etc/systemd/system/jellyfreedom.service \
       /etc/systemd/system/vpntorrent-portforward.service \
       /etc/systemd/system/vpntorrent-watchdog.service \
       /etc/systemd/system/vpntorrent-watchdog.timer \
+      /etc/systemd/system/jf-netnsproxy.service \
       /etc/sudoers.d/jellyfreedom \
       /etc/apparmor.d/local/wg-quick
 rm -rf /opt/jellyfreedom /opt/vpntorrent /etc/netns/vpntorrent /run/vpntorrent
@@ -58,9 +59,9 @@ if [ "$ALL" = 1 ]; then
   say "removing the third-party components we installed"
   rm -f /etc/systemd/system/flaresolverr.service /etc/systemd/system/prowlarr.service
   systemctl daemon-reload 2>/dev/null || true
-  rm -f /usr/local/bin/torrserver
+  rm -f /usr/local/bin/torrserver /usr/local/bin/yt-dlp
   rm -rf /opt/flaresolverr /opt/Prowlarr /opt/prowlarr /var/lib/torrserver /var/lib/flaresolverr
-  echo "  removed TorrServer, FlareSolverr and Prowlarr"
+  echo "  removed TorrServer, yt-dlp, FlareSolverr and Prowlarr"
   echo "  NOTE: Jellyfin is left installed — remove it with: sudo apt-get remove jellyfin"
 fi
 
