@@ -42,6 +42,14 @@ type WebSourcesConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// YTDLPPath is where yt-dlp lives. Empty means "find yt-dlp on PATH".
 	YTDLPPath string `yaml:"ytdlp_path"`
+	// TempDir is scratch space for the extractor. Empty means the standard location
+	// under the state directory.
+	//
+	// It needs a default, and the default must not be /tmp. The official yt-dlp binary
+	// unpacks ~76MB of itself into TMPDIR on every run, and /tmp is a RAM-backed tmpfs
+	// on a stock Ubuntu — so leaving it alone spends RAM per extraction and fails with
+	// an unreadable PyInstaller error once that tmpfs is full.
+	TempDir string `yaml:"temp_dir"`
 	// ProxyAddr is the host:port of the SOCKS proxy running INSIDE the vpntorrent
 	// namespace — `orchestrator netns-proxy`, started by jf-netnsproxy.service.
 	//
@@ -60,6 +68,15 @@ func (c *Config) WebSourcesProxyAddr() string {
 		return c.WebSources.ProxyAddr
 	}
 	return "10.42.0.2:1080"
+}
+
+// WebSourcesTempDir returns the extractor's scratch directory, defaulting to a
+// disk-backed path under the FHS state directory rather than to /tmp.
+func (c *Config) WebSourcesTempDir() string {
+	if c.WebSources.TempDir != "" {
+		return c.WebSources.TempDir
+	}
+	return "/var/lib/jellyfreedom/tmp"
 }
 
 // VPNConfigDir returns the configured config dir or the portable default.

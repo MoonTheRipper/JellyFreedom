@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +90,17 @@ func newWebPlayer(db *store.Store, cfg *config.Config) *webPlayer {
 		// is enforced by the extractor rather than only by a branch here.
 		dialer.Addr = ""
 	}
+	// The extractor's scratch directory has to exist before the first run, and it must
+	// not be /tmp — see config.WebSourcesTempDir. A failure to create it is logged and
+	// the field left empty, which falls back to the system default: degraded, but the
+	// feature still works on a box with room in /tmp.
+	tempDir := cfg.WebSourcesTempDir()
+	if err := os.MkdirAll(tempDir, 0o700); err != nil {
+		slog.Error("web: could not create the extractor scratch directory; falling back to the system temp dir",
+			"dir", tempDir, "err", err)
+		tempDir = ""
+	}
+
 	return &webPlayer{
 		db:  db,
 		cfg: cfg,
@@ -96,6 +108,7 @@ func newWebPlayer(db *store.Store, cfg *config.Config) *webPlayer {
 			Binary:   cfg.WebSources.YTDLPPath,
 			ProxyURL: dialer.ProxyURL(),
 			Timeout:  90 * time.Second,
+			TempDir:  tempDir,
 		},
 		dialer: dialer,
 		http: &http.Client{
@@ -245,12 +258,22 @@ func playFailureMessage(err error) string {
 	return err.Error()
 }
 
-// hopByHop are the headers that describe THIS connection rather than the resource, and
-// so must not be copied from the upstream response to the client.
-var hopByHop = map[string]bool{
-	"connection": true, "keep-alive": true, "proxy-authenticate": true,
-	"proxy-authorization": true, "te": true, "trailer": true,
-	"transfer-encoding": true, "upgrade": true,
+// forwardedResponseHeaders is an ALLOW-LIST of what a player is given back.
+//
+// A denylist was the first attempt and it was wrong. A real response from a tube site's
+// CDN carries Server, Strict-Transport-Security, Expires, Cache-Control and — seen in
+// testing — a Content-Security-Policy-Report-Only header naming the site by domain in
+// its report-uri. Forwarding those hands every one of them to whatever on the LAN reads
+// the response, which quietly undoes the reason for proxying: the client is supposed to
+// learn nothing about where the video came from. A denylist can only exclude the headers
+// somebody thought of; this can only include the ones a player actually needs.
+//
+// The six below are exactly that: what the content is, how big it is, which slice of it
+// this response holds, whether it can be seeked, and the two validators that let a
+// player revalidate a cached range.
+var forwardedResponseHeaders = []string{
+	"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges",
+	"Last-Modified", "ETag",
 }
 
 // streamWebSource proxies the media through this process, over the tunnel.
@@ -294,17 +317,11 @@ func (p *webPlayer) streamWebSource(w http.ResponseWriter, r *http.Request, ws *
 	}
 	defer resp.Body.Close()
 
-	// Copy the response headers through, minus the hop-by-hop ones and minus anything
-	// that would hand the site's state to the LAN client. Set-Cookie in particular: the
-	// cookies belong to this proxy's conversation with the CDN, and forwarding them
-	// would plant a tube site's cookie in the player.
-	for k, vals := range resp.Header {
-		lk := strings.ToLower(k)
-		if hopByHop[lk] || lk == "set-cookie" {
-			continue
-		}
-		for _, v := range vals {
-			w.Header().Add(k, v)
+	// Only the allow-listed headers cross back. Everything else — the site's cookies,
+	// its CSP report endpoint, its server banner — stops here.
+	for _, h := range forwardedResponseHeaders {
+		if v := resp.Header.Get(h); v != "" {
+			w.Header().Set(h, v)
 		}
 	}
 	if w.Header().Get("Accept-Ranges") == "" {

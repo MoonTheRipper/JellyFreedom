@@ -79,6 +79,16 @@ type Client struct {
 	// tight — but it is never absent, because a hung extractor would otherwise hold a
 	// playback request open forever.
 	Timeout time.Duration
+	// TempDir is where yt-dlp may write scratch files. Empty means the system default.
+	//
+	// This is not a detail. The official yt-dlp binary is a self-extracting PyInstaller
+	// bundle: EVERY invocation unpacks ~76MB of interpreter and libraries into TMPDIR
+	// before it does anything. On a box whose /tmp is a RAM-backed tmpfs — which is the
+	// Ubuntu default on this project's own server — that is 76MB of RAM per extraction,
+	// and when the tmpfs is full the failure is a PyInstaller decompression error that
+	// says nothing about disk space. Pointing this at a disk-backed directory is what
+	// keeps extraction working on a box under memory pressure.
+	TempDir string
 }
 
 // Info is everything one extraction yielded: what the video is, and how to fetch it now.
@@ -145,7 +155,11 @@ func (c Client) Version(ctx context.Context) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, bin, "--version").Output()
+	cmd := exec.CommandContext(ctx, bin, "--version")
+	// The same environment as an extraction: --version still unpacks the whole bundle,
+	// so it fails in exactly the same way when TMPDIR has no room.
+	cmd.Env = c.env()
+	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("yt-dlp --version: %w", err)
 	}
@@ -197,8 +211,10 @@ func (c Client) Inspect(ctx context.Context, pageURL string) (*Info, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	// An empty environment, not the orchestrator's. yt-dlp reads HTTP_PROXY, ALL_PROXY,
 	// XDG_CONFIG_HOME and more from the environment, and any of them could redirect this
-	// away from the tunnel. PATH is kept only so the binary can locate its own helpers.
-	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/nonexistent"}
+	// away from the tunnel. PATH is kept only so the binary can locate its own helpers,
+	// and TMPDIR because the self-extracting binary cannot start without somewhere to
+	// unpack itself — see the TempDir field.
+	cmd.Env = c.env()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &stdout, n: maxOutputBytes}
 	cmd.Stderr = &limitedWriter{w: &stderr, n: 64 << 10}
@@ -218,6 +234,19 @@ func (c Client) Inspect(ctx context.Context, pageURL string) (*Info, error) {
 		return nil, fmt.Errorf("%w: yt-dlp returned something that is not JSON", ErrExtractionFailed)
 	}
 	return raw.toInfo()
+}
+
+// env is the environment every yt-dlp invocation runs with. It is built from nothing
+// rather than filtered from the parent, so a variable added to the service unit later
+// cannot silently change what the extractor does.
+func (c Client) env() []string {
+	env := []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/nonexistent"}
+	if c.TempDir != "" {
+		// TMP and TEMP as well as TMPDIR: Python's tempfile consults all three, and
+		// setting only one leaves the others to fall back to /tmp.
+		env = append(env, "TMPDIR="+c.TempDir, "TMP="+c.TempDir, "TEMP="+c.TempDir)
+	}
+	return env
 }
 
 // ValidatePageURL checks a pasted string and returns the URL to actually use.

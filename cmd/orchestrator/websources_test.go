@@ -80,9 +80,10 @@ func newWebEnv(t *testing.T, mediaURL string) *webEnv {
 	}
 
 	cfg := &config.Config{
-		Server:     config.ServerConfig{PublicURL: "http://host:1990"},
-		Libraries:  []config.Library{{Name: "Movies", Type: "movie", Path: movies, Default: true}},
-		WebSources: config.WebSourcesConfig{Enabled: true, YTDLPPath: fakeExtractor(t, mediaURL)},
+		Server:    config.ServerConfig{PublicURL: "http://host:1990"},
+		Libraries: []config.Library{{Name: "Movies", Type: "movie", Path: movies, Default: true}},
+		WebSources: config.WebSourcesConfig{Enabled: true, YTDLPPath: fakeExtractor(t, mediaURL),
+			TempDir: filepath.Join(root, "tmp")},
 	}
 	p := newWebPlayer(db, cfg)
 	// The player's own transport dials through the namespace proxy, which does not exist
@@ -128,6 +129,12 @@ func TestStreamProxyCarriesTheRightHeadersInBothDirections(t *testing.T) {
 		w.Header().Set("Content-Type", "video/mp4")
 		w.Header().Set("Content-Range", "bytes 10-19/1000")
 		w.Header().Set("Set-Cookie", "cdn_session=leaked; Path=/")
+		// Real headers seen from an archive.org CDN in testing. Every one of them names
+		// the site or describes its security posture, and none is any use to a player.
+		w.Header().Set("Server", "nginx/1.31.3")
+		w.Header().Set("Strict-Transport-Security", "max-age=15724800")
+		w.Header().Set("Content-Security-Policy-Report-Only", "report-uri https://archive.org/services/csp-report")
+		w.Header().Set("Last-Modified", "Wed, 03 Dec 2014 14:25:31 GMT")
 		w.WriteHeader(http.StatusPartialContent)
 		w.Write([]byte("0123456789"))
 	}))
@@ -167,8 +174,18 @@ func TestStreamProxyCarriesTheRightHeadersInBothDirections(t *testing.T) {
 	if rec.Header().Get("Accept-Ranges") != "bytes" {
 		t.Errorf("Accept-Ranges = %q — without it Jellyfin will not offer seeking", rec.Header().Get("Accept-Ranges"))
 	}
-	if rec.Header().Get("Set-Cookie") != "" {
-		t.Errorf("the site's cookie reached the LAN client: %q", rec.Header().Get("Set-Cookie"))
+	// The client must learn nothing about where the video came from — that is the point
+	// of proxying rather than redirecting, and a header is as much of a giveaway as an
+	// IP connection would be.
+	for _, leak := range []string{"Set-Cookie", "Server", "Strict-Transport-Security",
+		"Content-Security-Policy-Report-Only"} {
+		if got := rec.Header().Get(leak); got != "" {
+			t.Errorf("%s reached the LAN client: %q", leak, got)
+		}
+	}
+	// …while the validators a player uses to revalidate a cached range do come through.
+	if rec.Header().Get("Last-Modified") == "" {
+		t.Error("Last-Modified was dropped")
 	}
 	if rec.Body.String() != "0123456789" {
 		t.Errorf("body = %q", rec.Body.String())
@@ -235,7 +252,7 @@ func TestPlayIsRefusedWhenTheFeatureIsOff(t *testing.T) {
 func TestNoProxyMeansNoExtractionRatherThanADirectOne(t *testing.T) {
 	cfg := &config.Config{
 		WebSources: config.WebSourcesConfig{Enabled: true, YTDLPPath: fakeExtractor(t, "https://cdn/x.mp4"),
-			ProxyAddr: "10.42.0.2:1080"},
+			ProxyAddr: "10.42.0.2:1080", TempDir: t.TempDir()},
 	}
 	p := newWebPlayer(nil, cfg)
 	if err := p.enabled(); err != nil {

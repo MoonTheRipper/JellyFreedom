@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,36 @@ func itoa(i int) string {
 
 func newClient(bin string) Client {
 	return Client{Binary: bin, ProxyURL: "socks5h://10.42.0.2:1080", Timeout: 10 * time.Second}
+}
+
+// The official yt-dlp binary is a self-extracting PyInstaller bundle that unpacks ~76MB
+// into TMPDIR on EVERY run. With an empty environment and no TMPDIR it falls back to
+// /tmp, which on a stock Ubuntu is a RAM-backed tmpfs — so this is the difference
+// between spending disk and spending memory per extraction, and between a clear failure
+// and an unreadable "decompression resulted in return code -1" when that tmpfs fills up.
+func TestExtractorGetsADiskBackedTempDir(t *testing.T) {
+	c := Client{Binary: "yt-dlp", ProxyURL: "socks5h://x:1", TempDir: "/var/lib/jellyfreedom/tmp"}
+	env := c.env()
+	for _, want := range []string{"TMPDIR=/var/lib/jellyfreedom/tmp", "TMP=/var/lib/jellyfreedom/tmp", "TEMP=/var/lib/jellyfreedom/tmp"} {
+		if !slices.Contains(env, want) {
+			t.Errorf("env is missing %q: %v", want, env)
+		}
+	}
+	// And the environment is built from nothing, so a variable added to the service unit
+	// later cannot redirect the extractor away from the tunnel.
+	for _, v := range env {
+		name, _, _ := strings.Cut(v, "=")
+		switch name {
+		case "PATH", "HOME", "TMPDIR", "TMP", "TEMP":
+		default:
+			t.Errorf("unexpected variable %q in the extractor environment", name)
+		}
+	}
+	if slices.ContainsFunc(Client{Binary: "yt-dlp"}.env(), func(v string) bool {
+		return strings.HasPrefix(v, "TMPDIR=")
+	}) {
+		t.Error("an unset TempDir should leave TMPDIR alone rather than inventing one")
+	}
 }
 
 // The shape here is copied from a real archive.org extraction: a float duration, null

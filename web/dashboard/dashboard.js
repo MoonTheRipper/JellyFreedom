@@ -14,6 +14,7 @@ import * as nav from './modules/nav.js';
 import {initChecklist, renderChecklist, hasBlockingIssues} from './modules/checklist.js';
 import {initServices, fetchStatus} from './modules/services.js';
 import {initVpn, refreshVpn} from './modules/vpn.js';
+import {initWebSources, refreshWebSources} from './modules/websources.js';
 import {initLogs, stopAutoLog} from './modules/logs.js';
 import {initUsers, fetchUsers} from './modules/users.js';
 import {initTasks, fetchTasks, stopTaskPolling} from './modules/tasks.js';
@@ -32,6 +33,7 @@ async function init() {
   initChecklist();
   initServices();
   initVpn();
+  initWebSources();
   initLogs();
   initUsers();
   initTasks();
@@ -45,6 +47,7 @@ async function init() {
   nav.onEnter('setup', renderChecklist);
   nav.onEnter('health', fetchStatus);
   nav.onEnter('vpn', refreshVpn);
+  nav.onEnter('websources', refreshWebSources);
   nav.onEnter('users', fetchUsers);
   nav.onEnter('tasks', fetchTasks);
   nav.onEnter('settings', fetchSettings);
