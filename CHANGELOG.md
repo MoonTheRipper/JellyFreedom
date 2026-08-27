@@ -10,12 +10,59 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 ## [Unreleased]
 
 ### Added
+- **Browse and filter by genre, studio and type.** The home page previously offered five
+  fixed rows and the search box took a query and nothing else. There is now a filter panel —
+  media type, genres with an any/all toggle, studio, year, sort and a vote floor — plus a
+  Movies/TV/All tab on search results. New endpoints `GET /api/genres` and
+  `GET /api/studios` back it.
+- **Per-user library visibility.** An admin chooses which libraries each account can see, so
+  a household can keep some libraries off a child's account. Absence of a grant is a denial,
+  admins bypass it, and the stock single-admin install needs no configuration.
+- **An ingest API for external providers.** A local process that has resolved something
+  itself can register it under its own provider namespace; JellyFreedom stores it, writes the
+  `.strm` and streams it, without doing any metadata lookup of its own. This is what lets a
+  third-party source — an anime database, a personal archive — put titles in the library.
+- **Identity is keyed on a provider**, not on a TMDB id alone, and play URLs can name one:
+  `/play/p/{provider}/movie/{id}`. Existing TMDB URLs, identity strings and capability tokens
+  are unchanged and frozen.
 - `release/bump.sh` — cuts a release in one step: moves `VERSION`, closes off the changelog
   section, repoints the comparison links, and commits on a `release/<version>` branch.
   Takes `patch`, `minor`, `major`, or an exact version. It refuses a dirty tree, a version
   that is already tagged, and an empty `## [Unreleased]`, and it re-runs the release
   workflow's own note extraction against the file it just wrote — so a mistake surfaces
   before the tag is pushed rather than after.
+
+### Fixed
+- **The genre rows on the home page were showing the wrong thing.** TMDB reads a comma in a
+  genre filter as AND, so "Action & Adventure" was asking for titles that are *both* — 8,422
+  of them instead of 69,246, and 2,725 instead of 54,598 for "Sci-Fi & Fantasy". Both rows
+  had been quietly serving the narrow intersection since they were written.
+- **A malformed release title could no longer confuse the filename sanitiser.** It filtered
+  characters but permitted `..` and an empty result, so the safety of every file this program
+  writes rested on a format string in the caller rather than on the sanitiser. Paths are now
+  checked after resolution, and a write that would escape its directory is refused outright.
+- TMDB requests are built with proper URL encoding instead of string concatenation, and the
+  TMDB key is registered with the log-redaction filter on every configuration path rather
+  than only one.
+
+### Security
+- **The library was readable by anyone who could reach the port.** `GET /api/library`
+  returned every item — titles and library names — to callers with no session, and the
+  service listens on all interfaces. Signed-out callers now see nothing. This is the change
+  most likely to be noticed: see *Upgrading*.
+- Search parameters sent to TMDB are built from a strict allowlist, so nothing a caller
+  supplies is forwarded upstream as written.
+
+### Upgrading
+**Signed-out visitors no longer see the library.** If you browse without signing in, the
+library and queue pages will be empty until you do. This is deliberate — a per-library
+permission that a user can sidestep by signing out is not a permission — but it is a visible
+change to how the app behaves on a shared network.
+
+**Existing non-admin accounts see nothing until granted.** Admins are unaffected and the
+single-admin install needs no action. If you have other accounts, grant their libraries
+before or immediately after upgrading, via `PUT /api/users/{id}/libraries`. The dashboard
+does not yet render this as a checkbox list.
 
 ## [0.5.1] - 2026-08-24
 
