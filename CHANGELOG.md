@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-08-27
+
 ### Fixed
 - **Web sources did not work at all on a real install.** `jf-netnsproxy.service` — the VPN
   proxy every paste-a-link extraction and stream is dialled through — exited immediately on
@@ -481,7 +483,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.0...v0.5.1
