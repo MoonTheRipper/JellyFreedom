@@ -47,7 +47,11 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is required, not optional: the proxy derives its own listen address from
+# the namespace's veth, and Go's net.Interfaces() does that over a NETLINK_ROUTE socket.
+# Without it the call fails with "address family not supported by protocol", the service
+# cannot find 10.42.0.2, and it exits 1 on every start until the restart limit is hit.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes

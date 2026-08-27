@@ -324,6 +324,14 @@ assert_contains "$DEST/etc/systemd/system/jf-netnsproxy.service" 'NetworkNamespa
 assert_contains "$DEST/etc/systemd/system/jf-netnsproxy.service" 'BindReadOnlyPaths=/etc/netns/vpntorrent/resolv.conf'
 assert_contains "$DEST/etc/systemd/system/jf-netnsproxy.service" 'BindsTo=vpntorrent-netns.service'
 assert_contains "$DEST/etc/systemd/system/jf-netnsproxy.service" 'orchestrator netns-proxy'
+# AF_NETLINK, specifically. The proxy derives its listen address from the namespace's
+# veth via net.Interfaces(), which is a NETLINK_ROUTE socket. 0.5.3 shipped without it
+# and the service exited 1 on every start on every machine, while the installer still
+# printed "websources ready" — so assert the whole directive. Matching the bare word
+# AF_NETLINK would pass on this comment alone, since the comment is written into the
+# unit file too: a check that cannot fail.
+assert_contains "$DEST/etc/systemd/system/jf-netnsproxy.service" \
+  'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK'
 assert_ran_re 'systemctl (enable|restart) .*jf-netnsproxy'
 assert_no_shell_errors
 
