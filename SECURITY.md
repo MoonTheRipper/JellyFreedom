@@ -79,8 +79,10 @@ registered falls through to `RequireAdmin`** — the default is closed.
   stripped** for callers
   without a session, and anonymous use is rate-limited to 20 searches per minute per
   address. See the note below.
-- Streaming: `GET /play/movie/{tmdb}`, `GET /play/tv/{tmdb}/{season}/{episode}`, and the
-  legacy `GET /proxy/stream` — see *Streaming routes* below.
+- Streaming: `GET /play/movie/{tmdb}`, `GET /play/tv/{tmdb}/{season}/{episode}`, their
+  provider-namespaced equivalents `GET /play/p/{provider}/movie/{id}` and
+  `GET /play/p/{provider}/tv/{id}/{season}/{episode}` — which includes the `web` provider
+  used by pasted links — and the legacy `GET /proxy/stream`. See *Streaming routes* below.
 - `POST /webhook/jellyfin` — session-less by necessity, but secret-gated. See below.
 - `PUT` / `DELETE /api/provider/{provider}/items/{id}` and
   `GET /api/provider/{provider}/items` — the external-provider ingest API. Session-less by
@@ -98,8 +100,10 @@ routes, and `POST /api/auth/change-password`.
 `GET /api/leak`, `/api/settings*`, `/api/vpn/configs*`, `/api/users*` — including
 `GET /api/users/{id}/libraries` and `PUT /api/users/{id}/libraries`, the per-library
 access controls described below — `/api/logs`, `/api/tasks`,
-`/api/services/{name}/restart`, `/api/vpn`, `/api/debug/releases`, and every unregistered
-`/api/` path.
+`/api/services/{name}/restart`, `/api/vpn`, `/api/debug/releases`, `/api/websources*` —
+listing, previewing, adding and removing pasted video links, all four admin-only because
+adding one writes a file into a Jellyfin media root and runs an extractor against a
+caller-supplied URL — and every unregistered `/api/` path.
 
 > **Fixed:** `GET /api/releases` was registered with no auth wrapper at all and returned
 > `picker.ScoredRelease`, which embeds `indexer.Release` and therefore its `magnet` field.
@@ -190,9 +194,16 @@ Two limits worth understanding before you rely on this:
 
 `/play/...` cannot require a session: Jellyfin clients fetch `.strm` URLs anonymously and
 have no cookie to present. Instead the identity is signed. `cmd/orchestrator/playtoken.go`
-HMACs the identity (`movie:<tmdb>` / `tv:<tmdb>:<season>:<episode>`) with a server-side key
-stored in the database, and the tag travels in the URL as `?t=`; `validPlayToken` compares
-in constant time. Possession of a URL this server wrote **is** the credential.
+HMACs the identity (`movie:<tmdb>` / `tv:<tmdb>:<season>:<episode>`, or its
+provider-qualified form for anything that is not TMDB) with a server-side key stored in the
+database, and the tag travels in the URL as `?t=`; `validPlayToken` compares in constant
+time. Possession of a URL this server wrote **is** the credential.
+
+The identity is a `:`-joined string, so its unforgeability depends on no field being able to
+contain the delimiter. That is why `internal/library` validates the provider and id against
+a tight allow-list (`[a-z0-9]` and `[A-Za-z0-9_-]`) in the token encoder itself, and why
+every route and every write path that can mint one calls the same two functions rather than
+a second copy that could drift.
 
 Two caveats you should understand:
 
@@ -218,6 +229,38 @@ The secret **is** surfaced to an admin: `GET /api/settings` returns it under `we
 (that whole handler is `RequireAdmin`), and the dashboard renders it read-only under
 *Settings → Jellyfin webhook*. Earlier releases did not, which made the webhook impossible
 to configure without a direct SQLite query; that is fixed.
+
+### Pasted video links (web sources)
+
+`POST /api/websources` takes a URL from an admin and runs an extractor against it, which is
+a request-forgery shape by construction. Three things bound it:
+
+- **Only an admin can reach it.** All four `/api/websources*` routes are `RequireAdmin`.
+- **The URL is validated before it reaches the extractor.** Absolute `http`/`https` only,
+  no credentials, no control characters, bounded length, and literal private addresses are
+  refused. yt-dlp accepts far more than URLs — `ytsearch:` runs a search, a bare path reads
+  a local file — so anything that is not unambiguously a video page URL is refused up front,
+  and the URL is passed after `--` so it can never be read as a flag.
+- **The fetch itself cannot reach your network.** Every request goes through the SOCKS proxy
+  inside the `vpntorrent` namespace, which refuses any destination that is not a public
+  internet address — checked on the *resolved* address, in the process that then dials it,
+  so a hostname cannot resolve to something different a moment later. From inside that
+  namespace your LAN is not routable in the first place.
+
+The extractor runs with a deliberately empty environment (no inherited `HTTP_PROXY`,
+`ALL_PROXY` or `XDG_CONFIG_HOME`) and `--ignore-config`, so neither a stray environment
+variable nor a yt-dlp config file anywhere on the box can redirect it away from the tunnel
+or change what it does.
+
+Neither the preview nor the add response ever returns a media URL to the browser. The
+signed CDN link exists only in memory, and only while it is valid.
+
+The proxy itself (`jf-netnsproxy.service`) is unauthenticated, because access to it is
+positional: it binds only the namespace's end of the host veth and accepts connections only
+from that link's subnet — a `/30` with exactly one other host on it. It holds no privilege
+of its own; systemd places it in the namespace before dropping to the service user.
+
+See [docs/security.md](docs/security.md) for the same ground in user-facing terms.
 
 ### The external-provider ingest API
 
@@ -431,14 +474,30 @@ veth as the second layer. CI asserts the fail-closed behaviour on every run
 (`installer-smoke`, assertion R2). Jellyfin-to-client traffic intentionally does **not** go
 through the VPN; it stays on your LAN.
 
+Pasted web sources are tunnelled by the same mechanism rather than a parallel one: the
+orchestrator dials through `jf-netnsproxy`, which lives inside that namespace, so its
+connections are subject to the same absent-default-route and `OUTPUT DROP` rules. There is
+no direct-connection fallback in the code — with no proxy configured the feature disables
+itself. The DNS lookup is tunnelled too (`socks5h://`), so no query for the site's domain
+leaves over the host connection.
+
+Indexer searches (Prowlarr, FlareSolverr) and metadata lookups (TMDB) still leave over the
+host connection with your real address, as they always have.
+
 ### Third-party components
 
-JellyFreedom installs and drives Jellyfin, Prowlarr, FlareSolverr, and TorrServer. Their
-security is their own; report issues in those projects upstream.
+JellyFreedom installs and drives Jellyfin, Prowlarr, FlareSolverr, TorrServer, and — for
+pasted links — yt-dlp. Their security is their own; report issues in those projects
+upstream.
+
+yt-dlp is worth one extra sentence because it is the only one this project points at
+arbitrary user-supplied URLs: it is executed as a subprocess with an explicit argument list
+(never a shell), with an empty environment and `--ignore-config`, and all of its network
+access is confined to the VPN namespace.
 
 ---
 
-*Verified against the tree on 2026-08-26. If you are reading this after changes to
+*Verified against the tree on 2026-08-27. If you are reading this after changes to
 `internal/api/auth.go`, the route table in `cmd/orchestrator/main.go`, the sudoers block in
 `release/install.sh`, or `vpntorrent/jf-netns-helper`, re-verify before trusting the details
 above.*
