@@ -333,6 +333,15 @@ assert_contains "$DEST/etc/systemd/system/jf-netnsproxy.service" 'orchestrator n
 assert_contains "$DEST/etc/systemd/system/jf-netnsproxy.service" \
   'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK'
 assert_ran_re 'systemctl (enable|restart) .*jf-netnsproxy'
+# Upgrading from the broken 0.5.3 means the unit has already hit its start limit, and
+# systemd refuses further starts until the failure is cleared — the fixed unit would
+# install and never run.
+#
+# Asserted against the shipped script rather than the command log on purpose: under
+# JF_DESTDIR the installer takes the `enable --now` branch, so the restart path this
+# guards is never executed here. That is also why the bug reached a release.
+assert_contains "$DEST/opt/jellyfreedom/install.sh" \
+  'systemctl reset-failed jf-netnsproxy.service'
 assert_no_shell_errors
 
 describe "web sources: a failed yt-dlp download is a warning, never fatal"
