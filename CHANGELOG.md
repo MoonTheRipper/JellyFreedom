@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-08-27
+
 ### Fixed
 - **Upgrading from 0.5.3 left the VPN proxy dead even with the fix installed.** A machine
   running the broken 0.5.3 has a `jf-netnsproxy.service` that failed five times in a row,
@@ -492,7 +494,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.1...v0.5.2
