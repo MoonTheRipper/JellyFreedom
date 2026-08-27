@@ -43,6 +43,14 @@ esac
 [ "$next" != "$current" ] || die "already at $current"
 git rev-parse -q --verify "refs/tags/v$next" >/dev/null && die "tag v$next already exists"
 
+# Check the branch is free BEFORE writing anything. This script edits VERSION and
+# CHANGELOG.md and only then creates the branch, so a name collision discovered late
+# used to abort with both files already rewritten — a half-applied bump that the next
+# run then refuses as a dirty tree. Cheap to check first; confusing to hit second.
+branch="release/$next"
+git rev-parse -q --verify "refs/heads/$branch" >/dev/null \
+  && die "branch $branch already exists — delete it or pick another version"
+
 # Everything under ## [Unreleased] becomes the new section. Refuse when it is empty:
 # a release whose notes say nothing is worse than no release, and the workflow would
 # publish those empty notes to everyone who watches the repository.
@@ -90,7 +98,6 @@ check="$(awk -v v="$next" '
 [ -n "$(printf '%s' "$check" | tr -d '[:space:]')" ] \
   || die "the workflow's own note extraction found nothing for $next — CHANGELOG.md layout changed?"
 
-branch="release/$next"
 git checkout -q -b "$branch"
 git add VERSION CHANGELOG.md
 git commit -q -m "Release $next"
