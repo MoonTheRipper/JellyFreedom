@@ -235,6 +235,11 @@ func RemoveStrm(path string) error {
 // metadata provider was possible. Its URLs and tokens are the ones that must not move.
 const ProviderTMDB = "tmdb"
 
+// ProviderWeb names identities that came from a pasted video page URL rather than from a
+// metadata database. Its ids are opaque digests of the page (store.WebSourceID), and its
+// playback path resolves the media URL fresh at play time instead of searching indexers.
+const ProviderWeb = "web"
+
 // Bounds on the two externally-supplied identity fields. Both land in a URL path AND in
 // the HMAC input that authorises playback, so they are validated before either is built —
 // never after, and never only in one of the two places.

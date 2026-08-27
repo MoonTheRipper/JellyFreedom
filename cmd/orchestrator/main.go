@@ -188,6 +188,18 @@ func main() {
 	}
 	go worker.run(ctx)
 
+	// Paste-a-link web sources. Constructed unconditionally: when the feature is off, or
+	// yt-dlp is missing, or the namespace proxy is not configured, it answers every entry
+	// point with the reason — which the dashboard shows as one sentence. A nil player
+	// would instead mean a nil check at each of five call sites, and the one that got
+	// forgotten would panic inside a playback handler.
+	webPlay := newWebPlayer(db, cfg)
+	if err := webPlay.enabled(); err != nil {
+		slog.Info("web sources are unavailable", "reason", err)
+	} else {
+		slog.Info("web sources are available", "proxy", cfg.WebSourcesProxyAddr())
+	}
+
 	// Rewrite existing .strm files with capability-tokenised /play URLs. Until this
 	// succeeds we do NOT enforce the token, because every pre-existing .strm lacks one
 	// and enforcing first would break playback of the whole library.
@@ -1455,6 +1467,16 @@ func main() {
 			return
 		}
 
+		// A web source has no torrent, no info hash and nothing to search an indexer for.
+		// Its bytes come from a media URL that is re-derived from the saved page every
+		// time somebody presses play, so it diverges from everything below this line and
+		// takes its own path — after the capability check above, which it needs exactly
+		// as much as any other identity.
+		if ref.provider == library.ProviderWeb {
+			webPlay.play(w, r, ref.providerID)
+			return
+		}
+
 		// This item is now playing — stop any keep-warm loop for it; real playback takes over.
 		// Keep-warm is keyed on a TMDB integer, so only a TMDB identity can have one; asking
 		// for warmKey(0, s, e) on behalf of another provider would reach across providers.
@@ -2539,6 +2561,7 @@ func main() {
 	// session to hand it. These patterns are strictly more specific than "/api/", so
 	// ServeMux routes them here and everything else still reaches the protected mux.
 	registerProviderIngest(mux, db, cfg, jfClient)
+	registerWebSourceAPI(mux, webPlay, db, cfg, jfClient)
 
 	// Jellyfin webhook — public (called by Jellyfin server, no session)
 	// ------------------------------------------------------------------ //

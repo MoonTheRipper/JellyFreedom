@@ -20,6 +20,7 @@ type Config struct {
 	Libraries  []Library        `yaml:"libraries"`
 	Picker     PickerConfig     `yaml:"picker"`
 	VPN        VPNConfig        `yaml:"vpn"`
+	WebSources WebSourcesConfig `yaml:"web_sources"`
 
 	// Legacy flat library config — auto-migrated to Libraries during Load.
 	LegacyLibrary legacyLibraryConfig `yaml:"library"`
@@ -29,6 +30,36 @@ type Config struct {
 // upload/activate feature. FHS-standard, not user-specific (release-installer friendly).
 type VPNConfig struct {
 	ConfigDir string `yaml:"config_dir"` // default /var/lib/jellyfreedom/vpnconfigs
+}
+
+// WebSourcesConfig configures the paste-a-link feature: a video page URL is extracted
+// with yt-dlp and becomes a playable library entry.
+//
+// It is OFF unless enabled, because it has an external dependency (yt-dlp) that the
+// installer may not have been able to fetch, and a feature whose button is present but
+// whose backend is missing is worse than one that is absent.
+type WebSourcesConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// YTDLPPath is where yt-dlp lives. Empty means "find yt-dlp on PATH".
+	YTDLPPath string `yaml:"ytdlp_path"`
+	// ProxyAddr is the host:port of the SOCKS proxy running INSIDE the vpntorrent
+	// namespace — `orchestrator netns-proxy`, started by jf-netnsproxy.service.
+	//
+	// It has no fallback to "direct" and never will. Extraction and playback both
+	// identify the requester to the site, so a web source fetched without the tunnel
+	// puts the user's home address on a request to it. An empty value disables the
+	// feature; it does not enable a direct one.
+	ProxyAddr string `yaml:"proxy_addr"`
+}
+
+// WebSourcesProxyAddr returns the configured proxy address, defaulting to the SOCKS port
+// on the namespace's veth address — the same 10.42.0.2 the TorrServer default names, so
+// a stock install needs no extra configuration.
+func (c *Config) WebSourcesProxyAddr() string {
+	if c.WebSources.ProxyAddr != "" {
+		return c.WebSources.ProxyAddr
+	}
+	return "10.42.0.2:1080"
 }
 
 // VPNConfigDir returns the configured config dir or the portable default.
