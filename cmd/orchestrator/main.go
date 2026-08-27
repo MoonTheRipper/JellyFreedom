@@ -54,6 +54,21 @@ var (
 )
 
 func main() {
+	// Subcommands are dispatched before flag parsing, because the flag package would
+	// treat a bare verb as a positional argument and silently ignore it — the server
+	// would start instead of the subcommand, which is the worst possible way to get this
+	// wrong for `netns-proxy`: it would put a second orchestrator on port 1990 rather
+	// than a proxy inside the namespace.
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		switch os.Args[1] {
+		case "netns-proxy":
+			os.Exit(runNetnsProxy(os.Args[2:]))
+		default:
+			fmt.Fprintf(os.Stderr, "unknown subcommand %q (the only one is: netns-proxy)\n", os.Args[1])
+			os.Exit(2)
+		}
+	}
+
 	cfgPath := flag.String("config", "config.yaml", "path to config file")
 	dbPath := flag.String("db", "jellyfreedom.db", "path to the SQLite database")
 	assetsDir := flag.String("assets", "", "serve web assets from this directory instead of the embedded copy (development)")
