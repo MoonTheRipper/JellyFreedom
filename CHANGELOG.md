@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-27
+
 ### Added
 - **Browse and filter by genre, studio and type.** The home page previously offered five
   fixed rows and the search box took a query and nothing else. There is now a filter panel —
@@ -419,7 +421,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.4.1...v0.4.2
