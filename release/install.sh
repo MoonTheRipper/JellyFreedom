@@ -1056,11 +1056,17 @@ else
   # trap the orchestrator's own line below documents.
   if [ -x "$YTDLP_BIN" ]; then
     systemctl enable jf-netnsproxy.service >/dev/null 2>&1 || true
+    # Clear the start-limit first. A machine upgrading FROM the broken 0.5.3 has a unit
+    # that failed five times in a row, and systemd then refuses every further start with
+    # "Start request repeated too quickly" — including the one that would run the fixed
+    # unit. Without this the fix installs correctly and still never runs, and the user
+    # gets a successful update followed by a dead proxy.
+    systemctl reset-failed jf-netnsproxy.service >/dev/null 2>&1 || true
+    systemctl restart jf-netnsproxy.service >/dev/null 2>&1 || true
     # `systemctl restart` returns once the process has forked, not once it has stayed up.
     # This unit fails ~200ms in when it cannot read the veth, so restart reported success
     # while the service was already dead and "websources ready" was printed over a service
     # that had failed. Ask again after it has had a moment to fall over.
-    systemctl restart jf-netnsproxy.service >/dev/null 2>&1 || true
     sleep 1
     if systemctl is-active --quiet jf-netnsproxy.service; then ok "jf-netnsproxy.service"
     else warn "jf-netnsproxy did not stay up — web sources will be unavailable"

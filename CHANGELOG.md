@@ -9,6 +9,15 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **Upgrading from 0.5.3 left the VPN proxy dead even with the fix installed.** A machine
+  running the broken 0.5.3 has a `jf-netnsproxy.service` that failed five times in a row,
+  and systemd then refuses every further start with *"Start request repeated too quickly"* —
+  including the one that would have run the corrected unit. The update wrote the right file,
+  reported honestly that the proxy did not stay up, and web sources stayed unavailable until
+  someone ran `systemctl reset-failed` by hand. The installer now clears the start limit
+  before restarting.
+
 ## [0.5.4] - 2026-08-27
 
 ### Fixed
