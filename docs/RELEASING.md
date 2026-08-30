@@ -4,6 +4,56 @@ Releases are cut by `.github/workflows/release.yml` from a `v*` tag. Nothing is 
 laptop any more: the workflow cross-compiles both architectures, generates `SHA256SUMS`,
 signs build provenance, and opens a **draft** release for you to review and publish.
 
+## When to cut one
+
+The mechanics below answer *how*. This answers *when*, which is the question that actually
+goes wrong.
+
+A tag is not a commit. It is a notification to everyone watching the repository and a
+`sudo jellyfreedom --update` for everyone running it. Merging to `main` costs a user
+nothing; tagging spends their attention. Spend it on something worth their time.
+
+**Cut a release when it carries a feature, or a fix that affects somebody.** Merge to `main`
+as often as the work warrants and let fixes accumulate behind the tag.
+
+**Cut one immediately for exactly three things:**
+
+- it breaks a fresh install
+- it loses or corrupts data
+- it is a security problem
+
+Nothing else earns its own release. A fix for something nobody has hit yet can ride along
+with the next feature.
+
+### Verify merged `main` on a real machine BEFORE tagging
+
+This is the rule that matters most, because breaking it is what produces release churn.
+
+On 2026-08-27, `0.5.3` shipped web sources that could not work on any machine.
+`0.5.4` fixed it — and `0.5.5` followed twenty minutes later, because `0.5.4`'s fix could
+not *start* on the machines that needed it. The second bug was found by deploying the first
+release. The same shape repeated on 2026-08-30: `0.6.0`, then `0.6.1`, then `0.6.2`, the
+last two twenty-two minutes apart.
+
+Every one of those pairs was one release that got tagged too early. Install the merged
+`main` on a real box, exercise the thing you changed, *then* tag. Three of those five
+releases would not have existed.
+
+Seven releases in two working days is not a cadence, it is a commit log with version
+numbers attached. If two tags in one day both fix the previous tag, the problem is not the
+bugs — it is that the first tag went out unverified.
+
+### There is no auto-update, deliberately
+
+`jellyfreedom --update` is always something a person runs. The privileged `jf-update` helper
+exists so the dashboard can *trigger* an update the operator asked for — not so the machine
+can install code on its own schedule. Anything that installs unattended is a supply-chain
+surface pointed at every user at once, and this project asks people to pipe a script into
+`sudo bash` already. That is enough trust to be asking for.
+
+The consequence is that release cadence is a cost the user pays by hand, which is the whole
+reason for the rules above.
+
 ## The `release/build.sh` contract
 
 `release.yml` invokes the build script like this, once per architecture:
@@ -55,10 +105,16 @@ and it has drifted before.
 
 ## Release checklist
 
+0. **Check it is worth a release at all** — see [When to cut one](#when-to-cut-one). If it
+   is not a feature, and not one of the three things that ship immediately, let it ride
+   along with the next one.
 1. **Land everything** for the release on `main`, with CI green — including the
    `installer-smoke` job. A release whose installer has not been smoke-tested end to end is
    not ready.
-2. **Run `release/bump.sh`.** It does steps 2, 3 and 5 of the old manual checklist together,
+2. **Install merged `main` on a real machine and exercise what changed.** Green CI is not
+   this step: every bug that has forced a same-day follow-up release so far passed all eight
+   jobs. Do this *before* `bump.sh`, not after the tag.
+3. **Run `release/bump.sh`.** It does steps 2, 3 and 5 of the old manual checklist together,
    because getting one of them right and another wrong is how a tag lands that the workflow
    then refuses to build:
 
@@ -79,11 +135,11 @@ and it has drifted before.
    the file it just wrote, so a layout change is caught here rather than after the tag is
    pushed.
 
-3. **Re-read `SECURITY.md`** if routes or authentication changed in this cycle.
-4. **Open the PR, let CI finish, merge it.** `main` is protected: it takes pull requests
+4. **Re-read `SECURITY.md`** if routes or authentication changed in this cycle.
+5. **Open the PR, let CI finish, merge it.** `main` is protected: it takes pull requests
    only, and all eight CI jobs must pass. This is deliberate — the tag in the next step is
    what publishes, so the commit it points at should be one CI has already agreed with.
-5. **Tag the merged commit and push the tag:**
+6. **Tag the merged commit and push the tag:**
    ```bash
    git checkout main && git pull
    git tag -a v0.3.0 -m 'JellyFreedom 0.3.0'
@@ -91,12 +147,12 @@ and it has drifted before.
    ```
    Pushing the tag is what triggers the build. `main` itself is already up to date by this
    point, because the bump went in through its pull request.
-6. **Watch the workflow.** It builds `linux/amd64` and `linux/arm64`, verifies each binary's
+7. **Watch the workflow.** It builds `linux/amd64` and `linux/arm64`, verifies each binary's
    machine type, generates `SHA256SUMS`, attests provenance, and creates a **draft** release.
-7. **Review the draft:** correct notes, and **seven** assets present — see *Asset names*
+8. **Review the draft:** correct notes, and **seven** assets present — see *Asset names*
    below. The two stable `jellyfreedom-linux-<arch>.tar.gz` names are the ones the
    one-liner actually downloads; if they are missing, `get.sh` fails for every user.
-8. **Smoke-test the published artifact** on a throwaway VM — never on a live box:
+9. **Smoke-test the published artifact** on a throwaway VM — never on a live box:
    ```bash
    curl -fsSLO https://github.com/MoonTheRipper/JellyFreedom/releases/download/v0.3.0/SHA256SUMS
    curl -fsSLO https://github.com/MoonTheRipper/JellyFreedom/releases/download/v0.3.0/jellyfreedom-0.3.0-linux-amd64.tar.gz
@@ -105,14 +161,14 @@ and it has drifted before.
    curl -fsSL https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/get.sh | sudo bash
    gh attestation verify jellyfreedom-0.3.0-linux-amd64.tar.gz --repo MoonTheRipper/JellyFreedom
    ```
-9. **Publish** the draft. Publishing is what makes
+10. **Publish** the draft. Publishing is what makes
     `releases/latest/download/get.sh` resolve — the one-liner in the README points at
     `latest`, so an unpublished draft leaves users on the previous release.
-10. **Verify the one-liner** resolves:
+11. **Verify the one-liner** resolves:
     ```bash
     curl -fsSLI https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/get.sh
     ```
-11. **Update an existing install** to confirm the upgrade path:
+12. **Update an existing install** to confirm the upgrade path:
     `sudo jellyfreedom --update` on a test box.
 
 ## Asset names
@@ -155,3 +211,10 @@ Actions → Release → *Run workflow* → enter `v0.3.0`. Delete the previous d
 
 Same process with a patch bump. Do not move an existing tag — a moved tag invalidates the
 provenance attestation and the published checksums.
+
+A hotfix is for the three things listed in [When to cut one](#when-to-cut-one) — a broken
+fresh install, data loss, a security problem. If the previous release is not actually broken
+for anybody, the fix waits.
+
+And if a hotfix is fixing the release you cut an hour ago, the lesson is upstream of the
+bug: that tag went out without being installed anywhere first.
