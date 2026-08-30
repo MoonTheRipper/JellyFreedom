@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-08-30
+
 ### Fixed
 - **Pasted links stopped playing after a restart.** Every `.strm` that did not come from
   TMDB was rewritten, at startup, to `/play/movie/0` — one URL and one shared token for all
@@ -575,7 +577,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.5...v0.6.0
