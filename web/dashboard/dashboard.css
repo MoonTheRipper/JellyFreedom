@@ -289,3 +289,27 @@ pre.log{background:#090b10;border:1px solid var(--border);border-radius:var(--r-
 .ws-broken{border-color:rgba(248,113,113,.4)}
 .ws-error{display:flex;gap:6px;align-items:flex-start;font-size:11px;color:var(--red);margin-top:4px}
 .ws-error .ic{width:14px;height:14px;flex-shrink:0}
+
+/* ── The link queue ───────────────────────────────────────────────────────
+   Many links are read at once, so each row has to say where it is up to on
+   its own. The state word carries that, and the whole row is tinted for the
+   two states worth spotting across a long list: failed, and already added. */
+.ws-add textarea{flex:1 1 320px;min-width:0;font-family:inherit;font-size:13px;
+  line-height:1.5;padding:9px 11px;resize:vertical}
+.ws-queue{display:flex;flex-direction:column;gap:8px;margin:12px 0}
+.ws-q .vpn-cfg-main{display:flex;gap:12px;align-items:flex-start}
+.ws-q-body{flex:1 1 260px;min-width:0;display:flex;flex-direction:column;gap:6px}
+.ws-q-title{width:100%}
+.ws-q-state{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.ws-q-ready .ws-q-state{color:var(--green,#4ade80)}
+.ws-q-failed{border-color:rgba(248,113,113,.4)}
+.ws-q-failed .ws-q-state{color:var(--red)}
+.ws-q-added{opacity:.6}
+/* Reading and adding are the two states where something is genuinely in
+   flight, and the row is the only place that is visible. */
+.ws-q-reading .ws-q-state,.ws-q-adding .ws-q-state{color:var(--accent,#60a5fa)}
+.ws-queue-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  padding:11px 13px;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r-sm);margin-bottom:12px;position:sticky;bottom:8px}
+.ws-queue-actions label{font-size:12px;color:var(--muted)}
+.ws-queue-actions select{min-width:160px}

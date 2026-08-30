@@ -9,6 +9,24 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Added
+- **Paste many links at once.** The Links box now takes a whole list — one per line, or
+  separated by commas or spaces — and reads them in the background, two at a time, while you
+  carry on pasting. Each row shows where it has got to, so a link that fails is visible next
+  to the ones that worked instead of stopping the batch. Duplicates within a paste are
+  dropped, anything that is not a link is ignored, and a failed row can be retried on its own.
+  The library is chosen once, at the end, for the whole batch.
+
+  Splitting is on whitespace and commas only. Not on colons, however reasonable a separator
+  they look: every URL contains `://`, so splitting there would cut each link in half.
+
+### Changed
+- **The library is chosen from a list rather than typed.** A mistyped library name was
+  refused with the same "unknown library" the server gives for one you are not allowed to
+  use — correct, deliberately indistinguishable, and useless as a spelling correction. The
+  list offers movie-type libraries only, because a web source is a single video with no
+  season or episode and the server refuses anything else.
+
 ## [0.5.5] - 2026-08-27
 
 ### Fixed
