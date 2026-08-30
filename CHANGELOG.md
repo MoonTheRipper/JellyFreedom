@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-30
+
 ### Fixed
 - **`jellyfreedom repair` deleted the installed web assets.** Repair re-runs the installer
   out of `/opt/jellyfreedom`, so its source directory and its destination were the same one.
@@ -533,7 +535,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.3...v0.5.4
