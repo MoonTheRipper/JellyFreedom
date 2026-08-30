@@ -981,6 +981,48 @@ AccuracySec=10
 [Install]
 WantedBy=timers.target
 EOF
+cat > "$UNIT_DIR/jf-tmpreaper.service" <<'EOF'
+[Unit]
+Description=Reap browser scratch directories left in /tmp
+
+[Service]
+Type=oneshot
+# WHY THIS EXISTS
+#
+# FlareSolverr drives a browser per request, and each launch leaves a scratch directory
+# behind. On a snap Chromium those land in /tmp/snap-private-tmp/snap.chromium/tmp, which
+# is root-owned 0700 — so flaresolverr.service's own ExecStartPre cleanup cannot see them,
+# let alone delete them. Observed on a live box: 3,894 directories, 7.7GB, 741k inodes,
+# filling a 7.8GB tmpfs three times in four days. A full /tmp then breaks package installs,
+# the updater (which stages downloads there) and the installer's own preflight.
+#
+# Deliberately narrow: entries must be inside a snap's tmp, untouched for an hour, AND
+# carry a browser's name. A stale directory costs a little memory; a wrong glob here would
+# delete somebody's work.
+ExecStart=-/usr/bin/find /tmp/snap-private-tmp -mindepth 3 -maxdepth 3 -path '*/tmp/*' -mmin +60 \
+  \( -name 'org.chromium.*' -o -name '.org.chromium.*' -o -name 'com.google.Chrome*' \
+     -o -name '.com.google.Chrome*' -o -name 'scoped_dir*' -o -name 'tmp*' \) \
+  -exec rm -rf {} +
+# The same residue from an unconfined Chrome or Chromium, which writes straight into /tmp.
+ExecStart=-/usr/bin/find /tmp -mindepth 1 -maxdepth 1 -mmin +60 \
+  \( -name '.org.chromium.*' -o -name '.com.google.Chrome*' -o -name 'scoped_dir*' \) \
+  -exec rm -rf {} +
+EOF
+
+cat > "$UNIT_DIR/jf-tmpreaper.timer" <<'EOF'
+[Unit]
+Description=Reap browser scratch in /tmp hourly
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+AccuracySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
 ok "units written"
 
 # ==========================================================================================
@@ -1056,7 +1098,7 @@ if [ -n "$D" ]; then
   systemctl enable --now vpntorrent-netns.service
   if [ -x "$TS_BIN" ]; then systemctl enable --now torrserver-netns.service; else warn "skipping torrserver-netns — no TorrServer binary"; fi
   if [ -x "$FS_DIR/flaresolverr" ]; then systemctl enable --now flaresolverr.service; fi
-  systemctl enable --now vpntorrent-portforward.service vpntorrent-watchdog.timer
+  systemctl enable --now vpntorrent-portforward.service vpntorrent-watchdog.timer jf-tmpreaper.timer
   if [ -x "$YTDLP_BIN" ]; then systemctl enable --now jf-netnsproxy.service; fi
   systemctl enable --now jellyfreedom.service
 else
@@ -1097,6 +1139,10 @@ else
          mark websources "proxy failed to start"; fi
   fi
   systemctl enable --now vpntorrent-watchdog.timer >/dev/null 2>&1 || true
+  # Fire it once now rather than waiting an hour: an install that warned about a full
+  # /tmp during preflight should not leave it full.
+  systemctl enable --now jf-tmpreaper.timer >/dev/null 2>&1 || true
+  systemctl start jf-tmpreaper.service >/dev/null 2>&1 || true
   for u in jellyfin.service prowlarr.service; do
     if systemctl cat "$u" >/dev/null 2>&1; then systemctl enable --now "$u" >/dev/null 2>&1 || warn "$u did not start"; fi
   done
