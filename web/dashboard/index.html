@@ -154,11 +154,24 @@
         <p class="hint">Paste the page you would normally watch on — not a direct file URL.
           Extraction runs over the VPN and takes a few seconds.</p>
         <div class="ws-add">
-          <label class="sr-only" for="ws-url">Video page URL</label>
-          <input type="url" id="ws-url" placeholder="https://…" autocomplete="off" spellcheck="false">
-          <button class="btn" type="button" data-ws-preview="1">Preview</button>
+          <label class="sr-only" for="ws-url">Video page URLs</label>
+          <textarea id="ws-url" rows="3" autocomplete="off" spellcheck="false"
+            placeholder="https://…&#10;Paste as many as you like — one per line, or separated by commas or spaces."></textarea>
+          <button class="btn" type="button" data-ws-queue="1">Queue links</button>
         </div>
-        <div id="ws-preview"></div>
+        <p class="hint">Ctrl+Enter queues them. Each is checked in the background, so you can
+          keep pasting while the earlier ones are still being read.</p>
+
+        <div id="ws-queue" class="ws-queue"></div>
+
+        <div id="ws-queue-actions" class="ws-queue-actions" hidden>
+          <label for="ws-library">Add to</label>
+          <select id="ws-library"></select>
+          <button class="btn primary" type="button" data-ws-add-all="1">
+            <span id="ws-add-count"></span>
+          </button>
+          <button class="btn" type="button" data-ws-clear="1">Clear</button>
+        </div>
       </div>
 
       <div class="subsection">
