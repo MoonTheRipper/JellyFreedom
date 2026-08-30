@@ -363,6 +363,18 @@ assert_ran_re 'systemctl (enable|restart) .*jf-netnsproxy'
 # guards is never executed here. That is also why the bug reached a release.
 assert_contains "$DEST/opt/jellyfreedom/install.sh" \
   'systemctl reset-failed jf-netnsproxy.service'
+
+# The /tmp reaper. FlareSolverr leaves a browser scratch directory per request, and on a
+# snap Chromium they land in a root-owned 0700 path the service's own ExecStartPre cleanup
+# cannot even traverse. A live box filled a 7.8GB tmpfs three times in four days.
+assert_file "$DEST/etc/systemd/system/jf-tmpreaper.service"
+assert_file "$DEST/etc/systemd/system/jf-tmpreaper.timer"
+assert_contains "$DEST/etc/systemd/system/jf-tmpreaper.service" '/tmp/snap-private-tmp'
+# Narrow on purpose: an hour old AND named like a browser. Deleting on age alone would
+# eventually take something that mattered.
+assert_contains "$DEST/etc/systemd/system/jf-tmpreaper.service" '-mmin +60'
+assert_contains "$DEST/etc/systemd/system/jf-tmpreaper.service" 'org.chromium.'
+assert_ran_re 'systemctl enable .*jf-tmpreaper.timer'
 assert_no_shell_errors
 
 describe "web sources: a failed yt-dlp download is a warning, never fatal"

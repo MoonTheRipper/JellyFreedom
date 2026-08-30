@@ -84,6 +84,16 @@ if section system "System"; then
   if [ -n "$avail_kb" ] && [ "$avail_kb" -lt 2097152 ]; then
     warn "less than 2GB free on /" "TorrServer's cache and Jellyfin metadata need headroom"
   else pass "disk space on / is adequate"; fi
+  # /tmp separately from /, because it is usually a tmpfs sized at half of RAM and fills
+  # from a direction nothing else warns about: FlareSolverr's browser leaves a scratch
+  # directory per request, and on a snap Chromium those land somewhere the service's own
+  # cleanup cannot reach. A full /tmp breaks package installs and the updater, which stages
+  # its download there — and it says so in a way that never mentions /tmp.
+  tmp_kb=$(df -Pk /tmp 2>/dev/null | awk 'NR==2{print $4}')
+  if [ -n "$tmp_kb" ] && [ "$tmp_kb" -lt 262144 ]; then
+    fail "/tmp has only $((tmp_kb/1024))MB free" \
+         "clear it: sudo systemctl start jf-tmpreaper.service — then check the timer is on: systemctl status jf-tmpreaper.timer"
+  elif [ -n "$tmp_kb" ]; then pass "/tmp has $((tmp_kb/1024))MB free"; fi
   mem_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null)
   if [ -n "$mem_kb" ]; then
     mem_mb=$((mem_kb/1024))

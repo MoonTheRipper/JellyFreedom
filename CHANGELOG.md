@@ -9,6 +9,22 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Added
+- **`/tmp` no longer fills up.** A new `jf-tmpreaper.timer` clears browser scratch
+  directories hourly. FlareSolverr drives a browser per request and each launch leaves a
+  directory behind; on a snap Chromium those land in `/tmp/snap-private-tmp/snap.chromium/tmp`,
+  which is root-owned `0700` — so FlareSolverr's own `ExecStartPre` cleanup cannot see them,
+  let alone delete them. A live box accumulated 3,894 directories, 7.7GB and 741k inodes,
+  filling a 7.8GB tmpfs three times in four days. A full `/tmp` then breaks package installs,
+  the updater (which stages its download there), and the installer's own preflight — none of
+  which say `/tmp` in their error.
+
+  The match is deliberately narrow: an entry must sit inside a snap's `tmp`, be untouched for
+  an hour, **and** carry a browser's name. A stale directory costs a little memory; a wrong
+  glob would delete somebody's work.
+- **`doctor` reports free space on `/tmp`,** separately from `/`. It is usually a tmpfs sized
+  at half of RAM and fills from a direction nothing else warns about.
+
 ## [0.6.1] - 2026-08-30
 
 ### Fixed
