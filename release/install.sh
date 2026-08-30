@@ -43,6 +43,15 @@ FS_USER=flaresolverr
 PW_USER=prowlarr
 SRC="$(cd "$(dirname "$0")" && pwd)"
 
+# `jellyfreedom repair` re-runs THIS script out of $APP_DIR, so SRC and APP_DIR are the
+# same directory and there is nothing to copy: every install would be a file onto itself,
+# and the `rm -rf "$APP_DIR/web"` that precedes the web copy would delete the assets
+# before the cp meant to replace them could read them. That is not hypothetical — it is
+# what `jellyfreedom repair` did, reporting "cannot stat .../web" for a directory it had
+# removed a moment earlier, and a bundle "missing" a helper that was installed and fine.
+IN_PLACE=0
+if [ -d "$SRC" ] && [ -d "$APP_DIR" ] && [ "$SRC" -ef "$APP_DIR" ]; then IN_PLACE=1; fi
+
 # Pinned versions. TorrServer is resolved at runtime because upstream has retagged before:
 # the previously pinned MatriX.141.2 now 404s, which silently left installs with no
 # streaming engine at all.
@@ -335,23 +344,37 @@ say "Orchestrator, web assets and tooling"
 # `systemctl restart jellyfreedom`, so a binary it could rewrite plus a self-restart is
 # self-modifying persistence. Nothing in the orchestrator ever writes to APP_DIR, so there
 # is no cost to closing that door.
-xinstall -o root -g root -m 755 "$SRC/bin/orchestrator" "$APP_DIR/bin/orchestrator"
-rm -rf "$APP_DIR/web"; cp -r "$SRC/web" "$APP_DIR/web"; xchown -R root:root "$APP_DIR/web"
-if [ -f "$SRC/VERSION" ]; then xinstall -m 644 "$SRC/VERSION" "$APP_DIR/VERSION"; fi
-xinstall -m 755 "$SRC/vpntorrent/setup-netns.sh" "$VPN_DIR/setup-netns.sh"
-xinstall -m 755 "$SRC/vpntorrent/watchdog.sh"    "$VPN_DIR/watchdog.sh"
-xinstall -m 755 "$SRC/vpntorrent/portforward.sh" "$VPN_DIR/portforward.sh"
-
-# The privileged helper is the ONLY path to root. It must be root-owned in a root-owned
-# directory: if the service user can edit it, the sudo rules below become a root shell.
-if [ -f "$SRC/vpntorrent/jf-netns-helper" ]; then
-  xinstall -o root -g root -m 755 "$SRC/vpntorrent/jf-netns-helper" "$VPN_DIR/jf-netns-helper"
-  xchown root:root "$VPN_DIR" 2>/dev/null || true
-  chmod 755 "$VPN_DIR" 2>/dev/null || true
-  ok "privileged helper installed root-owned"
+if [ "$IN_PLACE" = 1 ]; then
+  # Nothing to copy, and nothing missing: this IS the installed copy. Everything after
+  # this stage — units, sudoers, AppArmor, service starts, verification, per-component
+  # repair — is what a repair is actually for, and still runs.
+  ok "running from the installed copy — application files left as they are"
+  if [ -x "$VPN_DIR/jf-netns-helper" ]; then
+    ok "privileged helper present"
+  else
+    err "the privileged helper is missing from ${VPN_DIR#"$D"}"
+    hint "reinstall it with: sudo jellyfreedom --update"
+  fi
+  hint "to replace the binary or the web assets themselves: sudo jellyfreedom --update"
 else
-  err "the bundle is missing vpntorrent/jf-netns-helper"
-  hint "VPN status and activation cannot work without it — re-download the release bundle"
+  xinstall -o root -g root -m 755 "$SRC/bin/orchestrator" "$APP_DIR/bin/orchestrator"
+  rm -rf "$APP_DIR/web"; cp -r "$SRC/web" "$APP_DIR/web"; xchown -R root:root "$APP_DIR/web"
+  if [ -f "$SRC/VERSION" ]; then xinstall -m 644 "$SRC/VERSION" "$APP_DIR/VERSION"; fi
+  xinstall -m 755 "$SRC/vpntorrent/setup-netns.sh" "$VPN_DIR/setup-netns.sh"
+  xinstall -m 755 "$SRC/vpntorrent/watchdog.sh"    "$VPN_DIR/watchdog.sh"
+  xinstall -m 755 "$SRC/vpntorrent/portforward.sh" "$VPN_DIR/portforward.sh"
+
+  # The privileged helper is the ONLY path to root. It must be root-owned in a root-owned
+  # directory: if the service user can edit it, the sudo rules below become a root shell.
+  if [ -f "$SRC/vpntorrent/jf-netns-helper" ]; then
+    xinstall -o root -g root -m 755 "$SRC/vpntorrent/jf-netns-helper" "$VPN_DIR/jf-netns-helper"
+    xchown root:root "$VPN_DIR" 2>/dev/null || true
+    chmod 755 "$VPN_DIR" 2>/dev/null || true
+    ok "privileged helper installed root-owned"
+  else
+    err "the bundle is missing vpntorrent/jf-netns-helper"
+    hint "VPN status and activation cannot work without it — re-download the release bundle"
+  fi
 fi
 
 # Persist the uninstaller and the control CLI. The one-liner deletes its temp dir on exit, so

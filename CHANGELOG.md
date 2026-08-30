@@ -9,6 +9,25 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **`jellyfreedom repair` deleted the installed web assets.** Repair re-runs the installer
+  out of `/opt/jellyfreedom`, so its source directory and its destination were the same one.
+  The web step is `rm -rf "$APP_DIR/web"` followed by a copy *from* that path, so it removed
+  the assets and then reported `cannot stat '/opt/jellyfreedom/web'` for the directory it had
+  just deleted. It also printed `install: ... are the same file` for every other component,
+  and a red `✗ the bundle is missing vpntorrent/jf-netns-helper` about a helper that was
+  installed and working the whole time.
+
+  Nothing was permanently broken, because the orchestrator serves its assets from inside the
+  binary — but the one command both `doctor` and the installer recommend for "most problems"
+  was deleting files and reporting a failure that had not happened. The installer now detects
+  that it is running from the copy it would be writing to, leaves those files alone, says so,
+  and points at `jellyfreedom --update` for the case where the binary itself needs replacing.
+
+  Covered by a new hermetic scenario that runs the installed copy the way repair does. No
+  test exercised that path before, which is how this and the two `jf-netnsproxy` bugs before
+  it all reached a release.
+
 ## [0.6.0] - 2026-08-30
 
 ### Added

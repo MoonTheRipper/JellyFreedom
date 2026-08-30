@@ -15,6 +15,27 @@
 source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
 
 # ---------------------------------------------------------------- fresh install
+# ------------------------------------------------------- repair, run in place
+# `jellyfreedom repair` re-runs the installed install.sh, so SRC == APP_DIR. That used to
+# delete the web assets (rm -rf before a cp whose source was the directory just removed)
+# and report a missing helper that was present the whole time.
+describe "repair re-runs the installed copy without eating it"
+sandbox_new repair-in-place
+mock_standard
+run_installer
+assert_exit 0
+assert_file "$DEST/opt/jellyfreedom/install.sh"
+assert_dir "$DEST/opt/jellyfreedom/web"
+run_installer_in_place
+assert_exit 0
+# The assets must SURVIVE. This is the actual regression.
+assert_dir "$DEST/opt/jellyfreedom/web"
+assert_exec "$DEST/opt/jellyfreedom/bin/orchestrator"
+assert_file "$DEST/opt/vpntorrent/jf-netns-helper"
+# ...and it must not invent a failure about a bundle it is not reading from.
+assert_output "left as they are"
+assert_not_output "the bundle is missing"
+
 describe "fresh install on a clean machine"
 sandbox_new fresh
 mock_standard

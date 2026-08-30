@@ -151,6 +151,21 @@ run_installer() {
   EXIT_CODE=$?
 }
 
+# run_installer_in_place — run the copy the installer left in APP_DIR, which is exactly
+# what `jellyfreedom repair` does. SRC and APP_DIR are then the same directory, so every
+# copy would be a file onto itself. Nothing else exercises this path, and two releases'
+# worth of bugs went out through it.
+run_installer_in_place() {
+  ( cd "$DEST/opt/jellyfreedom" \
+    && PATH="$MOCKBIN:$PATH" \
+       JF_DESTDIR="$DEST" \
+       JF_ASSUME_ROOT=1 \
+       JF_NONINTERACTIVE=1 \
+       LOG="$LOG" DEST="$DEST" SANDBOX="$SANDBOX" \
+       bash ./install.sh "$@" ) > "$OUTPUT" 2>&1
+  EXIT_CODE=$?
+}
+
 # ------------------------------------------------------------------ assertions
 _pass() { printf '  %s✓%s %s\n' "$c_grn" "$c_off" "$1"; }
 _fail() {
@@ -176,6 +191,7 @@ assert_not_active(){ _check; sed 's/[[:space:]]*#.*//' "$1" 2>/dev/null | grep -
 assert_not_contains(){ _check; grep -qF -- "$2" "$1" 2>/dev/null && _fail "${1#$DEST} lacks: $2" "found it" || _pass "${1#$DEST} lacks: $2"; }
 assert_mode()      { _check; local m; m=$(stat -c '%a' "$1" 2>/dev/null); [ "$m" = "$2" ] && _pass "mode $2: ${1#$DEST}" || _fail "mode $2: ${1#$DEST}" "got ${m:-<missing>}"; }
 assert_output()    { _check; grep -qiF -- "$1" "$OUTPUT" && _pass "output mentions: $1" || _fail "output mentions: $1" "not printed"; }
+assert_not_output(){ _check; grep -qiF -- "$1" "$OUTPUT" && _fail "output does NOT mention: $1" "but it did: $(grep -iF -- "$1" "$OUTPUT" | head -1)" || _pass "output does not mention: $1"; }
 assert_unchanged() { _check; [ "$(cat "$1" 2>/dev/null)" = "$2" ] && _pass "preserved: ${1#$DEST}" || _fail "preserved: ${1#$DEST}" "content changed"; }
 
 # A full run must not emit shell errors. This catches the class of defect where a script is
