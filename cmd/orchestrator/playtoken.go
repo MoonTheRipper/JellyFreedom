@@ -176,6 +176,40 @@ func tmdbRef(mediaType string, tmdbID, season, episode int) playRef {
 	}
 }
 
+// itemRef is the identity a library row's .strm must be tokenised with.
+//
+// It has to come from the row's PROVIDER identity, never from TMDBID alone. A web source
+// has no TMDB id, so reading TMDBID gives 0 for every one of them — which collapsed every
+// non-TMDB entry in the library onto the single URL /play/movie/0 carrying one shared
+// token, and /play answered "bad tmdb id". Worse, the rewrite runs at startup, so the
+// damage landed on an ordinary restart long after the entries were added and working.
+//
+// An empty Provider means a row written before providers existed; those are TMDB.
+//
+// Library rows and queue rows carry the same identity in the same three fields but are
+// different types, so the decision lives in refFor and both wrappers defer to it. Two
+// copies of this rule is how one of them gets fixed and the other does not.
+func refFor(provider, providerID, mediaType string, tmdbID, season, episode int) playRef {
+	if provider == "" || provider == library.ProviderTMDB {
+		return tmdbRef(mediaType, tmdbID, season, episode)
+	}
+	return playRef{
+		provider:   provider,
+		mediaType:  mediaType,
+		providerID: providerID,
+		season:     season,
+		episode:    episode,
+	}
+}
+
+func itemRef(it *store.Item) playRef {
+	return refFor(it.Provider, it.ProviderID, it.MediaType, it.TMDBID, it.Season, it.Episode)
+}
+
+func queueRef(q *store.QueueItem) playRef {
+	return refFor(q.Provider, q.ProviderID, q.MediaType, q.TMDBID, q.Season, q.Episode)
+}
+
 // isTMDB reports whether this identity is one the TMDB metadata client can resolve. Only
 // TMDB has a metadata and search pipeline behind it today; a second provider can be
 // routed, tokenised and served from cache before that exists.

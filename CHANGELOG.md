@@ -9,6 +9,28 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **Pasted links stopped playing after a restart.** Every `.strm` that did not come from
+  TMDB was rewritten, at startup, to `/play/movie/0` — one URL and one shared token for all
+  of them — and playback answered `bad tmdb id`.
+
+  `migrateStrmTokens` rewrites every library `.strm` when the orchestrator starts, and built
+  each URL from the row's `TMDBID` alone. A web source has no TMDB id, so that field is `0`
+  for all of them. The rows carried their real identity in `provider` / `provider_id` the
+  whole time; the rewriter simply never read it.
+
+  The damage landed on an ordinary restart, days after the links were added and playing,
+  which is why nothing caught it: adding a link never touches this path. Two rows of
+  different identity also ended up sharing one capability token, since both hashed
+  `movie:0`.
+
+  **Entries repair themselves on the next start** — the rewriter now produces the correct
+  URL and replaces the broken one. Nothing needs re-adding.
+
+  The same TMDB-only assumption is fixed in the queue worker's library write, and both now
+  refuse to write a `.strm` at all rather than write an empty one when an identity cannot be
+  encoded.
+
 ## [0.6.2] - 2026-08-30
 
 ### Added
