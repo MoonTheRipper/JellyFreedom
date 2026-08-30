@@ -3365,7 +3365,14 @@ func (w *queueWorker) processNext(ctx context.Context) {
 	w.progress(item, store.StageWriting, "Writing to library…")
 	// Resolve-at-Play: the .strm holds a STABLE identity URL, not the resolved hash. The
 	// /play handler picks the best live release each time, so the pointer never rots.
-	streamURL := playURL(w.cfg.Server.PublicURL, item.MediaType, item.TMDBID, item.Season, item.Episode)
+	streamURL := playURLFor(w.cfg.Server.PublicURL, queueRef(item))
+	if streamURL == "" {
+		// playURLFor logged the identity it refused. A .strm containing an empty string
+		// is a library entry that fails at play time with nothing to explain it, so fail
+		// here where the queue can show the user a reason.
+		fail("Could not build a play URL for this item's identity", "")
+		return
+	}
 	var strmPath string
 	if item.MediaType == "movie" {
 		strmPath, err = library.WriteMovieStrm(res.lib.Path, res.title, res.year, streamURL)

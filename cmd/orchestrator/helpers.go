@@ -121,7 +121,14 @@ func migrateStrmTokens(db *store.Store, cfg *config.Config) {
 		if it.StrmPath == "" {
 			continue
 		}
-		want := playURL(cfg.Server.PublicURL, it.MediaType, it.TMDBID, it.Season, it.Episode)
+		// From the row's own identity, not its TMDB spelling — see itemRef.
+		want := playURLFor(cfg.Server.PublicURL, itemRef(it))
+		if want == "" {
+			// playURLFor already logged which identity it refused. Writing the empty
+			// string here would replace a broken pointer with an unreadable one.
+			failed++
+			continue
+		}
 		cur, rerr := os.ReadFile(it.StrmPath)
 		if rerr == nil && strings.TrimSpace(string(cur)) == want {
 			continue // already tokenised and current
