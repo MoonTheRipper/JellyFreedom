@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-08-30
+
 ### Added
 - **`/tmp` no longer fills up.** A new `jf-tmpreaper.timer` clears browser scratch
   directories hourly. FlareSolverr drives a browser per request and each launch leaves a
@@ -551,7 +553,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.5.4...v0.5.5
