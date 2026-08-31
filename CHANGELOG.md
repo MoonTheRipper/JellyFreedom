@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-31
+
 ### Security
 - **Anyone could lock the admin out of their own dashboard.** The login limiter refused an
   attempt when *either* the IP bucket or the username bucket was blocked — so five failed POSTs
@@ -719,7 +721,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.1...v0.6.2
