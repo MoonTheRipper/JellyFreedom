@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"jellyfreedom/internal/jellyfin"
+	"jellyfreedom/internal/redact"
 	"jellyfreedom/internal/store"
 )
 
@@ -282,7 +283,12 @@ func journalLines(svc string, n int) []string {
 	var lines []string
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
-		lines = append(lines, sc.Text())
+		// Redacted on the way out, not trusted to be clean going in. The allow-listed units
+		// include prowlarr and flaresolverr — third-party services whose logging this project
+		// does not control and which routinely log full request URLs, API keys in query
+		// strings included. This project's own logs were the same until `redact` existed, and
+		// a live box still had a Prowlarr key sitting in the journal from before it did.
+		lines = append(lines, redact.String(sc.Text()))
 	}
 	return lines
 }

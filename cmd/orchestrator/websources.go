@@ -319,7 +319,10 @@ var forwardedResponseHeaders = []string{
 func (p *webPlayer) streamWebSource(w http.ResponseWriter, r *http.Request, ws *store.WebSource, stream websource.Stream) {
 	resp, err := p.fetch(r, stream)
 	if err != nil {
-		slog.Warn("web: upstream fetch failed", "id", ws.ID, "err", err)
+		// The host and nothing more. err is a *url.Error wrapping stream.URL — the signed,
+		// time-limited CDN address the extractor resolved — and redact.Error cannot help
+		// because that value is never registered. A log line is not the place for it.
+		slog.Warn("web: upstream fetch failed", "id", ws.ID, "host", requestHost(stream.URL))
 		http.Error(w, "could not reach the video (is the VPN up?)", http.StatusBadGateway)
 		return
 	}
