@@ -10,6 +10,21 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 ## [Unreleased]
 
 ### Security
+- **Web-source thumbnails were fetched by your browser, from the source site, outside the VPN.**
+  The extractor returns a thumbnail on the site's own CDN, and that URL was stored and rendered
+  as `<img src>` directly — so opening the library or the Links page made your browser connect
+  to the tube site from your **home address**, with the signed CDN path intact. The site learned
+  the household IP and exactly which video was in the library. That is the de-anonymisation the
+  whole VPN design exists to prevent, arriving through an image tag, in the one feature whose
+  own module header promises the browser only ever gets "a page URL, a title and a thumbnail".
+
+  Thumbnails are now fetched server-side over the same namespace dialler as the video and served
+  from this server. The relay takes a web-source **id**, never a URL, so it cannot be used as a
+  general image proxy; it refuses anything that is not a plain JPEG, PNG, WebP or GIF, caps the
+  relay at 5 MB, and logs only the host on failure rather than the signed URL.
+
+  **Existing entries are repaired on the next start** — a migration repoints their `poster_url`
+  at the relay. TMDB artwork is untouched.
 - **A Content-Security-Policy, and the other browser headers, on every response.** The UI builds
   HTML with template strings and `innerHTML` throughout; the escaping discipline is currently
   intact but enforced by convention alone. A CSP does not fix a missed escape — it changes what
