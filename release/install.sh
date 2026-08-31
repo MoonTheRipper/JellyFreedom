@@ -325,7 +325,14 @@ say "Directories"
 # binary and also restart its own unit has self-modifying persistence — and the orchestrator
 # never needs to write here, so there is no cost to closing it.
 xinstall -d -o root -g root -m 755 "$APP_DIR" "$APP_DIR/bin"
-xinstall -d -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR"
+# 0700, not the 0755 `install -d` defaults to. This directory holds jellyfreedom.db, and
+# that database holds session tokens IN PLAINTEXT (they are the bearer credential — a copied
+# row is a logged-in admin), play.hmac_key, the ingest and webhook secrets, and the TMDB,
+# Prowlarr and Jellyfin API keys. Left at 0755 it was readable by every local account on the
+# box — torrserver, prowlarr, flaresolverr, any human shell — turning "can read a file" into
+# "is a dashboard admin", and from there into root via the update helper. Verified on a live
+# install: an unrelated user could open the database and list the settings keys.
+xinstall -d -o "$SVC_USER" -g "$SVC_USER" -m 700 "$DATA_DIR"
 xinstall -d -o "$SVC_USER" -g "$SVC_USER" -m 700 "$VPNCONF_DIR"
 xinstall -d -o "$SVC_USER" -g "$SVC_USER" -m 700 "$YTDLP_TMP"
 xinstall -d "$VPN_DIR" "$CONF_DIR"
@@ -853,6 +860,10 @@ Wants=network-online.target
 Type=simple
 User=$RUN_USER
 WorkingDirectory=${APP_DIR#"$D"}
+# Anything this service creates is its own business and nobody else's. The database is
+# chmod'd explicitly too, but a umask covers every file the service writes later —
+# WAL sidecars, backups, uploaded VPN configs — without each needing to remember.
+UMask=0077
 ExecStart=${APP_DIR#"$D"}/bin/orchestrator --config ${CONF_DIR#"$D"}/config.yaml --db ${DATA_DIR#"$D"}/jellyfreedom.db --assets ${APP_DIR#"$D"}/web
 Restart=on-failure
 RestartSec=5
@@ -1063,7 +1074,7 @@ $SVC_USER ALL=(root) NOPASSWD: ${VPN_DIR#"$D"}/jf-netns-helper leakcheck
 $SVC_USER ALL=(root) NOPASSWD: ${VPN_DIR#"$D"}/jf-netns-helper routes
 $SVC_USER ALL=(root) NOPASSWD: ${VPN_DIR#"$D"}/jf-netns-helper vpn-up
 $SVC_USER ALL=(root) NOPASSWD: ${VPN_DIR#"$D"}/jf-netns-helper vpn-down
-$SVC_USER ALL=(root) NOPASSWD: ${APP_DIR#"$D"}/jf-update
+$SVC_USER ALL=(root) NOPASSWD: ${APP_DIR#"$D"}/jf-update ""
 EOF
 chmod 440 "$D/etc/sudoers.d/jellyfreedom"
 if command -v visudo >/dev/null; then

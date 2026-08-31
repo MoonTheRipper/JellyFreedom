@@ -128,9 +128,14 @@ _check; grep -qE 'xinstall -o root -g root -m 755 "\$SRC/bin/orchestrator"' "$RE
 _check; sed 's/[[:space:]]*#.*//' "$REPO_ROOT/release/install.sh" | grep -qE 'xchown -R "\$RUN_USER" "\$APP_DIR' \
   && _fail "code is not chowned to the run user" "APP_DIR is handed back to the service account" \
   || _pass "code is not chowned to the run user"
-_check; grep -qE 'xinstall -d -o "\$SVC_USER" -g "\$SVC_USER" "\$DATA_DIR"' "$REPO_ROOT/release/install.sh" \
+_check; grep -qE 'xinstall -d -o "\$SVC_USER" -g "\$SVC_USER" (-m [0-7]+ )?"\$DATA_DIR"' "$REPO_ROOT/release/install.sh" \
   && _pass "data dir is service-owned (writable)" \
   || _fail "data dir is service-owned" "the service could not write its database"
+# ...and NOT readable by anyone else. The database stores session tokens in plaintext — a
+# copied row is a logged-in admin — plus play.hmac_key and every provider API key. At the
+# 0755 `install -d` defaults to, every local account on the box could read all of it.
+assert_mode "$DEST/var/lib/jellyfreedom" 700
+assert_mode "$DEST/var/lib/jellyfreedom/vpnconfigs" 700
 
 describe "REGRESSION: AppArmor allows wg-quick to read the sanitised config"
 # The helper hands wg-quick a sanitised copy under /run/vpntorrent. wg-quick is root but
