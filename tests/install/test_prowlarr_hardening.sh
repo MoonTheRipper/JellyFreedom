@@ -7,7 +7,7 @@
 # autowire() returns early under JF_DESTDIR, so the main harness never reaches this code.
 # The function is extracted and driven directly against fixture configs instead.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 
 PASS=0; FAIL=0
 ok_()   { printf '  \033[1;32m✓\033[0m %s\n' "$1"; PASS=$((PASS+1)); }
@@ -22,8 +22,18 @@ run_case() {  # run_case <name> <xml> ; echoes the resulting xml
   tmp="$(mktemp)"
   printf '%s\n' "$xml" > "$tmp"
   (
-    ok(){ :; }; warn(){ :; }; hint(){ :; }
-    systemctl(){ :; }; chown(){ :; }
+    # Stubs for what the extracted function calls. shellcheck cannot see the call sites
+    # because they live in the string eval'd below, hence the directive.
+    # shellcheck disable=SC2329
+    ok(){ :; }
+    # shellcheck disable=SC2329
+    warn(){ :; }
+    # shellcheck disable=SC2329
+    hint(){ :; }
+    # shellcheck disable=SC2329
+    systemctl(){ :; }
+    # shellcheck disable=SC2329
+    chown(){ :; }
     eval "$fn"
     harden_prowlarr "$tmp"
   ) >/dev/null 2>&1
@@ -55,7 +65,7 @@ esac
 printf '\033[1;33m▸ an already-correct config is left alone\033[0m\n'
 before='<Config><BindAddress>127.0.0.1</BindAddress><ApiKey>k</ApiKey><AuthenticationMethod>Forms</AuthenticationMethod><AuthenticationRequired>Enabled</AuthenticationRequired></Config>'
 out="$(run_case idem "$before")"
-[ "$out" = "$before" ] && ok_ "idempotent" || bad_ "idempotent" "changed to: $out"
+if [ "$out" = "$before" ]; then ok_ "idempotent"; else bad_ "idempotent" "changed to: $out"; fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then printf '\033[1;31m%d of %d checks FAILED\033[0m\n' "$FAIL" "$((PASS+FAIL))"; exit 1; fi
