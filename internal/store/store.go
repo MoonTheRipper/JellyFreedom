@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -586,6 +588,19 @@ func Open(path string) (*Store, error) {
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("open db %s: %w", path, err)
+	}
+
+	// AFTER the ping, because sql.Open is lazy and the file does not exist until a real
+	// connection is made — chmod before this point silently no-ops on ENOENT, which is
+	// exactly what the first version of this did.
+	//
+	// SQLite creates the file 0666 &^ umask, i.e. 0644 under systemd's default 0022 —
+	// world-readable. The rows include session tokens stored in PLAINTEXT (a copied token is
+	// a logged-in admin), play.hmac_key, and every provider API key, so this mode is the only
+	// thing between another local account and an admin session. The data directory is 0700
+	// too; this is the second lock on the same door.
+	if err := os.Chmod(path, 0o600); err != nil {
+		slog.Warn("store: could not restrict the database file mode", "path", path, "err", err)
 	}
 
 	s := &Store{db: db}

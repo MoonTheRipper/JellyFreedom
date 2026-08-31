@@ -9,6 +9,29 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Security
+- **The database was world-readable, and session tokens are stored in plaintext.**
+  `/var/lib/jellyfreedom` was created `0755` and SQLite wrote `jellyfreedom.db` at `0644`, so
+  **every local account on the machine** — `torrserver`, `prowlarr`, `flaresolverr`, any human
+  shell — could read it. A session token is the bearer credential, stored unhashed, so copying
+  a row is being a logged-in admin; the same file also holds `play.hmac_key` (forge any
+  playback token), the ingest and webhook secrets, and the TMDB, Prowlarr and Jellyfin API
+  keys. From a dashboard admin session, `POST /api/update/apply` reaches the root-owned update
+  helper — so file-read became root without exploiting anything.
+
+  Confirmed on a live install by reading the database as an unrelated user. The data directory
+  is now `0700`, the database file `0600`, and the service runs with `UMask=0077` so
+  everything it writes later is private by default.
+- **The `jf-update` sudoers rule accepted arbitrary arguments.** The file's own comment says it
+  takes none, and the script ignores them — but the policy permitted any, so the safety came
+  from the script rather than the boundary. Constrained to `""`.
+
+### Fixed
+- **Existing installs are not repaired automatically.** `sudo jellyfreedom --update` applies the
+  new permissions to the directory, but a database file created before this release keeps its
+  old mode until then. If you cannot update immediately:
+  `sudo chmod 700 /var/lib/jellyfreedom && sudo find /var/lib/jellyfreedom -maxdepth 1 -type f -name '*.db*' -exec chmod 600 {} +`
+
 ### Added
 - **Two release channels.** **Stable** is the versions that have been explicitly promoted —
   unchanged, and still what you get by default. **Nightly** is whatever is on `main`, built
