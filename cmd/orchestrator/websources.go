@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -70,6 +71,12 @@ type webPlayer struct {
 	// the player also opens it does not run two extractions of the same page.
 	resolves *resolveGroup
 
+	// previewThumbs holds thumbnail URLs for links that have been previewed but not added,
+	// keyed by the id the row WOULD have. Short-lived: it exists only so the preview can
+	// show an image without handing the browser the source's URL.
+	previewMu     sync.Mutex
+	previewThumbs map[string]previewThumb
+
 	mu     sync.Mutex
 	cached map[string]cachedStream
 }
@@ -123,10 +130,31 @@ func newWebPlayer(db *store.Store, cfg *config.Config) *webPlayer {
 				MaxIdleConnsPerHost:   4,
 			},
 		},
-		resolves: newResolveGroup(),
-		cached:   map[string]cachedStream{},
+		resolves:      newResolveGroup(),
+		previewThumbs: map[string]previewThumb{},
+		cached:        map[string]cachedStream{},
 	}
 }
+
+// thumbnailPath is the ONLY thumbnail address that ever reaches a browser.
+//
+// The extractor hands back a thumbnail URL on the source site's own CDN. Rendering that
+// directly — which is what shipped — means the viewer's browser fetches it straight from the
+// tube site, from the home address, OUTSIDE the tunnel, with the signed CDN path intact. The
+// site learns the household IP and exactly which video is in the library. That is precisely
+// the de-anonymisation the whole VPN design exists to prevent, arriving through an <img> tag,
+// in the one feature whose module header promises "the browser gets a page URL, a title and a
+// thumbnail" without noticing that the third of those is a request to the source.
+//
+// The image is fetched server-side over the same namespace dialler as the video and served
+// same-origin instead.
+func thumbnailPath(id string) string {
+	return "/api/websources/" + url.PathEscape(id) + "/thumbnail"
+}
+
+// maxThumbBytes caps what the server will relay. A thumbnail is tens of kilobytes; this is
+// generous, and it stops a hostile source using the proxy to stream something large.
+const maxThumbBytes = 5 << 20
 
 // enabled reports nil when web sources can actually be used, and otherwise the reason
 // they cannot — in words a dashboard can show verbatim.
@@ -369,6 +397,112 @@ func (p *webPlayer) fetch(r *http.Request, stream websource.Stream) (*http.Respo
 // inside an os call rather than from here.
 const maxWebSourceTitleLen = 200
 
+type previewThumb struct {
+	url string
+	at  time.Time
+}
+
+const previewThumbTTL = 30 * time.Minute
+
+func (p *webPlayer) rememberPreviewThumb(id, remote string) {
+	if id == "" || remote == "" {
+		return
+	}
+	p.previewMu.Lock()
+	defer p.previewMu.Unlock()
+	// Evict on write rather than with a timer: the map only grows while somebody is actively
+	// pasting links, and a background goroutine for this would outlive the need for it.
+	for k, v := range p.previewThumbs {
+		if time.Since(v.at) > previewThumbTTL {
+			delete(p.previewThumbs, k)
+		}
+	}
+	p.previewThumbs[id] = previewThumb{url: remote, at: time.Now()}
+}
+
+func (p *webPlayer) previewThumb(id string) string {
+	p.previewMu.Lock()
+	defer p.previewMu.Unlock()
+	v, ok := p.previewThumbs[id]
+	if !ok || time.Since(v.at) > previewThumbTTL {
+		return ""
+	}
+	return v.url
+}
+
+// thumbnail relays a web source's poster image through the namespace dialler.
+//
+// Strictly a relay of ONE stored URL: the caller names a web source by id and never supplies
+// a URL, so this cannot be turned into a general-purpose image proxy. The destination is
+// whatever the extractor recorded for that row, re-fetched through the same tunnel the video
+// uses.
+func (p *webPlayer) thumbnail(w http.ResponseWriter, r *http.Request, id string) {
+	if err := p.enabled(); err != nil {
+		http.Error(w, "web sources are unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	remote := ""
+	if ws, err := p.db.GetWebSource(id); err == nil && ws != nil {
+		remote = ws.Thumbnail
+	}
+	if remote == "" {
+		// Previewed but not yet added: the row does not exist, so the URL is held in memory
+		// for as long as the preview is plausibly on screen. Without this the preview — the
+		// one place a thumbnail actually helps someone decide — would be blank.
+		remote = p.previewThumb(id)
+	}
+	if remote == "" {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, remote, nil)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	resp, err := p.http.Do(req)
+	if err != nil {
+		slog.Warn("web: thumbnail fetch failed", "id", id, "host", requestHost(remote))
+		http.Error(w, "could not fetch the image", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "could not fetch the image", http.StatusBadGateway)
+		return
+	}
+	// An allow-list, because this response is rendered by a browser. Anything that is not a
+	// plain image — an HTML error page, SVG (which can carry script), a download — is refused
+	// rather than relayed with the source's own Content-Type.
+	ct := resp.Header.Get("Content-Type")
+	switch {
+	case strings.HasPrefix(ct, "image/jpeg"), strings.HasPrefix(ct, "image/png"),
+		strings.HasPrefix(ct, "image/webp"), strings.HasPrefix(ct, "image/gif"):
+	default:
+		slog.Warn("web: refused a thumbnail that is not a plain image", "id", id, "type", ct)
+		http.Error(w, "unsupported image type", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if _, err := io.Copy(w, io.LimitReader(resp.Body, maxThumbBytes)); err != nil {
+		slog.Debug("web: thumbnail relay ended early", "id", id, "err", err)
+	}
+}
+
+// requestHost is for logs: the host is enough to diagnose a failure, and the full URL is a
+// signed CDN path that does not belong in a log file.
+func requestHost(raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		return u.Host
+	}
+	return "?"
+}
+
 // registerWebSourceAPI wires the dashboard endpoints.
 //
 // All four require an ADMIN session. Adding a web source writes a file into a Jellyfin
@@ -397,6 +531,14 @@ func registerWebSourceAPI(mux *http.ServeMux, p *webPlayer, db *store.Store, cfg
 		jsonOK(w, out)
 	})))
 
+	// GET /api/websources/{id}/thumbnail — the poster, relayed through the VPN.
+	//
+	// RequireAuth rather than RequireAdmin: a non-admin with access to the library sees these
+	// cards too. Not public — an open image relay is worth avoiding even for one stored URL.
+	mux.Handle("GET /api/websources/{id}/thumbnail", api.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p.thumbnail(w, r, r.PathValue("id"))
+	})))
+
 	// GET /api/websources — everything added so far, with its health.
 	mux.Handle("GET /api/websources", api.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		list, err := db.ListWebSources()
@@ -407,7 +549,19 @@ func registerWebSourceAPI(mux *http.ServeMux, p *webPlayer, db *store.Store, cfg
 		if list == nil {
 			list = []*store.WebSource{}
 		}
-		jsonOK(w, list)
+		// Hand back OUR relay path, not the source's CDN URL. Nothing renders this field
+		// today, but shipping a third-party URL to the browser is how the leak happened in
+		// the first place — one <img src> away, and the next person to write a renderer has
+		// no way to know it is dangerous.
+		out := make([]*store.WebSource, 0, len(list))
+		for _, ws := range list {
+			c := *ws
+			if c.Thumbnail != "" {
+				c.Thumbnail = thumbnailPath(c.ID)
+			}
+			out = append(out, &c)
+		}
+		jsonOK(w, out)
 	})))
 
 	// POST /api/websources/preview — extract a URL and show what it is, WITHOUT adding it.
@@ -442,6 +596,7 @@ func registerWebSourceAPI(mux *http.ServeMux, p *webPlayer, db *store.Store, cfg
 			return
 		}
 		id := store.WebSourceID(pageURL)
+		p.rememberPreviewThumb(id, info.ThumbnailURL)
 		existing, _ := db.GetWebSource(id)
 		// The response carries NO media URL. It is signed, short-lived and useless to the
 		// browser, and an endpoint that hands one out is an endpoint that can be used to
@@ -449,7 +604,8 @@ func registerWebSourceAPI(mux *http.ServeMux, p *webPlayer, db *store.Store, cfg
 		jsonOK(w, map[string]any{
 			"id": id, "page_url": pageURL,
 			"title": info.Title, "uploader": info.Uploader, "extractor": info.Extractor,
-			"duration_seconds": info.Duration, "thumbnail_url": info.ThumbnailURL,
+			// Our path, never the source's. See thumbnailPath.
+			"duration_seconds": info.Duration, "thumbnail_url": thumbnailPath(id),
 			"height": info.Stream.Height, "ext": info.Stream.Ext,
 			"size_bytes":     info.Stream.SizeBytes,
 			"already_added":  existing != nil,
@@ -565,7 +721,7 @@ func registerWebSourceAPI(mux *http.ServeMux, p *webPlayer, db *store.Store, cfg
 		item := &store.Item{
 			MediaType: "movie", Title: title, StrmPath: strmPath,
 			LibraryName: lib.Name, Status: "ready", Updated: now,
-			PosterURL: info.ThumbnailURL, RequestedBy: username,
+			PosterURL: thumbnailPath(id), RequestedBy: username,
 		}
 		item.SetProviderIdentity(library.ProviderWeb, id)
 		if err := db.Upsert(item); err != nil {

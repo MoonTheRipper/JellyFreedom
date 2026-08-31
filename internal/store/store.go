@@ -814,6 +814,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateQueueIdentityIndex(); err != nil {
 		return err
 	}
+	if err := s.migrateWebPosterURLs(); err != nil {
+		return err
+	}
 	// The queue tree reads the whole visible queue in ONE aggregate over
 	// (tmdb_id, media_type, season) — ListQueueGroups — and then fetches a single
 	// title's or season's leaf rows back out — ListQueueFiltered. Before this index the
@@ -936,6 +939,30 @@ func (s *Store) backfillProviderIdentity() error {
 // title numbered 1622 would collide with TMDB's 1622, and Enqueue's ON CONFLICT DO
 // NOTHING would silently hand back the OTHER show's queue row — the user would press
 // request and watch nothing happen, or worse, watch the wrong thing resolve.
+// migrateWebPosterURLs repoints existing web-source posters at this server's relay.
+//
+// Rows written before the relay existed hold the SOURCE SITE's CDN URL, and the library card
+// renders poster_url directly — so every viewer's browser fetched that image from the tube
+// site, from the home address, outside the tunnel. Fixing the write path only helps links
+// added afterwards; the ones already in the library keep leaking on every page load until
+// this runs.
+//
+// Scoped to provider='web' with a non-empty provider_id, and idempotent: rows already
+// pointing at the relay are left alone by the LIKE guard.
+func (s *Store) migrateWebPosterURLs() error {
+	_, err := s.db.Exec(`
+		UPDATE items
+		   SET poster_url = '/api/websources/' || provider_id || '/thumbnail'
+		 WHERE provider = 'web'
+		   AND provider_id <> ''
+		   AND poster_url <> ''
+		   AND poster_url NOT LIKE '/api/websources/%'`)
+	if err != nil {
+		return fmt.Errorf("migrate web poster urls: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) migrateQueueIdentityIndex() error {
 	const name = "idx_queue_active_identity"
 	var ddl sql.NullString

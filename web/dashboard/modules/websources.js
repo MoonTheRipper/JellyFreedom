@@ -139,6 +139,12 @@ async function loadLibraries() {
     `<option value="${esc(l.name)}"${l.default ? ' selected' : ''}>${esc(l.name)}</option>`).join('');
 }
 
+/* Only our own relay path is renderable as an image source. Anything else — in particular
+   a leftover third-party URL from an older server — is dropped rather than fetched. */
+function ownThumbPath(u) {
+  return typeof u === 'string' && /^\/api\/websources\/[A-Za-z0-9_%-]+\/thumbnail$/.test(u);
+}
+
 /* ── Queueing ─────────────────────────────────────────────────────────────
    Split on whitespace and commas. NOT on colons, however tempting a separator
    they look: every URL contains "://" and splitting there would shred the
@@ -315,7 +321,12 @@ const STATE_LABEL = {
 
 function rowHTML(item) {
   const d = item.data || {};
-  const thumb = d.thumbnail_url ? safeUrl(d.thumbnail_url) : '';
+  // The server hands back its OWN relay path now, never the source's CDN URL — rendering
+  // the latter had the browser fetch the image straight from the site, from the home
+  // address, outside the tunnel. safeUrl() requires an https:// prefix and would reject a
+  // same-origin path, so the shape is checked explicitly instead of loosening safeUrl for
+  // every other caller.
+  const thumb = ownThumbPath(d.thumbnail_url) ? esc(d.thumbnail_url) : '';
   const meta = [
     d.uploader,
     d.duration_seconds ? fmtDuration(d.duration_seconds) : '',
