@@ -234,6 +234,31 @@ and the path but leaves `info_hash`, so `/api/library` published them. The start
 surviving legacy `.strm` files in place, so they keep working; a token minted for a hash cannot
 validate an identity-based `/play` request, or the reverse.
 
+### Browser hardening
+
+Every response carries a **Content-Security-Policy**, plus `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`. The important directive is
+`script-src 'self'` with **no** `'unsafe-inline'`: there is not one inline `<script>` in the
+UI, both pages load a single ES module, so injected script cannot execute. `connect-src 'self'`
+means injected script could not exfiltrate to another host either.
+
+This does not fix a missed escape — it changes what one costs. The UI builds HTML with template
+strings and `innerHTML` throughout, and the escaping is enforced by convention rather than by a
+linter or a DOM API. `style-src` does permit `'unsafe-inline'`, because the UI sets `style=""`
+attributes; that is a real weakening, and it is why `script-src` matters.
+
+`Strict-Transport-Security` is deliberately **not** sent: the primary deployment is plain HTTP
+on a LAN, where it is either ignored or, once a TLS proxy appears, pins the host into HTTPS in a
+way the operator did not choose.
+
+State-changing requests (anything not GET/HEAD/OPTIONS) are refused when the browser reports
+they came from another origin, via `Sec-Fetch-Site` or `Origin`. The session cookie is already
+`SameSite=Lax`, which covers the mainstream case — but SameSite is **site**-scoped, and Jellyfin
+(`:8096`), Prowlarr (`:9696`) and TorrServer (`:8090`) are the same site as the dashboard, so an
+XSS or open redirect in any of that third-party code would otherwise drive the whole admin API.
+A request with neither header is allowed through: the Jellyfin webhook and the provider ingest
+API are server-to-server callers that send none, and both authenticate with a shared secret.
+
 ### The Jellyfin webhook
 
 `POST /webhook/jellyfin` requires the shared secret in an `X-JellyFreedom-Token` header,
