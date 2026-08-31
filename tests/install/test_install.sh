@@ -36,6 +36,31 @@ assert_file "$DEST/opt/vpntorrent/jf-netns-helper"
 assert_output "left as they are"
 assert_not_output "the bundle is missing"
 
+# ------------------------------------------------------------- release channel
+# Which channel an install follows decides what its next update pulls. Getting this wrong
+# silently moves a box between stable and nightly at update time, which is the one thing
+# channels exist to prevent.
+describe "the release channel is recorded and preserved"
+sandbox_new channel-default
+mock_standard
+run_installer
+assert_exit 0
+assert_file "$DEST/opt/jellyfreedom/CHANNEL"
+# A user who did not ask for nightlies must not receive them.
+assert_contains "$DEST/opt/jellyfreedom/CHANNEL" 'stable'
+assert_output "channel: stable"
+
+sandbox_new channel-nightly
+mock_standard
+JELLYFREEDOM_CHANNEL=nightly run_installer
+assert_exit 0
+assert_contains "$DEST/opt/jellyfreedom/CHANNEL" 'nightly'
+# An upgrade that says nothing keeps the channel it is already on, rather than resetting
+# a nightly box to stable behind the user's back.
+run_installer
+assert_exit 0
+assert_contains "$DEST/opt/jellyfreedom/CHANNEL" 'nightly'
+
 describe "fresh install on a clean machine"
 sandbox_new fresh
 mock_standard
