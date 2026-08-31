@@ -10,6 +10,31 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 ## [Unreleased]
 
 ### Security
+- **Anyone could lock the admin out of their own dashboard.** The login limiter refused an
+  attempt when *either* the IP bucket or the username bucket was blocked — so five failed POSTs
+  for `username=admin`, from any address, with no credentials, locked the real admin out for up
+  to five minutes, renewable forever. On a single-admin install that is a total denial of the
+  dashboard, and far cheaper to mount than the distributed guessing the rule defends against.
+
+  The username backoff now binds only an address that has *itself* failed here. A clean address
+  is never refused because of somebody else's attack on that name — which is the property the
+  code comment already claimed — while an attacker's own address still hits both budgets. The
+  test that pinned the old behaviour was asserting the defect and has been rewritten.
+- **Poster URLs are validated on the user-facing request paths.** `validPosterURL` existed but
+  was applied only to the provider-ingest API; `/request`, `/request/season` and
+  `/api/subscriptions` stored whatever they were handed. A poster is rendered as `<img src>` to
+  *other* viewers, so an unvalidated one is a stored beacon — a low-privileged account learns
+  when an admin looks, from that admin's real address, outside the VPN. Not XSS, which is why it
+  read as harmless. Invalid values are dropped rather than failing the request.
+
+### Fixed
+- **The extractor's scratch directory is reaped too.** yt-dlp's official build unpacks ~76MB per
+  run and is SIGKILLed whenever an extraction times out or the client disconnects mid-resolve —
+  and a killed PyInstaller bundle cleans up nothing. `jf-tmpreaper` now covers
+  `/var/lib/jellyfreedom/tmp` as well as the browser scratch in `/tmp`, so a repeatedly failing
+  link cannot fill the data partition.
+
+### Security
 - **The installer now locks down Prowlarr instead of documenting that you should.** Stock
   Prowlarr binds every interface with authentication disabled for local addresses, and this
   installer only ever *read* the API key out of that file — so on a default install any host on

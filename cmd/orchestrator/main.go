@@ -831,7 +831,7 @@ func main() {
 		}
 		if err := db.UpsertSubscription(&store.Subscription{
 			TMDBID: req.TMDBID, Season: req.Season, Title: req.Title,
-			PosterURL: req.PosterURL, LibraryName: libName, RequestedBy: user.Username,
+			PosterURL: safePosterURL(req.PosterURL), LibraryName: libName, RequestedBy: user.Username,
 		}); err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not save the subscription", err)
 			return
@@ -1177,7 +1177,7 @@ func main() {
 		}
 		qItem := &store.QueueItem{
 			TMDBID: req.TMDBID, MediaType: req.MediaType,
-			Title: title, Year: req.Year, PosterURL: req.PosterURL,
+			Title: title, Year: req.Year, PosterURL: safePosterURL(req.PosterURL),
 			Season: req.Season, Episode: req.Episode,
 			LibraryName: libName, RequestedBy: requestedBy,
 			MagnetOverride: req.Magnet,
@@ -1260,7 +1260,7 @@ func main() {
 			}
 			qItem := &store.QueueItem{
 				TMDBID: req.TMDBID, MediaType: "tv",
-				Title: title, Year: req.Year, PosterURL: req.PosterURL,
+				Title: title, Year: req.Year, PosterURL: safePosterURL(req.PosterURL),
 				Season: req.Season, Episode: ep.Number,
 				LibraryName: libName, RequestedBy: requestedBy,
 			}
@@ -1283,7 +1283,7 @@ func main() {
 			}
 			if err := db.UpsertSubscription(&store.Subscription{
 				TMDBID: req.TMDBID, Season: req.Season, Title: title,
-				PosterURL: req.PosterURL, LibraryName: libName, RequestedBy: requestedBy,
+				PosterURL: safePosterURL(req.PosterURL), LibraryName: libName, RequestedBy: requestedBy,
 			}); err != nil {
 				// The episodes are queued either way; only the auto-follow failed.
 				slog.Error("auto-subscribe failed", "tmdb", req.TMDBID, "season", req.Season, "err", err)

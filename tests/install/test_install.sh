@@ -404,6 +404,9 @@ assert_contains "$DEST/etc/systemd/system/jf-tmpreaper.service" '/tmp/snap-priva
 # eventually take something that mattered.
 assert_contains "$DEST/etc/systemd/system/jf-tmpreaper.service" '-mmin +60'
 assert_contains "$DEST/etc/systemd/system/jf-tmpreaper.service" 'org.chromium.'
+# yt-dlp's PyInstaller scratch, on the data partition rather than /tmp. It is SIGKILLed on a
+# deadline or a client disconnect, and a killed bundle removes nothing.
+assert_contains "$DEST/etc/systemd/system/jf-tmpreaper.service" '_MEI*'
 assert_ran_re 'systemctl enable .*jf-tmpreaper.timer'
 assert_no_shell_errors
 
