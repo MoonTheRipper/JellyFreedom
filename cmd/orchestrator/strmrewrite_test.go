@@ -100,3 +100,84 @@ func TestMigrateStrmTokensKeepsProviderIdentity(t *testing.T) {
 		t.Errorf("two different items share one capability token: %s", tokenOf(web1))
 	}
 }
+
+// Enforcement is a RATCHET. It used to be re-derived on every boot from the outcome of the
+// rewrite sweep, so an install that enforced correctly yesterday served /play
+// unauthenticated today the moment one .strm could not be written — a library mount not up
+// yet, a permission change. One log line, and the whole capability system off.
+func TestEnforcementSurvivesAFailedRewrite(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "ratchet.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := loadPlayKey(db); err != nil {
+		t.Fatalf("loadPlayKey: %v", err)
+	}
+
+	// This install has enforced before.
+	if err := db.SetSetting(playTokenRequiredSetting, "true"); err != nil {
+		t.Fatalf("SetSetting: %v", err)
+	}
+	playTokensEnforced.Store(false)
+
+	// An item whose .strm cannot be written: the path is a directory.
+	bad := filepath.Join(root, "movies", "Undeletable")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	it := &store.Item{
+		TMDBID: 99, MediaType: "movie", Title: "Undeletable", StrmPath: bad,
+		LibraryName: "Movies", Status: "ready", Updated: time.Now(),
+	}
+	it.SetProviderIdentity(library.ProviderTMDB, "99")
+	if err := db.Upsert(it); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	cfg := &config.Config{}
+	cfg.Server.PublicURL = "http://192.168.0.2:1990"
+	migrateStrmTokens(db, cfg)
+
+	if !playTokenEnforced() {
+		t.Error("a failed rewrite turned enforcement OFF on an install that had already " +
+			"enforced — /play would serve unauthenticated after an ordinary restart")
+	}
+}
+
+// A token minted for the hash-pinned /proxy/stream route must not validate an
+// identity-based /play request, or the reverse. The two key spaces are separated by field 0
+// ("hash" versus a media type or the "p" namespace tag) and nothing else.
+func TestStreamTokensAndPlayTokensDoNotCross(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "cross.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := loadPlayKey(db); err != nil {
+		t.Fatalf("loadPlayKey: %v", err)
+	}
+
+	const hash = "0123456789abcdef0123456789abcdef01234567"
+	st := streamToken(hash, 0)
+	if st == "" {
+		t.Fatal("streamToken returned empty")
+	}
+	if !validStreamToken(st, hash, 0) {
+		t.Error("a freshly minted stream token did not validate")
+	}
+	if validStreamToken(st, hash, 1) {
+		t.Error("a stream token validated for a different file index")
+	}
+	if validPlayToken(st, "movie", 0, 0, 0) {
+		t.Error("a stream token validated an identity-based /play request")
+	}
+	if validStreamToken(playToken("movie", 550, 0, 0), hash, 0) {
+		t.Error("a play token validated a hash-pinned /proxy/stream request")
+	}
+	if validStreamToken("", hash, 0) {
+		t.Error("an empty token was accepted")
+	}
+}

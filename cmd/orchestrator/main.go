@@ -1370,6 +1370,20 @@ func main() {
 			http.Error(w, "bad index", http.StatusBadRequest)
 			return
 		}
+		// Same capability check /play carries, and for the same reason: Jellyfin fetches
+		// this URL with no cookie, so possession of the token IS the authorisation.
+		//
+		// Without it this route was an unauthenticated existence oracle over the whole
+		// library — a caller with an info hash from a public tracker learned 200-vs-404
+		// whether it is here, which is exactly the question every other route goes out of
+		// its way not to answer, and then streamed it. Item.Redacted() leaves InfoHash in
+		// /api/library, so the hashes were not even hard to come by.
+		if playTokenEnforced() && !validStreamToken(r.URL.Query().Get("t"), link, index) {
+			slog.Warn("proxy/stream: refused a request with a missing or invalid token",
+				"remote", clientIPOf(r))
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		it, err := db.GetByHash(link)
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)

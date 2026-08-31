@@ -122,8 +122,8 @@ Consequences worth knowing:
 
 ### Capability tokens
 
-`/play/...` and the legacy `/proxy/stream` **must** stay unauthenticated — Jellyfin fetches a
-`.strm` URL with no session cookie. Instead, each URL carries an HMAC over the item's identity,
+`/play/...` and the legacy `/proxy/stream` **must** stay free of any LOGIN — Jellyfin fetches a
+`.strm` URL with no session cookie. Both now carry a capability token; neither is open. Instead, each URL carries an HMAC over the item's identity,
 computed with a server-side key generated on first run. Possession of a valid `.strm` is the
 credential. Without this, an unauthenticated stranger could make the box start downloading
 arbitrary content over the owner's VPN.
