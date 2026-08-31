@@ -1306,6 +1306,59 @@ fi
 #     indexers. Without that, installing FlareSolverr accomplishes precisely nothing:
 #     Cloudflare-protected indexers keep failing exactly as before.
 # ==========================================================================================
+# harden_prowlarr closes an exposure this installer creates and then documents away.
+#
+# Prowlarr ships BindAddress=* with AuthenticationRequired=DisabledForLocalAddresses, and
+# this installer never touched that file — it only read the API key out of it. So on a stock
+# install ANY host on the LAN could fetch
+#
+#     GET http://<box>:9696/initialize.json
+#
+# and receive the API key in cleartext, with no authentication at all. That key then lists
+# every indexer definition, including private-tracker credentials and cookies. Verified on a
+# live box: the key returned by that request matched the one JellyFreedom had stored.
+# Meanwhile docs/security.md told the reader "Keep on localhost: Prowlarr (9696)".
+#
+# What to change depends on whether a login exists, because getting this wrong locks the
+# operator out of their own indexer manager:
+#
+#   * A login is configured  -> require it for every address. Reachability is unchanged, so
+#     a remote/Tailscale user keeps their UI and simply signs in.
+#   * No login at all        -> requiring one would lock them out, so bind to localhost
+#     instead. That removes the LAN exposure without inventing credentials.
+harden_prowlarr(){
+  local cfg="$1" changed=0 method required bind
+  method="$(sed -n 's:.*<AuthenticationMethod>\([^<]*\)</AuthenticationMethod>.*:\1:p' "$cfg" | head -1)"
+  required="$(sed -n 's:.*<AuthenticationRequired>\([^<]*\)</AuthenticationRequired>.*:\1:p' "$cfg" | head -1)"
+  bind="$(sed -n 's:.*<BindAddress>\([^<]*\)</BindAddress>.*:\1:p' "$cfg" | head -1)"
+
+  case "$method" in
+    ""|None|none|External|external)
+      # No credentials to enforce. Close it by reachability instead.
+      if [ "$bind" = "*" ]; then
+        sed -i 's:<BindAddress>\*</BindAddress>:<BindAddress>127.0.0.1</BindAddress>:' "$cfg" && changed=1
+        warn "Prowlarr had no login and answered on every interface — bound it to localhost"
+        hint "set a Prowlarr login, then widen BindAddress again if you need it remotely"
+      fi
+      ;;
+    *)
+      if [ "$required" != "Enabled" ]; then
+        sed -i 's:<AuthenticationRequired>[^<]*</AuthenticationRequired>:<AuthenticationRequired>Enabled</AuthenticationRequired>:' "$cfg" && changed=1
+        ok "Prowlarr now requires its login on every address (was: ${required:-unset})"
+      fi
+      ;;
+  esac
+
+  # The file holds the API key. 0644 by default.
+  chmod 600 "$cfg" 2>/dev/null || true
+  chown prowlarr:prowlarr "$cfg" 2>/dev/null || true
+
+  if [ "$changed" = 1 ]; then
+    systemctl restart prowlarr.service >/dev/null 2>&1 || true
+    sleep 3
+  fi
+}
+
 autowire(){
   [ -n "$D" ] && return 0
   local pw_cfg=/var/lib/prowlarr/config.xml pw_key=""
@@ -1316,6 +1369,7 @@ autowire(){
     sleep 2; waited=$((waited + 2))
   done
   [ -f "$pw_cfg" ] || return 0
+  harden_prowlarr "$pw_cfg"
   pw_key="$(sed -n 's:.*<ApiKey>\([^<]*\)</ApiKey>.*:\1:p' "$pw_cfg" | head -1)"
   [ -n "$pw_key" ] || return 0
 

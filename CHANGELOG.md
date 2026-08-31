@@ -9,6 +9,28 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Security
+- **The installer now locks down Prowlarr instead of documenting that you should.** Stock
+  Prowlarr binds every interface with authentication disabled for local addresses, and this
+  installer only ever *read* the API key out of that file — so on a default install any host on
+  the LAN could `GET /initialize.json` and receive the key in cleartext, which then lists every
+  indexer definition including private-tracker credentials. Verified on a live box. Meanwhile
+  `docs/security.md` said "Keep on localhost: Prowlarr (9696)".
+
+  Where a Prowlarr login exists, it is now required for every address — reachability is
+  unchanged, so a remote or Tailscale user keeps their UI and simply signs in. Where **no**
+  login is configured, requiring one would lock the operator out, so Prowlarr is bound to
+  localhost instead. `config.xml` is also chmod'd `600`; it holds the key.
+- **`/api/logs` redacts.** The dashboard's log view returns journal lines verbatim, and the
+  allow-listed units include `prowlarr` and `flaresolverr` — third-party services whose logging
+  this project does not control and which routinely log full request URLs. Lines are now passed
+  through `redact` on the way out.
+- **The signed CDN URL is no longer written to the log** when a web-source fetch fails. The
+  error wrapped the time-limited media address; only the host is logged now.
+- **`uninstall --purge` removes `/var/lib/prowlarr`.** The installer created it; uninstall never
+  removed it, so a user who purged believing their secrets were gone still had `config.xml`
+  (the API key) and `prowlarr.db` (indexer credentials) sitting at `0755`.
+
 ## [0.7.0] - 2026-08-31
 
 ### Security

@@ -63,8 +63,13 @@ if [ "$ALL" = 1 ]; then
   rm -f /etc/systemd/system/flaresolverr.service /etc/systemd/system/prowlarr.service
   systemctl daemon-reload 2>/dev/null || true
   rm -f /usr/local/bin/torrserver /usr/local/bin/yt-dlp
-  rm -rf /opt/flaresolverr /opt/Prowlarr /opt/prowlarr /var/lib/torrserver /var/lib/flaresolverr
-  echo "  removed TorrServer, yt-dlp, FlareSolverr and Prowlarr"
+  # /var/lib/prowlarr was created by our installer and holds config.xml (the API key) and
+  # prowlarr.db (indexer credentials and cookies). Leaving it behind meant a user who ran
+  # --purge believing they had wiped their secrets had not: the directory stayed at 0755 with
+  # a readable config for anyone on the box.
+  rm -rf /opt/flaresolverr /opt/Prowlarr /opt/prowlarr /var/lib/torrserver /var/lib/flaresolverr \
+         /var/lib/prowlarr
+  echo "  removed TorrServer, yt-dlp, FlareSolverr and Prowlarr (including its API key and indexer database)"
   echo "  NOTE: Jellyfin is left installed — remove it with: sudo apt-get remove jellyfin"
 fi
 
