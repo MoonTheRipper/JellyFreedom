@@ -34,13 +34,36 @@ func TestLoginLimiterBackoff(t *testing.T) {
 
 // Keyed by BOTH ip and username: a different IP guessing the SAME account is still
 // throttled, which is what stops a distributed guessing run.
-func TestLoginLimiterBlocksAcrossIPsForOneUser(t *testing.T) {
+// A CLEAN address is never refused because of somebody else's attack on that username.
+//
+// This test used to assert the opposite, and the opposite is a denial of service: five
+// failed POSTs for username=admin, from anywhere, no credentials required, and the real
+// admin cannot reach their own dashboard for five minutes — renewable indefinitely. On a
+// single-admin install that locks the operator out of their own machine, and it is far
+// cheaper to mount than the distributed guessing the rule was meant to stop.
+func TestUsernameBackoffDoesNotLockOutAnUnrelatedAddress(t *testing.T) {
 	l := newLoginLimiter()
 	for i := 0; i <= l.burst; i++ {
 		l.Fail("10.0.0.1", "bob")
 	}
-	if ok, _ := l.Allow("10.0.0.99", "bob"); ok {
-		t.Fatal("a different IP was allowed to keep guessing the same account")
+	if ok, _ := l.Allow("10.0.0.99", "bob"); !ok {
+		t.Fatal("an address that has never failed here was locked out of bob's account " +
+			"because a different address attacked it — that is a trivial admin lockout")
+	}
+}
+
+// ...but an address that HAS failed here is subject to the username's backoff too, so an
+// attacker cannot escape their own budget by guessing one account from one host.
+func TestUsernameBackoffStillBindsAnAddressThatHasFailed(t *testing.T) {
+	l := newLoginLimiter()
+	// Spread the failures so neither bucket alone would trip on the attacker's own address
+	// before the username bucket does.
+	for i := 0; i <= l.burst; i++ {
+		l.Fail("10.0.0.1", "bob")
+	}
+	l.Fail("10.0.0.2", "bob") // this address now has a failure of its own
+	if ok, _ := l.Allow("10.0.0.2", "bob"); ok {
+		t.Fatal("an address that has failed here was not bound by the username backoff")
 	}
 }
 

@@ -14,11 +14,19 @@ import (
 // fast as bcrypt would answer, against a username list they could enumerate from the
 // old early-return timing difference (see authenticateWithDummyCompare).
 //
-// The limiter is keyed independently by client IP and by username, and BOTH must have
-// budget for an attempt to proceed. Keying only by IP lets a botnet spray one account;
-// keying only by username lets one host walk every account, and also hands an attacker
-// a trivial lockout DoS against a known user — requiring both keeps a legitimate user
-// on their own IP working while a distributed guessing run still stalls.
+// The limiter is keyed independently by client IP and by username. Keying only by IP lets
+// a botnet spray one account; keying only by username lets one host walk every account.
+//
+// Blocking on EITHER bucket, which is what this used to do, hands an attacker a trivial
+// lockout DoS: five failed POSTs for username=admin, from anywhere, no credentials needed,
+// and the real admin cannot log in to their own machine for five minutes — renewable
+// forever. On a single-admin install that is a total denial of the dashboard, and it is far
+// easier to mount than the distributed guessing run the username bucket defends against.
+//
+// So the username bucket only binds an IP that has ALREADY failed here. A clean IP is never
+// refused because of somebody else's attack on that name — which is the property the old
+// comment claimed and the old code did not have — while an attacker's own address, which by
+// definition accumulates failures, still hits the union of both budgets.
 type loginLimiter struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket
@@ -52,12 +60,15 @@ func (l *loginLimiter) Allow(ip, username string) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.gc(now)
-	for _, key := range l.keys(ip, username) {
-		b := l.buckets[key]
-		if b == nil {
-			continue
-		}
-		if now.Before(b.blocked) {
+
+	ipBucket := l.buckets["ip:"+ip]
+	if ip != "" && ipBucket != nil && now.Before(ipBucket.blocked) {
+		return false, ipBucket.blocked.Sub(now).Round(time.Second)
+	}
+	// Only an address that has failed here is subject to the username's backoff. Without
+	// this condition, anyone could lock a known account out from any address.
+	if username != "" && ipBucket != nil && ipBucket.failures > 0 {
+		if b := l.buckets["user:"+strings.ToLower(username)]; b != nil && now.Before(b.blocked) {
 			return false, b.blocked.Sub(now).Round(time.Second)
 		}
 	}

@@ -1033,6 +1033,17 @@ ExecStart=-/usr/bin/find /tmp/snap-private-tmp -mindepth 3 -maxdepth 3 -path '*/
 ExecStart=-/usr/bin/find /tmp -mindepth 1 -maxdepth 1 -mmin +60 \
   \( -name '.org.chromium.*' -o -name '.com.google.Chrome*' -o -name 'scoped_dir*' \) \
   -exec rm -rf {} +
+# yt-dlp's scratch: a different filesystem, a different failure, the same shape. The official
+# build is a PyInstaller bundle that unpacks ~76MB into _MEIxxxxxx on every run and removes it
+# on exit — but it is SIGKILLed whenever the extraction deadline passes OR the client
+# disconnects mid-resolve, and a killed bundle cleans up nothing. A link that keeps failing
+# therefore fills the DATA partition 76MB at a time, where nothing was watching.
+#
+# The path is the installer's fixed data dir; this heredoc is quoted, so it cannot read
+# $DATA_DIR, and an operator who moves web_sources.temp_dir elsewhere is choosing to manage it.
+ExecStart=-/usr/bin/find /var/lib/jellyfreedom/tmp -mindepth 1 -maxdepth 1 -mmin +60 \
+  \( -name '_MEI*' -o -name 'tmp*' -o -name 'yt-dlp*' \) \
+  -exec rm -rf {} +
 EOF
 
 cat > "$UNIT_DIR/jf-tmpreaper.timer" <<'EOF'

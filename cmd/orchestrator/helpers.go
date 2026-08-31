@@ -380,6 +380,26 @@ func validPosterURL(u string) bool {
 	return p.Scheme == "http" || p.Scheme == "https"
 }
 
+// safePosterURL returns the poster if it is one we are willing to store, and "" otherwise.
+//
+// validPosterURL was written for the provider-ingest API and applied only there; the three
+// user-facing request paths stored whatever they were handed. A poster is rendered as
+// <img src> to OTHER viewers — the queue's to an admin, a library row's to everyone who can
+// see that library — so an unvalidated one is a stored beacon: a low-privileged account
+// submits "https://attacker.example/b.png?u=admin" and learns when an admin looks, from that
+// admin's real address, outside the VPN. It is not XSS (esc() escapes the quote, and
+// javascript: is inert in an img src), which is precisely why it survived review.
+//
+// Blanked rather than refused: a poster is decoration, and failing an otherwise valid
+// request over it would trade a real feature for a cosmetic one. The item still appears,
+// with the placeholder the UI already draws when there is no artwork.
+func safePosterURL(u string) string {
+	if u == "" || !validPosterURL(u) {
+		return ""
+	}
+	return u
+}
+
 // magnetInfoHash extracts the v1 info hash from a magnet link, or reports failure.
 //
 // It parses the magnet as a URL rather than pattern-matching the string, so a caller
