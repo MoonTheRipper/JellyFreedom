@@ -111,6 +111,27 @@ func playTokenEnforced() bool { return playTokensEnforced.Load() }
 // in the library, because their .strm files carry no token. If any file cannot be
 // rewritten we stay permissive and say so loudly, rather than half-enforcing.
 func migrateStrmTokens(db *store.Store, cfg *config.Config) {
+	// A RATCHET, not a re-derivation. Enforcement used to be decided from scratch on every
+	// boot: the persisted marker was written and never read, so an install that enforced
+	// correctly yesterday served /play unauthenticated today the moment ONE .strm could not
+	// be read or re-signed — a library mount not up yet, a permission change, an identity
+	// the signer refuses. One slog.Error line, and the whole capability system off.
+	//
+	// Once this install has ever enforced, it enforces. A file that cannot be re-signed
+	// degrades that file, not the security control.
+	enforcedBefore := false
+	if v, gerr := db.GetSetting(playTokenRequiredSetting); gerr == nil && v == "true" {
+		enforcedBefore = true
+		playTokensEnforced.Store(true)
+	} else if gerr != nil {
+		// Fail closed on a read error too: an unreadable settings table is not evidence
+		// that this install was permissive.
+		slog.Error("play tokens: could not read the enforcement marker; assuming ENFORCED",
+			"err", gerr)
+		enforcedBefore = true
+		playTokensEnforced.Store(true)
+	}
+
 	items, err := db.ListAllItems()
 	if err != nil {
 		slog.Error("play tokens: could not list library items; capability tokens stay DISABLED", "err", err)
@@ -151,6 +172,13 @@ func migrateStrmTokens(db *store.Store, cfg *config.Config) {
 		rewritten++
 	}
 	if failed > 0 {
+		if enforcedBefore {
+			slog.Error("play tokens: some .strm files could not be rewritten. Capability tokens stay "+
+				"ENFORCED because this install has enforced before — those titles will not play until "+
+				"the errors above are fixed, which is the safe direction.",
+				"rewritten", rewritten, "failed", failed)
+			return
+		}
 		slog.Error("play tokens: some .strm files could not be rewritten; capability tokens stay DISABLED "+
 			"so playback keeps working. Fix the errors above and restart to enable them.",
 			"rewritten", rewritten, "failed", failed)
@@ -539,6 +567,23 @@ func sweepOrphanStrmTokens(db *store.Store, cfg *config.Config) {
 				}
 			}
 			if !ok || tmdbID == 0 {
+				// Still a legacy hash-pinned URL whose item is no longer in the library, so
+				// there is no identity to promote it to. It can still be signed on its OWN
+				// identity, though — /proxy/stream now requires a token, and without this
+				// these files would go from "plays" to "403" purely because the route was
+				// closed. Signing keeps them working for exactly what they already point at.
+				if h, i, lok := parseLegacyStream(cur); lok {
+					if tok := streamToken(h, i); tok != "" {
+						signed := cur + "?t=" + tok
+						if strings.Contains(cur, "?") {
+							signed = cur + "&t=" + tok
+						}
+						if werr := os.WriteFile(path, []byte(signed), 0o644); werr == nil {
+							rewritten++
+							return nil
+						}
+					}
+				}
 				orphaned++
 				slog.Warn("play tokens: a .strm could not be re-signed and will not play; "+
 					"re-request the item to regenerate it, or delete the file",
@@ -595,9 +640,27 @@ func parsePlayURL(raw string) (mediaType string, tmdbID, season, episode int, ok
 
 // parseLegacyStreamHash pulls the info hash out of a pre-resolve-at-play .strm.
 func parseLegacyStreamHash(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || !strings.Contains(u.Path, "/proxy/stream") {
+	h, _, ok := parseLegacyStream(raw)
+	if !ok {
 		return ""
 	}
-	return u.Query().Get("link")
+	return h
+}
+
+// parseLegacyStream pulls the hash AND the file index out of a pre-resolve-at-play .strm.
+// The token covers both, so recovering only the hash would sign the wrong identity.
+func parseLegacyStream(raw string) (string, int, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || !strings.Contains(u.Path, "/proxy/stream") {
+		return "", 0, false
+	}
+	h := strings.ToLower(strings.TrimSpace(u.Query().Get("link")))
+	if !torrserver.ValidInfoHash(h) {
+		return "", 0, false
+	}
+	idx, cerr := strconv.Atoi(u.Query().Get("index"))
+	if cerr != nil || idx < 0 {
+		return "", 0, false
+	}
+	return h, idx, true
 }

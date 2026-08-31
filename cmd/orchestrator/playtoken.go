@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	"jellyfreedom/internal/library"
@@ -261,6 +262,35 @@ func signIdentity(identity string) string {
 	m := hmac.New(sha256.New, key)
 	m.Write([]byte(identity))
 	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
+}
+
+// streamIdentity is the identity of the LEGACY hash-pinned route, /proxy/stream.
+//
+// It sits in its own key space: the first field is "hash", which no media type and no
+// provider namespace tag can ever be (`movie`, `tv` and `p` are the only other field-0
+// values, and providerRe forbids a provider from being spelled "hash" in field 0 because
+// the namespace tag `p` occupies it). So a token minted for a hash can never validate an
+// identity-based /play request, or the reverse.
+//
+// The info hash is 40 hex characters — validated by torrserver.ValidInfoHash before this is
+// ever called — and the index is an int, so neither field can contain the ":" separator.
+func streamIdentity(infoHash string, index int) string {
+	return fmt.Sprintf("hash:%s:%d", strings.ToLower(infoHash), index)
+}
+
+// streamToken and validStreamToken are the /proxy/stream pair. The route is fetched by
+// Jellyfin, which sends no cookie, so possession of the token IS the authorisation —
+// exactly as on /play.
+func streamToken(infoHash string, index int) string {
+	return signIdentity(streamIdentity(infoHash, index))
+}
+
+func validStreamToken(got, infoHash string, index int) bool {
+	want := signIdentity(streamIdentity(infoHash, index))
+	if want == "" || got == "" {
+		return false
+	}
+	return hmac.Equal([]byte(got), []byte(want))
 }
 
 // playToken returns the capability tag for a TMDB identity.

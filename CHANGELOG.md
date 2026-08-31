@@ -10,6 +10,26 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 ## [Unreleased]
 
 ### Security
+- **Playback authorisation failed open on restart.** Whether `/play` required a capability
+  token was decided from scratch on every boot, and the persisted marker (`play.token_required`)
+  was written but never read. One `.strm` that could not be read or re-signed — a library mount
+  not up yet, a permission change, an identity the signer refuses — turned the **whole**
+  capability system off for that process, on a machine that had been enforcing the day before.
+  The only signal was a single log line, and `/play` would then resolve and start a torrent for
+  any unauthenticated caller who could reach the port.
+
+  Enforcement is now a ratchet: once an install has enforced, it stays enforced, and an
+  unsignable file degrades that file rather than the control.
+- **`GET /proxy/stream` was an unauthenticated existence oracle over the whole library.** The
+  legacy hash-pinned route carried no capability token, so anyone who could reach the port and
+  had an infohash learned 200-versus-404 whether that torrent was here — the exact question
+  every other route goes out of its way not to answer, including for libraries the caller has
+  been denied — and could then stream it. Infohashes were easy to come by: `Item.Redacted()`
+  leaves `info_hash` in `/api/library`.
+
+  It now carries a token over `hash:<infohash>:<index>`, in its own key space, so a token for a
+  hash cannot validate an identity-based `/play` request or the reverse. The startup sweep signs
+  surviving legacy `.strm` files in place, so they keep working rather than turning into 403s.
 - **The database was world-readable, and session tokens are stored in plaintext.**
   `/var/lib/jellyfreedom` was created `0755` and SQLite wrote `jellyfreedom.db` at `0644`, so
   **every local account on the machine** — `torrserver`, `prowlarr`, `flaresolverr`, any human

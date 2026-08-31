@@ -184,7 +184,7 @@ Two limits worth understanding before you rely on this:
 > does **not** stop a Jellyfin user who can already see that Jellyfin library from playing
 > what is in it. Configure both.
 
-> **`/play/...` and `/proxy/stream` are not gated, and cannot be.** Jellyfin clients fetch
+> **`/play/...` and `/proxy/stream` are not gated by ACCOUNT, and cannot be.** Jellyfin clients fetch
 > `.strm` URLs with no session, so there is no viewer to filter by — possession of the URL
 > is the credential (see *Streaming routes* below). A play URL for an item in a hidden
 > library still plays. What keeps it out of a restricted account's hands is Jellyfin's own
@@ -207,17 +207,32 @@ a second copy that could drift.
 
 Two caveats you should understand:
 
-- **Enforcement is gated.** It switches on only after a startup migration has retokenised
-  every existing `.strm` (`play.token_required`). Until that has run on your install,
-  `/play/...` accepts untokenised requests, because rejecting them would break playback of
-  every item already in the library.
+- **Enforcement is gated once, then latched.** It switches on after a startup migration has
+  retokenised every existing `.strm` (`play.token_required`). Until that has run on a given
+  install, `/play/...` accepts untokenised requests, because rejecting them would break
+  playback of every item already in the library.
+
+  Once an install has enforced, it stays enforced. Before 0.7.0 that decision was re-made
+  from scratch on every boot and the persisted marker was written but never read — so a
+  single `.strm` that could not be re-signed (a library mount not up yet, a permission
+  change) turned the whole capability system **off** for that process, on a machine that had
+  been enforcing the day before. It now fails the other way: such a file does not play, and
+  the control stays on.
 - **A capability URL is a bearer credential.** It does not expire and is not bound to a
   user. Anyone who obtains a `.strm` file or a play URL can stream that item, and
   `/play/...` will resolve and start a torrent on demand.
 
 `GET /proxy/stream` is the legacy hash-pinned path kept for `.strm` files written before
-Resolve-at-Play. It validates the infohash and index but carries **no capability token** —
-anyone who knows an infohash on your box can stream it.
+Resolve-at-Play. It now carries a capability token over `hash:<infohash>:<index>`, signed with
+the same key as `/play`, and enforced under the same switch.
+
+It did not, until 0.7.0. Anyone who could reach the port and knew an infohash learned
+200-versus-404 whether that torrent was in this library, and could then stream it — an
+unauthenticated existence oracle over every title, including those in a library the caller had
+been denied. Infohashes were not hard to come by either: `Item.Redacted()` strips the magnet
+and the path but leaves `info_hash`, so `/api/library` published them. The startup sweep signs
+surviving legacy `.strm` files in place, so they keep working; a token minted for a hash cannot
+validate an identity-based `/play` request, or the reverse.
 
 ### The Jellyfin webhook
 

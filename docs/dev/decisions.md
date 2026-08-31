@@ -243,7 +243,9 @@ authenticated with a shared secret and fails closed.
 **Why:** Jellyfin fetches a `.strm` URL with no session cookie, so requiring a login would break
 every client. But an open `/play` used to accept any identity, and `/proxy/stream` accepted any
 attacker-supplied info hash and would add that torrent — an unauthenticated stranger could make
-the box download arbitrary content over the owner's VPN. Possession of a valid `.strm` is now
+the box download arbitrary content over the owner's VPN. `/proxy/stream` kept that gap until
+0.7.0, where it became an existence oracle over the library as well; it now carries a token over
+`hash:<infohash>:<index>` in its own key space. Possession of a valid `.strm` is now
 the credential. Enforcement switches on only after a startup pass has rewritten every existing
 `.strm`, so it cannot break a pre-existing library.
 
