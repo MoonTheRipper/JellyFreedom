@@ -9,6 +9,27 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Added
+- **Two release channels.** **Stable** is the versions that have been explicitly promoted —
+  unchanged, and still what you get by default. **Nightly** is whatever is on `main`, built
+  and published on every merge that touches code.
+
+  ```bash
+  curl -fsSL .../get.sh | sudo bash -s -- --channel nightly   # install nightly
+  sudo jellyfreedom channel nightly                           # switch an install
+  sudo jellyfreedom channel                                   # what am I on?
+  ```
+
+  The separation rests on GitHub's own rule rather than ours: a prerelease is never "the
+  latest release", nightlies are prereleases, and the stable channel resolves through
+  `releases/latest`. So no number of nightlies can move a stable install onto one.
+
+  The channel lives in `/opt/jellyfreedom/CHANNEL` and survives updates — an upgrade that
+  says nothing keeps the channel it is on, rather than resetting a nightly box to stable
+  behind the user's back. Nightly tags are immutable `nightly-<date>-<sha>`; the workflow
+  prunes to the ten most recent rather than moving a pointer, because moving a tag
+  invalidates the provenance attestation and checksums of whatever it pointed at.
+
 ## [0.6.3] - 2026-08-30
 
 ### Fixed

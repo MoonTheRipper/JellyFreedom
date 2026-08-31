@@ -1,0 +1,224 @@
+name: Nightly
+
+# Nightly builds: what is on main right now, published as a PRERELEASE.
+#
+# The two channels differ in exactly one property, and it is GitHub's own: a prerelease is
+# never "the latest release". release/get.sh and the jellyfreedom CLI resolve stable through
+# releases/latest/download/..., which excludes prereleases — so however many nightlies are
+# published, a stable install cannot be moved onto one by accident. Stable remains the set of
+# versions someone chose to promote by tagging v*.
+#
+# Tags here are immutable: nightly-<date>-<sha>, never moved. Moving a tag invalidates the
+# provenance attestation and the published checksums of whatever it pointed at before, which
+# is why docs/RELEASING.md forbids it for releases; a moving `nightly` pointer would have the
+# same defect nightly after nightly. Old ones are pruned instead.
+
+on:
+  push:
+    branches: [main]
+    # A docs-only merge produces an identical binary. Publishing a nightly for it spends the
+    # reader's attention on nothing.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+  workflow_dispatch:
+
+# One nightly at a time. A burst of merges should publish the newest, not race to see which
+# finishes last.
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.goarch }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: v
+        run: |
+          # <released version>+nightly.<utc date>.<sha> — semver build metadata, so it reads
+          # as "0.6.3 plus what has landed since" rather than pretending to be a version
+          # nobody released. The updater compares versions for EQUALITY only, so this never
+          # has to sort correctly against a stable tag.
+          base="$(tr -d '[:space:]' < VERSION)"
+          sha="$(git rev-parse --short=7 HEAD)"
+          day="$(date -u +%Y%m%d)"
+          echo "version=${base}+nightly.${day}.${sha}" >> "$GITHUB_OUTPUT"
+          echo "tag=nightly-${day}-${sha}"             >> "$GITHUB_OUTPUT"
+
+      - name: Build bundle
+        env:
+          JF_VERSION: ${{ steps.v.outputs.version }}
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          rm -rf dist
+          ./release/build.sh "$JF_VERSION"
+          shopt -s nullglob
+          tarballs=(dist/*.tar.gz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one tarball under dist/, got ${#tarballs[@]}"
+            exit 1
+          fi
+          mkdir -p out
+          mv "${tarballs[0]}" "out/jellyfreedom-${JF_VERSION}-linux-${GOARCH}.tar.gz"
+          ls -la out
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: nightly-bundle-${{ matrix.goarch }}
+          path: out/*.tar.gz
+          if-no-files-found: error
+          retention-days: 5
+
+  publish:
+    name: Publish nightly
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Resolve version
+        id: v
+        run: |
+          base="$(tr -d '[:space:]' < VERSION)"
+          sha="$(git rev-parse --short=7 HEAD)"
+          day="$(date -u +%Y%m%d)"
+          echo "version=${base}+nightly.${day}.${sha}" >> "$GITHUB_OUTPUT"
+          echo "tag=nightly-${day}-${sha}"             >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          path: dl
+          pattern: nightly-bundle-*
+          merge-multiple: true
+
+      - name: Assemble assets
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          mkdir -p assets && cp dl/*.tar.gz assets/ && cd assets
+          for a in amd64 arm64; do
+            versioned="jellyfreedom-${VERSION}-linux-${a}.tar.gz"
+            [ -f "$versioned" ] || { echo "::error::missing $versioned"; exit 1; }
+            # The same stable, version-free names the stable channel publishes: get.sh and
+            # the CLI ask for jellyfreedom-linux-<arch>.tar.gz relative to a release, and
+            # only the base URL differs between channels.
+            cp "$versioned" "jellyfreedom-linux-${a}.tar.gz"
+          done
+          cp ../release/get.sh get.sh
+          # BARE filenames — get.sh matches with `awk '$2 == a || $2 == "*"a'`, so a "./"
+          # prefix would make every install fail closed.
+          sha256sum \
+            "jellyfreedom-${VERSION}-linux-amd64.tar.gz" \
+            "jellyfreedom-${VERSION}-linux-arm64.tar.gz" \
+            jellyfreedom-linux-amd64.tar.gz \
+            jellyfreedom-linux-arm64.tar.gz \
+            get.sh > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Verify SHA256SUMS resolves the way get.sh resolves it
+        run: |
+          cd assets
+          sha256sum -c SHA256SUMS
+          for asset in jellyfreedom-linux-amd64.tar.gz jellyfreedom-linux-arm64.tar.gz; do
+            expected="$(awk -v a="$asset" '$2 == a || $2 == "*"a {print $1}' SHA256SUMS | head -1)"
+            [ -n "$expected" ] || { echo "::error::SHA256SUMS has no entry matching '$asset'"; exit 1; }
+            [ "$expected" = "$(sha256sum "$asset" | cut -d' ' -f1)" ] \
+              || { echo "::error::$asset digest mismatch"; exit 1; }
+          done
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: assets/jellyfreedom-*.tar.gz
+
+      - name: Notes
+        id: notes
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          {
+            echo "Built from \`main\` at [\`$(git rev-parse --short=7 HEAD)\`](https://github.com/${GITHUB_REPOSITORY}/commit/$(git rev-parse HEAD))."
+            echo
+            echo "**This is a nightly.** It is whatever is on \`main\` right now: newer than the"
+            echo "latest stable release, less proven, and carrying no promise that the next one"
+            echo "upgrades cleanly. It is a prerelease, so it will never be served to anyone on"
+            echo "the stable channel."
+            echo
+            echo '```bash'
+            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/get.sh | sudo bash -s -- --channel nightly"
+            echo '```'
+            echo
+            echo "Already installed? \`sudo jellyfreedom channel nightly && sudo jellyfreedom --update\`"
+            echo
+            echo "Back to stable: \`sudo jellyfreedom channel stable\` — note that a nightly can be"
+            echo "newer than stable, in which case the next update will not move you back until"
+            echo "stable catches up."
+            echo
+            echo "### Recent changes"
+            git log --oneline -15 --no-merges >> /dev/null 2>&1 && git log --pretty='- %s' -15 --no-merges
+          } > /tmp/notes.md
+          cat /tmp/notes.md
+
+      - name: Publish
+        uses: softprops/action-gh-release@v3.0.2
+        with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          name: Nightly ${{ steps.v.outputs.version }}
+          body_path: /tmp/notes.md
+          draft: false
+          # The whole safety property of this workflow. A prerelease is excluded from
+          # releases/latest, which is how the stable channel resolves.
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: |
+            assets/jellyfreedom-*.tar.gz
+            assets/SHA256SUMS
+            assets/get.sh
+
+      - name: Prune old nightlies
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: "10"
+        run: |
+          # Immutable tags accumulate. Keep the newest few and delete the rest, release and
+          # tag together — a tag left behind with no release is a download URL that 404s.
+          # Only ever touches tags matching nightly-*; v* releases are not listed here.
+          mapfile -t old < <(
+            gh release list --limit 100 --json tagName,isPrerelease,createdAt \
+              -q '[.[] | select(.isPrerelease and (.tagName | startswith("nightly-")))]
+                  | sort_by(.createdAt) | reverse | .['"$KEEP"':] | .[].tagName'
+          )
+          if [ "${#old[@]}" -eq 0 ]; then echo "nothing to prune"; exit 0; fi
+          for tag in "${old[@]}"; do
+            case "$tag" in
+              nightly-*) ;;
+              *) echo "refusing to delete '$tag' — not a nightly tag"; exit 1 ;;
+            esac
+            echo "pruning $tag"
+            gh release delete "$tag" --cleanup-tag --yes || echo "could not delete $tag"
+          done

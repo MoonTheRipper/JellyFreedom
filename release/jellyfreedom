@@ -6,8 +6,14 @@
 # architecture and re-runs its installer, which is idempotent and preserves your config,
 # database and uploaded VPN configs.
 #
-#   jellyfreedom --update     download the latest release and update this instance
+# There are two channels. STABLE is the set of releases that have been explicitly promoted,
+# and is what GitHub calls the latest release. NIGHTLY is built from main on every merge and
+# published as a prerelease: newer, less proven, and carrying no promise that the next one
+# will upgrade cleanly. An install stays on the channel it was installed with.
+#
+#   jellyfreedom --update     download the latest release on this channel and update
 #   jellyfreedom --version    show the installed version
+#   jellyfreedom channel      show the release channel; `channel nightly` switches to it
 #   jellyfreedom doctor       diagnose the whole stack and say how to fix what is broken
 #   jellyfreedom repair       re-run the installer over this instance (safe, keeps config)
 #   jellyfreedom uninstall    remove JellyFreedom (keeps your data + config)
@@ -21,7 +27,38 @@ set -euo pipefail
 APP_DIR="${JELLYFREEDOM_APP_DIR:-/opt/jellyfreedom}"
 VPN_DIR="${JELLYFREEDOM_VPN_DIR:-/opt/vpntorrent}"
 SERVICE="jellyfreedom"
-RELEASE_BASE="${JELLYFREEDOM_BASE:-https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download}"
+REPO="MoonTheRipper/JellyFreedom"
+
+# Which channel this install follows. Written by the installer; stable when absent, because
+# an install that never asked for nightlies must not start receiving them.
+read_channel() {
+  local c=""
+  [ -f "$APP_DIR/CHANNEL" ] && c="$(tr -d '[:space:]' < "$APP_DIR/CHANNEL" 2>/dev/null || true)"
+  case "$c" in nightly) echo nightly ;; *) echo stable ;; esac
+}
+CHANNEL="${JELLYFREEDOM_CHANNEL:-$(read_channel)}"
+
+# Stable is GitHub's "latest release", which excludes prereleases — so a nightly can never
+# move a stable install. Nightlies carry immutable nightly-<date>-<sha> tags, so the newest
+# has to be looked up rather than named.
+resolve_nightly_base() {
+  local tag
+  tag="$(curl -4 -fsSL -H 'Accept: application/vnd.github+json' \
+           "https://api.github.com/repos/$REPO/releases?per_page=20" 2>/dev/null \
+         | tr ',' '\n' | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' \
+         | grep '^nightly-' | head -1)" || true
+  [ -n "$tag" ] || return 1
+  printf 'https://github.com/%s/releases/download/%s' "$REPO" "$tag"
+}
+
+if [ -n "${JELLYFREEDOM_BASE:-}" ]; then
+  RELEASE_BASE="$JELLYFREEDOM_BASE"
+elif [ "$CHANNEL" = nightly ]; then
+  RELEASE_BASE="$(resolve_nightly_base || true)"
+  [ -n "$RELEASE_BASE" ] || { echo "no nightly release published yet" >&2; exit 1; }
+else
+  RELEASE_BASE="https://github.com/$REPO/releases/latest/download"
+fi
 # Match the running machine, exactly as get.sh does. Pulling the amd64 bundle onto an arm64
 # box would replace a working binary with one that cannot exec.
 case "$(uname -m)" in
@@ -32,7 +69,10 @@ esac
 RELEASE_URL="${JELLYFREEDOM_URL:-$RELEASE_BASE/jellyfreedom-linux-${JF_GOARCH}.tar.gz}"
 
 usage() {
-  sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'
+  # Print the leading comment block, stopping at the first line that is not a comment.
+  # A fixed line range silently truncates the help the moment a line is added above it,
+  # which is exactly what happened when channels were documented here.
+  awk 'NR < 3 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 need_root() {
@@ -162,6 +202,27 @@ case "$cmd" in
     exec bash "$APP_DIR/uninstall.sh" "$@"
     ;;
 
+  channel)
+    # Reading is unprivileged; changing is not — it decides what the next update installs.
+    want="${2:-}"
+    if [ -z "$want" ]; then
+      echo "channel: $CHANNEL"
+      [ "$CHANNEL" = nightly ] && echo "  nightlies are built from main on every merge; no upgrade promises are made about them"
+      exit 0
+    fi
+    case "$want" in
+      stable|nightly) ;;
+      *) echo "unknown channel '$want' (stable|nightly)" >&2; exit 1 ;;
+    esac
+    need_root "channel $want"
+    printf '%s\n' "$want" > "$APP_DIR/CHANNEL"
+    echo "channel: $want"
+    echo "this changes what the NEXT update installs; nothing has been downloaded."
+    if [ "$want" = stable ] && [ "$CHANNEL" = nightly ]; then
+      echo "note: a nightly can be NEWER than stable, in which case --update will not move you"
+      echo "      back until stable catches up."
+    fi
+    ;;
   status)  systemctl status "$SERVICE" --no-pager ;;
   restart) need_root restart; systemctl restart "$SERVICE"; echo "restarted." ;;
   logs)    journalctl -u "$SERVICE" -f ;;

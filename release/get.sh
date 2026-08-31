@@ -4,13 +4,51 @@
 #
 #     curl -fsSL https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download/get.sh | sudo bash
 #
+# Channels:
+#     stable   (default) the releases that have been explicitly promoted
+#     nightly  built from main on every merge — newer, less proven, no upgrade promises
+#
+#     curl -fsSL <url>/get.sh | sudo bash -s -- --channel nightly
+#
 # Overrides (testing / forks):
 #     JELLYFREEDOM_URL=...        exact bundle URL; skips arch selection
-#     JELLYFREEDOM_BASE=...       release base URL (default: this repo's latest release)
+#     JELLYFREEDOM_BASE=...       release base URL (default: resolved from the channel)
+#     JELLYFREEDOM_CHANNEL=...    stable | nightly
 #     JELLYFREEDOM_SKIP_VERIFY=1  proceed even if checksums are unavailable
 set -euo pipefail
 
-BASE="${JELLYFREEDOM_BASE:-https://github.com/MoonTheRipper/JellyFreedom/releases/latest/download}"
+REPO="MoonTheRipper/JellyFreedom"
+CHANNEL="${JELLYFREEDOM_CHANNEL:-stable}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --channel) CHANNEL="${2:-}"; shift 2 ;;
+    --channel=*) CHANNEL="${1#*=}"; shift ;;
+    *) shift ;;
+  esac
+done
+case "$CHANNEL" in stable|nightly) ;; *) printf 'error: unknown channel %s (stable|nightly)\n' "$CHANNEL" >&2; exit 1 ;; esac
+
+# The stable channel is GitHub's own "latest release", which by definition EXCLUDES
+# prereleases — so publishing a nightly can never move a stable install. Nightlies are
+# prereleases with immutable `nightly-<date>-<sha>` tags, so the newest one has to be
+# looked up rather than named.
+resolve_nightly_base() {
+  local api="https://api.github.com/repos/$REPO/releases?per_page=20"
+  local tag
+  tag="$(curl -4 -fsSL -H 'Accept: application/vnd.github+json' "$api" 2>/dev/null \
+         | tr ',' '\n' | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' \
+         | grep '^nightly-' | head -1)" || true
+  [ -n "$tag" ] || return 1
+  printf 'https://github.com/%s/releases/download/%s' "$REPO" "$tag"
+}
+
+if [ -n "${JELLYFREEDOM_BASE:-}" ]; then
+  BASE="$JELLYFREEDOM_BASE"
+elif [ "$CHANNEL" = nightly ]; then
+  BASE="$(resolve_nightly_base)" || { printf 'error: no nightly release published yet\n' >&2; exit 1; }
+else
+  BASE="https://github.com/$REPO/releases/latest/download"
+fi
 
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -70,4 +108,4 @@ dir="$(find "$tmp" -maxdepth 1 -type d -name 'jellyfreedom-*' | head -1)"
 # for persisting uninstall.sh and the control CLI into /opt — otherwise a one-liner user is
 # left with no way to remove what they just installed.
 say "running installer from $(basename "$dir")"
-bash "$dir/install.sh"
+JELLYFREEDOM_CHANNEL="$CHANNEL" bash "$dir/install.sh"

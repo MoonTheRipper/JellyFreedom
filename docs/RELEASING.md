@@ -43,6 +43,50 @@ Seven releases in two working days is not a cadence, it is a commit log with ver
 numbers attached. If two tags in one day both fix the previous tag, the problem is not the
 bugs — it is that the first tag went out unverified.
 
+### Two channels: stable and nightly
+
+**Stable** is the set of versions someone chose to promote, by tagging `v*` and running the
+checklist below. It is what GitHub calls the latest release.
+
+**Nightly** is whatever is on `main`, built and published by `.github/workflows/nightly.yml`
+on every merge that touches code. Newer, less proven, and carrying no promise that the next
+one upgrades cleanly.
+
+The separation rests on one property, and it is GitHub's own rather than ours: **a
+prerelease is never "the latest release"**. Nightlies are published as prereleases, and both
+`release/get.sh` and the `jellyfreedom` CLI resolve stable through
+`releases/latest/download/…`, which excludes them. So however many nightlies exist, a stable
+install cannot be moved onto one by accident. That is the whole design; everything else is
+plumbing.
+
+```bash
+# install the nightly channel
+curl -fsSL .../get.sh | sudo bash -s -- --channel nightly
+
+# switch an existing install
+sudo jellyfreedom channel nightly && sudo jellyfreedom --update
+sudo jellyfreedom channel            # what am I on?
+```
+
+The channel is recorded in `/opt/jellyfreedom/CHANNEL` and **preserved across updates**: an
+upgrade that says nothing keeps the channel it is already on, rather than resetting a
+nightly box to stable behind the user's back. A fresh install with nothing specified is
+stable, because someone who did not ask for nightlies should not receive them.
+
+Nightly tags are `nightly-<date>-<sha>` and are **immutable** — never moved. A single moving
+`nightly` pointer would be less clutter, but moving a tag invalidates the provenance
+attestation and published checksums of whatever it pointed at before, which is exactly why
+[Hotfixes](#hotfixes) forbids it for releases. The workflow prunes to the most recent ten
+instead, deleting release and tag together so no download URL is left 404ing.
+
+Note that switching **back** to stable does not downgrade you: a nightly is usually newer
+than the latest stable, and `--update` compares versions for equality, so nothing happens
+until stable catches up.
+
+Nightlies are exempt from the release-cadence rules above. That is their purpose: merges can
+land as often as they like without spending anyone's attention, because nobody is notified
+and nobody is asked to update.
+
 ### There is no auto-update, deliberately
 
 `jellyfreedom --update` is always something a person runs. The privileged `jf-update` helper

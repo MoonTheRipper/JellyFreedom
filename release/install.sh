@@ -392,6 +392,21 @@ if [ -f "$SRC/config.sample.yaml" ]; then xinstall -m 644 "$SRC/config.sample.ya
 ok "installed"
 mark orchestrator ok
 
+# Which channel this install follows, so `jellyfreedom --update` keeps to it instead of
+# silently moving a nightly box onto stable (or the reverse) at the next update. An upgrade
+# with nothing specified keeps whatever is already recorded; a fresh install defaults to
+# stable, because a user who did not ask for nightlies should not receive them.
+channel="${JELLYFREEDOM_CHANNEL:-}"
+if [ -z "$channel" ] && [ -f "$APP_DIR/CHANNEL" ]; then
+  channel="$(tr -d '[:space:]' < "$APP_DIR/CHANNEL" 2>/dev/null || true)"
+fi
+case "${channel:-stable}" in
+  nightly) channel=nightly ;;
+  *)       channel=stable ;;
+esac
+printf '%s\n' "$channel" > "$APP_DIR/CHANNEL"
+ok "channel: $channel"
+
 say "Config"
 if [ -f "$CONF_DIR/config.yaml" ]; then
   ok "existing config left untouched"
