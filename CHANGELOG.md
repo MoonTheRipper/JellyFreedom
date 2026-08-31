@@ -10,6 +10,20 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 ## [Unreleased]
 
 ### Security
+- **A Content-Security-Policy, and the other browser headers, on every response.** The UI builds
+  HTML with template strings and `innerHTML` throughout; the escaping discipline is currently
+  intact but enforced by convention alone. A CSP does not fix a missed escape — it changes what
+  one costs, from "full admin compromise, and from there the root-owned updater" to "nothing
+  happens". `script-src 'self'` carries no `'unsafe-inline'`, so injected script cannot run, and
+  `connect-src 'self'` means it could not exfiltrate anywhere if it did. Verified in a browser:
+  all 11 dashboard modules and the media UI load with **zero** policy violations.
+- **Cross-origin state-changing requests are refused.** CSRF defence rested entirely on
+  `SameSite=Lax`, and SameSite is *site*-scoped: Jellyfin (`:8096`), Prowlarr (`:9696`) and
+  TorrServer (`:8090`) are the **same site** as the dashboard, so an XSS or open redirect in any
+  of that third-party code could drive the whole admin API — upload and activate a WireGuard
+  config, repoint Prowlarr at an attacker's server, create an admin, trigger the updater. Requests
+  are now checked against `Sec-Fetch-Site`/`Origin`; machine callers that send neither (the
+  Jellyfin webhook, the provider ingest API) are unaffected and keep their shared-secret auth.
 - **Playback authorisation failed open on restart.** Whether `/play` required a capability
   token was decided from scratch on every boot, and the persisted marker (`play.token_required`)
   was written but never read. One `.strm` that could not be read or re-signed — a library mount

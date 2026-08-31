@@ -2683,7 +2683,7 @@ func main() {
 
 	// All background work is now managed by the task registry above.
 
-	srv := newServer(cfg.Server.Listen, mux)
+	srv := newServer(cfg.Server.Listen, securityHeaders(crossOriginGuard(mux)))
 	slog.Info("starting orchestrator", "listen", cfg.Server.Listen, "version", version)
 	if err := runServer(ctx, srv, 20*time.Second); err != nil {
 		slog.Error("server error", "err", err)
