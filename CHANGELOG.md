@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-01
+
 ### Added
 - **`sudo jellyfreedom rotate-play-key`.** A play URL is a permanent bearer credential: it
   never expires, is bound to no user, and deleting the library item does not revoke it, because
@@ -756,7 +758,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.2...v0.6.3
