@@ -9,6 +9,25 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **A dead link no longer re-runs the extractor on every play request.** The torrent path has
+  had a resolve cooldown since a measured incident — 7,813 ffprobe re-requests of one
+  unplayable title in five minutes — but the web branch returns before that check, and only
+  *successes* were cached. So a broken link spent a 90-second budget and unpacked ~76MB of
+  yt-dlp bundle on every single request. Failures now enter a 60-second cooldown; a client that
+  hung up mid-resolve does not count, and "check again" skips it.
+- **Extractions are bounded server-side.** `preview`, `add`, `status` and `play` can each start
+  a yt-dlp process, and nothing limited how many ran at once — the dashboard's `MAX_CONCURRENT`
+  is browser-side, which `curl` in a loop with an admin cookie ignored entirely. All four paths
+  now share a budget of three, because every run reaches the internet through one SOCKS proxy in
+  one namespace: the tunnel is the bottleneck long before the CPU is.
+- **Strings from the extractor are bounded.** The add handler checked the length and control
+  characters of the title the *admin* typed, but when they supplied one it was the extractor's
+  title that reached the database — and the uploader and extractor names were never checked at
+  all. All three come from a third-party page, bounded only by yt-dlp's 8MiB stdout cap. Not
+  XSS, since the dashboard escapes them; unbounded storage and control bytes in a JSON response,
+  under a guard that read as though it covered them.
+
 ## [0.7.1] - 2026-08-31
 
 ### Security
