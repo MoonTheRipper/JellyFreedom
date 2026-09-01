@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-09-01
+
 ### Fixed
 - **Every page could return 403 while every file was present and correct.** The installer
   inherited the umask of whatever shell invoked it, so running `--update` from a shell with a
@@ -778,7 +780,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.6.3...v0.7.0
