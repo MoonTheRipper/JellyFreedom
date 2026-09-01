@@ -71,6 +71,18 @@ type webPlayer struct {
 	// the player also opens it does not run two extractions of the same page.
 	resolves *resolveGroup
 
+	// cooldown remembers links that just failed. The torrent path has had one since a
+	// measured incident — 7,813 ffprobe re-requests of a single unplayable title in five
+	// minutes — but the web branch returns before that check, so a dead link re-ran yt-dlp
+	// on EVERY play request: a 90-second budget and ~76MB of bundle unpacked each time. Only
+	// successes were cached; failures were cached nowhere.
+	cooldown *resolveCooldown
+
+	// extracting bounds how many yt-dlp processes exist at once, across every path that can
+	// start one — play, preview, add and status. MAX_CONCURRENT in the dashboard is a
+	// browser-side courtesy; curl in a loop with an admin cookie ignored it entirely.
+	extracting chan struct{}
+
 	// previewThumbs holds thumbnail URLs for links that have been previewed but not added,
 	// keyed by the id the row WOULD have. Short-lived: it exists only so the preview can
 	// show an image without handing the browser the source's URL.
@@ -131,9 +143,27 @@ func newWebPlayer(db *store.Store, cfg *config.Config) *webPlayer {
 			},
 		},
 		resolves:      newResolveGroup(),
+		cooldown:      newResolveCooldown(60 * time.Second),
+		extracting:    make(chan struct{}, 3),
 		previewThumbs: map[string]previewThumb{},
 		cached:        map[string]cachedStream{},
 	}
+}
+
+// inspect runs an extraction against the concurrency budget.
+//
+// Every yt-dlp run is a process making its own requests through one SOCKS proxy in one
+// namespace, so the tunnel is the bottleneck long before the CPU is. Waiting here is better
+// than starting a fourth process that will only be slower, and it means an authenticated
+// caller looping preview cannot fork extractions without limit.
+func (p *webPlayer) inspect(ctx context.Context, pageURL string) (*websource.Info, error) {
+	select {
+	case p.extracting <- struct{}{}:
+		defer func() { <-p.extracting }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return p.client.Inspect(ctx, pageURL)
 }
 
 // thumbnailPath is the ONLY thumbnail address that ever reaches a browser.
@@ -195,7 +225,15 @@ func (p *webPlayer) resolve(ctx context.Context, ws *store.WebSource, force bool
 		}
 	}
 
-	info, err := p.client.Inspect(ctx, ws.PageURL)
+	// A link that just failed is not retried on every request. force skips this, so the
+	// operator pressing "check again" is never told to wait.
+	if !force {
+		if left, blocked := p.cooldown.blocked("web:" + ws.ID); blocked {
+			return websource.Stream{}, fmt.Errorf("this link failed recently; try again in %s", left)
+		}
+	}
+
+	info, err := p.inspect(ctx, ws.PageURL)
 	if err != nil {
 		// Record WHY on the row. An uploader deleting the video, a site changing its
 		// player and a broken extractor are indistinguishable from Jellyfin, and this is
@@ -203,8 +241,14 @@ func (p *webPlayer) resolve(ctx context.Context, ws *store.WebSource, force bool
 		if merr := p.db.MarkWebSourceFailed(ws.ID, err.Error()); merr != nil {
 			slog.Error("web: could not record the failure", "id", ws.ID, "err", merr)
 		}
+		// A client that hung up mid-resolve is not evidence the link is dead, and must not
+		// put a working entry into cooldown.
+		if !errors.Is(err, context.Canceled) {
+			p.cooldown.fail("web:" + ws.ID)
+		}
 		return websource.Stream{}, err
 	}
+	p.cooldown.succeed("web:" + ws.ID)
 	if merr := p.db.MarkWebSourceOK(ws.ID); merr != nil {
 		slog.Error("web: could not record the success", "id", ws.ID, "err", merr)
 	}
@@ -400,6 +444,31 @@ func (p *webPlayer) fetch(r *http.Request, stream websource.Stream) (*http.Respo
 // inside an os call rather than from here.
 const maxWebSourceTitleLen = 200
 
+// clampExtracted bounds a string the EXTRACTOR produced, as opposed to one the admin typed.
+//
+// The length and control-character check at the add handler runs on the title the admin
+// supplied — but when they supply their own, info.Title is what gets written to the row, and
+// info.Uploader and info.Extractor are never checked at all. All three come from a
+// third-party page and are bounded only by yt-dlp's 8MiB stdout cap. The dashboard escapes
+// them so this was never XSS; it is unbounded storage and control bytes in a JSON response,
+// under a guard that reads as though it covers them.
+func clampExtracted(v string) string {
+	v = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, v)
+	v = strings.TrimSpace(v)
+	if r := []rune(v); len(r) > maxWebSourceTitleLen {
+		v = string(r[:maxWebSourceTitleLen])
+	}
+	return v
+}
+
 type previewThumb struct {
 	url string
 	at  time.Time
@@ -592,7 +661,7 @@ func registerWebSourceAPI(mux *http.ServeMux, p *webPlayer, db *store.Store, cfg
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 		defer cancel()
-		info, err := p.client.Inspect(ctx, pageURL)
+		info, err := p.inspect(ctx, pageURL)
 		if err != nil {
 			slog.Warn("web: preview failed", "err", err)
 			jsonErr(w, err.Error(), http.StatusBadGateway)
@@ -657,7 +726,7 @@ func registerWebSourceAPI(mux *http.ServeMux, p *webPlayer, db *store.Store, cfg
 		// error message rather than a library entry that never plays.
 		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 		defer cancel()
-		info, err := p.client.Inspect(ctx, pageURL)
+		info, err := p.inspect(ctx, pageURL)
 		if err != nil {
 			slog.Warn("web: add failed during extraction", "err", err)
 			jsonErr(w, err.Error(), http.StatusBadGateway)
@@ -707,9 +776,12 @@ func registerWebSourceAPI(mux *http.ServeMux, p *webPlayer, db *store.Store, cfg
 		_, username, _ := viewerOf(r)
 		now := time.Now()
 		ws := &store.WebSource{
-			ID: id, PageURL: pageURL, Title: info.Title, Uploader: info.Uploader,
-			Extractor: info.Extractor, Duration: info.Duration, Thumbnail: info.ThumbnailURL,
-			AddedBy: username, AddedAt: now, LastOK: &now,
+			ID: id, PageURL: pageURL,
+			Title:     clampExtracted(info.Title),
+			Uploader:  clampExtracted(info.Uploader),
+			Extractor: clampExtracted(info.Extractor), Duration: info.Duration,
+			Thumbnail: info.ThumbnailURL,
+			AddedBy:   username, AddedAt: now, LastOK: &now,
 		}
 		if err := db.UpsertWebSource(ws); err != nil {
 			if existingItem == nil || existingItem.StrmPath != strmPath {
