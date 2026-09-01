@@ -119,7 +119,18 @@ if section install "Install integrity"; then
     fi
   else fail "no orchestrator at $APP_DIR/bin/orchestrator" "sudo jellyfreedom repair"; fi
 
-  [ -d "$APP_DIR/web" ] && pass "web assets present" || fail "web assets missing at $APP_DIR/web" "sudo jellyfreedom repair"
+  # Present is not the same as USABLE. The service account is not root, and an asset tree it
+  # cannot traverse makes every page 403 while this check — which only asked whether the
+  # directory existed — reported everything as fine. Ask the question the service asks.
+  if [ ! -d "$APP_DIR/web" ]; then
+    fail "web assets missing at $APP_DIR/web" "sudo jellyfreedom --update"
+  elif [ -n "$SVC_USER" ] && command -v sudo >/dev/null 2>&1 && [ "$(id -u)" = "0" ] \
+       && ! sudo -n -u "$SVC_USER" test -r "$APP_DIR/web/public/index.html" 2>/dev/null; then
+    fail "web assets are not readable by $SVC_USER — every page will return 403" \
+         "sudo chmod -R a+rX $APP_DIR/web"
+  else
+    pass "web assets present and readable by the service"
+  fi
   [ -f "$APP_DIR/VERSION" ] && info "installed version $(cat "$APP_DIR/VERSION" 2>/dev/null)" \
     || warn "no VERSION file" "sudo jellyfreedom repair"
   [ -x "$APP_DIR/uninstall.sh" ] && pass "uninstaller is reachable" \

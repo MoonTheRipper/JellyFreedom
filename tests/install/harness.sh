@@ -166,6 +166,11 @@ run_installer_in_place() {
   EXIT_CODE=$?
 }
 
+# NOTE ON PIPELINES: never end one in `grep -q` here. This file runs under `set -o pipefail`,
+# and `grep -q` exits the instant it matches, which SIGPIPEs the `sed` feeding it — so the
+# pipeline reports 141 or 0 depending on scheduling, and the assertion fails at random. Use
+# `grep -c ... >/dev/null`, which drains its input.
+
 # ------------------------------------------------------------------ assertions
 _pass() { printf '  %s✓%s %s\n' "$c_grn" "$c_off" "$1"; }
 _fail() {
@@ -187,7 +192,7 @@ assert_exec()      { _check; [ -x "$1" ] && _pass "executable: ${1#$DEST}" || _f
 assert_contains()  { _check; grep -qF -- "$2" "$1" 2>/dev/null && _pass "${1#$DEST} contains: $2" || _fail "${1#$DEST} contains: $2" "not found"; }
 # Matches only ACTIVE lines, ignoring comments — so a file may explain WHY a directive is
 # forbidden without the explanation itself tripping the check.
-assert_not_active(){ _check; sed 's/[[:space:]]*#.*//' "$1" 2>/dev/null | grep -qF -- "$2" && _fail "${1#$DEST} has no active: $2" "found it" || _pass "${1#$DEST} has no active: $2"; }
+assert_not_active(){ _check; sed 's/[[:space:]]*#.*//' "$1" 2>/dev/null | grep -cF -- "$2" >/dev/null && _fail "${1#$DEST} has no active: $2" "found it" || _pass "${1#$DEST} has no active: $2"; }
 assert_not_contains(){ _check; grep -qF -- "$2" "$1" 2>/dev/null && _fail "${1#$DEST} lacks: $2" "found it" || _pass "${1#$DEST} lacks: $2"; }
 assert_mode()      { _check; local m; m=$(stat -c '%a' "$1" 2>/dev/null); [ "$m" = "$2" ] && _pass "mode $2: ${1#$DEST}" || _fail "mode $2: ${1#$DEST}" "got ${m:-<missing>}"; }
 assert_output()    { _check; grep -qiF -- "$1" "$OUTPUT" && _pass "output mentions: $1" || _fail "output mentions: $1" "not printed"; }

@@ -9,6 +9,26 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **Every page could return 403 while every file was present and correct.** The installer
+  inherited the umask of whatever shell invoked it, so running `--update` from a shell with a
+  restrictive umask (`077` is common in hardened profiles) produced a `0700 root` asset tree
+  under `/opt/jellyfreedom/web`. The service does not run as root, so it could not read its own
+  web assets, and the media UI answered 403 for everything.
+
+  The installer now pins `umask 022` and sets the asset tree mode explicitly rather than
+  inheriting it. Anything that is meant to be private — the data directory, the VPN configs,
+  the extractor scratch — is given an explicit `-m 700`, so nothing that was deliberately tight
+  is loosened.
+- **`doctor` said everything checked out while the site was down.** Its web-assets check asked
+  only whether the directory existed, not whether the service account could read it. It now
+  asks the question the service asks, and names the fix.
+- **A flaky assertion in the installer harness.** Pipelines ending in `grep -q` exit as soon as
+  they match, which SIGPIPEs the `sed` feeding them; under `set -o pipefail` the pipeline then
+  reports 141 or 0 depending on scheduling, so the check failed at random. Replaced with
+  `grep -c … >/dev/null`, which drains its input, and the reason is recorded in the harness so
+  it is not reintroduced.
+
 ## [0.7.2] - 2026-09-01
 
 ### Added

@@ -104,7 +104,7 @@ _check; grep -qE 'jf-update[[:space:]]*\*' "$DEST/etc/sudoers.d/jellyfreedom" \
 _check; grep -q 'systemd-run' "$REPO_ROOT/release/jf-update" \
   && _pass "updater runs detached from our cgroup" \
   || _fail "updater runs detached" "systemd kills the cgroup on restart, so it would die mid-update"
-_check; sed 's/[[:space:]]*#.*//' "$REPO_ROOT/release/jellyfreedom" | grep -q 'CHECKSUM MISMATCH' \
+_check; sed 's/[[:space:]]*#.*//' "$REPO_ROOT/release/jellyfreedom" | grep -c 'CHECKSUM MISMATCH' >/dev/null \
   && _pass "self-update verifies the download before installing" \
   || _fail "self-update verifies the download" "one click would install unverified bytes as root"
 
@@ -125,7 +125,7 @@ describe "REGRESSION: the service must not be able to rewrite its own code"
 _check; grep -qE 'xinstall -o root -g root -m 755 "\$SRC/bin/orchestrator"' "$REPO_ROOT/release/install.sh" \
   && _pass "installer places the binary root-owned" \
   || _fail "installer places the binary root-owned" "the service could overwrite its own code"
-_check; sed 's/[[:space:]]*#.*//' "$REPO_ROOT/release/install.sh" | grep -qE 'xchown -R "\$RUN_USER" "\$APP_DIR' \
+_check; sed 's/[[:space:]]*#.*//' "$REPO_ROOT/release/install.sh" | grep -cE 'xchown -R "\$RUN_USER" "\$APP_DIR' >/dev/null \
   && _fail "code is not chowned to the run user" "APP_DIR is handed back to the service account" \
   || _pass "code is not chowned to the run user"
 _check; grep -qE 'xinstall -d -o "\$SVC_USER" -g "\$SVC_USER" (-m [0-7]+ )?"\$DATA_DIR"' "$REPO_ROOT/release/install.sh" \
@@ -135,6 +135,10 @@ _check; grep -qE 'xinstall -d -o "\$SVC_USER" -g "\$SVC_USER" (-m [0-7]+ )?"\$DA
 # copied row is a logged-in admin — plus play.hmac_key and every provider API key. At the
 # 0755 `install -d` defaults to, every local account on the box could read all of it.
 assert_mode "$DEST/var/lib/jellyfreedom" 700
+# ...while the code the SERVICE must read stays readable. A restrictive umask in the
+# operator's shell once leaked into the installer and produced a 0700 root-owned asset tree:
+# every file present and correct, every page 403, and doctor reporting everything as fine.
+assert_mode "$DEST/opt/jellyfreedom/web" 755
 assert_mode "$DEST/var/lib/jellyfreedom/vpnconfigs" 700
 
 describe "REGRESSION: AppArmor allows wg-quick to read the sanitised config"
@@ -283,7 +287,7 @@ assert_contains "$FSU" "ExecStartPre="
 describe "REGRESSION: TorrServer version is resolved, not pinned to a dead tag"
 # MatriX.141.2 was hardcoded and later removed upstream, so the download 404'd and every
 # fresh install silently ended up with no streaming engine while still printing "Installed."
-_check; sed 's/[[:space:]]*#.*//' "$REPO_ROOT/release/install.sh" | grep -q 'MatriX.141.2' \
+_check; sed 's/[[:space:]]*#.*//' "$REPO_ROOT/release/install.sh" | grep -c 'MatriX.141.2' >/dev/null \
   && _fail "no dead TorrServer pin" "MatriX.141.2 is still used in code" \
   || _pass "no dead TorrServer pin"
 _check; grep -q 'releases/latest' "$REPO_ROOT/release/install.sh" \
@@ -306,7 +310,7 @@ describe "REGRESSION: Jellyfin is installed from the apt repo, not the upstream 
 # prompt), hard-requires 2GB free on BOTH /var/lib and /tmp — which a small VPS with a
 # tmpfs /tmp does not have, verified failing on a clean Ubuntu 24.04 container — rejects
 # unknown distro codenames, and can exit 0 having installed nothing.
-_check; sed 's/[[:space:]]*#.*//' "$REPO_ROOT/release/install.sh" | grep -q 'install-debuntu' \
+_check; sed 's/[[:space:]]*#.*//' "$REPO_ROOT/release/install.sh" | grep -c 'install-debuntu' >/dev/null \
   && _fail "does not pipe the upstream Jellyfin script" "still shelling out to install-debuntu.sh" \
   || _pass "does not pipe the upstream Jellyfin script"
 _check; grep -q 'sources.list.d/jellyfin.sources' "$REPO_ROOT/release/install.sh" \
