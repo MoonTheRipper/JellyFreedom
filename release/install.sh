@@ -21,6 +21,19 @@ set -uo pipefail
 # ---- testability -----------------------------------------------------------------------
 # JF_DESTDIR prefixes every path we write, so the test harness can run this whole script
 # against a fake root as an unprivileged user. Empty in a real install.
+# The caller's umask must not decide what this installs.
+#
+# Everything under $APP_DIR has to be readable by the SERVICE ACCOUNT, which is not root —
+# the orchestrator serves the web UI out of $APP_DIR/web. An operator whose shell happens to
+# have a restrictive umask (077 is common in hardened profiles, and is exactly what happened
+# once) produced a 0700 root-owned asset tree, and every page the service tried to serve
+# returned 403 while every file was present and correct.
+#
+# Anything that genuinely needs to be private is given an explicit -m below (the data
+# directory, the VPN config directory, the yt-dlp scratch), so pinning this loosens nothing
+# that was deliberately tight.
+umask 022
+
 D="${JF_DESTDIR:-}"
 # NOTE: this installer never prompts — there is no `read` anywhere in it, and the one
 # third-party script that would block on a tty (Jellyfin's) is always invoked with
@@ -366,6 +379,10 @@ if [ "$IN_PLACE" = 1 ]; then
 else
   xinstall -o root -g root -m 755 "$SRC/bin/orchestrator" "$APP_DIR/bin/orchestrator"
   rm -rf "$APP_DIR/web"; cp -r "$SRC/web" "$APP_DIR/web"; xchown -R root:root "$APP_DIR/web"
+  # Root-owned, world-READABLE: the service account must read these, and must not be able to
+  # write them. Stated explicitly rather than inherited, because a copy takes its mode from
+  # whatever umask happened to be in force.
+  chmod -R a+rX,go-w "$APP_DIR/web"
   if [ -f "$SRC/VERSION" ]; then xinstall -m 644 "$SRC/VERSION" "$APP_DIR/VERSION"; fi
   xinstall -m 755 "$SRC/vpntorrent/setup-netns.sh" "$VPN_DIR/setup-netns.sh"
   xinstall -m 755 "$SRC/vpntorrent/watchdog.sh"    "$VPN_DIR/watchdog.sh"
