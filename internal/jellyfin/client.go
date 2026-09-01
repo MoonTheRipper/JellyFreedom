@@ -272,7 +272,14 @@ func (c *Client) ListUsers() ([]JellyfinUser, error) {
 
 // AuthenticateUser validates a username+password pair against Jellyfin's auth endpoint.
 // Returns nil on success, non-nil on failure or invalid credentials.
-func (c *Client) AuthenticateUser(username, password string) error {
+// AuthenticateUser verifies a password against Jellyfin and returns the ID of the account it
+// actually authenticated.
+//
+// The ID matters, not just the yes/no. A JellyFreedom row imported from Jellyfin holds a
+// jellyfin_user_id, but authentication is by NAME — so renaming that row silently repointed
+// its credential at whoever now owns the new name in Jellyfin, inheriting the row's is_admin
+// flag and library grants. The caller compares this against the stored ID.
+func (c *Client) AuthenticateUser(username, password string) (string, error) {
 	body, _ := json.Marshal(map[string]string{
 		"Username": username,
 		"Pw":       password,
@@ -280,20 +287,31 @@ func (c *Client) AuthenticateUser(username, password string) error {
 	req, err := http.NewRequest(http.MethodPost, c.base()+"/Users/AuthenticateByName",
 		bytes.NewReader(body))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Emby-Authorization",
 		`MediaBrowser Client="JellyFreedom", Device="Orchestrator", DeviceId="jellyfreedom-orchestrator", Version="1.0"`)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("jellyfin auth: %w", err)
+		return "", fmt.Errorf("jellyfin auth: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("jellyfin auth: invalid credentials (status %d)", resp.StatusCode)
+		return "", fmt.Errorf("jellyfin auth: invalid credentials (status %d)", resp.StatusCode)
 	}
-	return nil
+	// Jellyfin answers with the account it authenticated. Decoding failure is not an auth
+	// failure — an older server might not send it — so an empty id is returned and the
+	// caller decides what to do with a row that has nothing to compare against.
+	var out struct {
+		User struct {
+			ID string `json:"Id"`
+		} `json:"User"`
+	}
+	if derr := json.NewDecoder(resp.Body).Decode(&out); derr != nil {
+		return "", nil
+	}
+	return out.User.ID, nil
 }
 
 // GetItemPath resolves the file path for a Jellyfin item by its ID.

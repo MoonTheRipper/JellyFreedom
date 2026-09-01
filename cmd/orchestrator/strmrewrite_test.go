@@ -181,3 +181,68 @@ func TestStreamTokensAndPlayTokensDoNotCross(t *testing.T) {
 		t.Error("an empty token was accepted")
 	}
 }
+
+// Rotating the play key is the ONLY revocation a capability URL has: a token never expires,
+// is bound to no user, and survives deleting the item. So the rotation has to invalidate old
+// URLs AND leave the library playable, or nobody will ever run it.
+func TestRotatingThePlayKeyResignsTheLibrary(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "rotate.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := loadPlayKey(db); err != nil {
+		t.Fatalf("loadPlayKey: %v", err)
+	}
+
+	dir := filepath.Join(root, "movies", "Rotate Me")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	strm := filepath.Join(dir, "Rotate Me.strm")
+	if err := os.WriteFile(strm, []byte("http://old/stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	it := &store.Item{
+		TMDBID: 77, MediaType: "movie", Title: "Rotate Me", StrmPath: strm,
+		LibraryName: "Movies", Status: "ready", Updated: time.Now(),
+	}
+	it.SetProviderIdentity(library.ProviderTMDB, "77")
+	if err := db.Upsert(it); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	cfg := &config.Config{}
+	cfg.Server.PublicURL = "http://box:1990"
+	migrateStrmTokens(db, cfg)
+	before, err := os.ReadFile(strm)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rotate exactly as the subcommand does, then reload as a restart would.
+	if rc := runRotatePlayKey([]string{"--db", dbPath, "--yes"}); rc != 0 {
+		t.Fatalf("rotate-play-key exited %d", rc)
+	}
+	if err := loadPlayKey(db); err != nil {
+		t.Fatalf("reload key: %v", err)
+	}
+	migrateStrmTokens(db, cfg)
+	after, err := os.ReadFile(strm)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(before) == string(after) {
+		t.Error("the token did not change, so nothing was revoked")
+	}
+	// Same identity, still playable — only the signature moved.
+	if !strings.Contains(string(after), "/play/movie/77?t=") {
+		t.Errorf("the .strm no longer points at the item after rotation: %s", after)
+	}
+	if !strings.Contains(string(before), "/play/movie/77?t=") {
+		t.Errorf("baseline .strm was wrong: %s", before)
+	}
+}

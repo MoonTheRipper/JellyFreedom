@@ -63,8 +63,10 @@ func main() {
 		switch os.Args[1] {
 		case "netns-proxy":
 			os.Exit(runNetnsProxy(os.Args[2:]))
+		case "rotate-play-key":
+			os.Exit(runRotatePlayKey(os.Args[2:]))
 		default:
-			fmt.Fprintf(os.Stderr, "unknown subcommand %q (the only one is: netns-proxy)\n", os.Args[1])
+			fmt.Fprintf(os.Stderr, "unknown subcommand %q (known: netns-proxy, rotate-play-key)\n", os.Args[1])
 			os.Exit(2)
 		}
 	}

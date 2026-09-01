@@ -373,7 +373,25 @@ func authenticateUser(user *store.User, password string) bool {
 		return bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) == nil
 	}
 	if user.AuthSource == "jellyfin" && jfClient != nil {
-		return jfClient.AuthenticateUser(user.Username, password) == nil
+		id, err := jfClient.AuthenticateUser(user.Username, password)
+		if err != nil {
+			return false
+		}
+		// The credential must belong to the SAME Jellyfin account this row was imported
+		// from. Authentication is by name, and an admin can rename a row freely — so
+		// without this check, renaming a Jellyfin-backed account repointed its credential
+		// at whoever now holds that name in Jellyfin, handing them the row's is_admin flag
+		// and its library grants.
+		//
+		// An empty stored id means the row predates this, and an empty returned id means
+		// the server did not tell us: neither is evidence of a mismatch, so neither denies.
+		if user.JellyfinUserID != "" && id != "" && !strings.EqualFold(id, user.JellyfinUserID) {
+			slog.Warn("login refused: the Jellyfin account behind this username is not the one "+
+				"this account was imported from — was it renamed?",
+				"username", user.Username)
+			return false
+		}
+		return true
 	}
 	return false
 }
