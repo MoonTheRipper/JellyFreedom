@@ -4,6 +4,10 @@
 [![Release](https://img.shields.io/github/v/release/MoonTheRipper/JellyFreedom)](https://github.com/MoonTheRipper/JellyFreedom/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+> **This is the `feat/windows-port` branch.** It contains no Windows code yet — only a
+> complete handover for building one. Start at **[docs/windows/START-HERE.md](docs/windows/START-HERE.md)**.
+> The Linux system it describes is live and at v0.7.2 on `main`.
+
 **Watch things straight from a torrent, in Jellyfin, without filling up your disk.**
 
 You search for something, pick which file you want, and press play. JellyFreedom streams it
