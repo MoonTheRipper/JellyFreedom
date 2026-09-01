@@ -14,6 +14,7 @@
 #   jellyfreedom --update     download the latest release on this channel and update
 #   jellyfreedom --version    show the installed version
 #   jellyfreedom channel      show the release channel; `channel nightly` switches to it
+#   jellyfreedom rotate-play-key   invalidate every play URL ever handed out, and re-sign
 #   jellyfreedom doctor       diagnose the whole stack and say how to fix what is broken
 #   jellyfreedom repair       re-run the installer over this instance (safe, keeps config)
 #   jellyfreedom uninstall    remove JellyFreedom (keeps your data + config)
@@ -26,6 +27,7 @@ set -euo pipefail
 
 APP_DIR="${JELLYFREEDOM_APP_DIR:-/opt/jellyfreedom}"
 VPN_DIR="${JELLYFREEDOM_VPN_DIR:-/opt/vpntorrent}"
+DATA_DIR="${JELLYFREEDOM_DATA_DIR:-/var/lib/jellyfreedom}"
 SERVICE="jellyfreedom"
 REPO="MoonTheRipper/JellyFreedom"
 
@@ -222,6 +224,15 @@ case "$cmd" in
       echo "note: a nightly can be NEWER than stable, in which case --update will not move you"
       echo "      back until stable catches up."
     fi
+    ;;
+  rotate-play-key)
+    # A play token never expires, is bound to no user, and survives deleting the item — so a
+    # .strm that leaks keeps working forever. Rotating this key is the only revocation there
+    # is, and it used to mean hand-editing SQLite.
+    need_root rotate-play-key
+    "$APP_DIR/bin/orchestrator" rotate-play-key --db "$DATA_DIR/jellyfreedom.db" "$@" || exit $?
+    systemctl restart "$SERVICE"
+    echo "restarted — the library has been re-signed."
     ;;
   status)  systemctl status "$SERVICE" --no-pager ;;
   restart) need_root restart; systemctl restart "$SERVICE"; echo "restarted." ;;

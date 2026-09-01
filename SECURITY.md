@@ -220,7 +220,18 @@ Two caveats you should understand:
   the control stays on.
 - **A capability URL is a bearer credential.** It does not expire and is not bound to a
   user. Anyone who obtains a `.strm` file or a play URL can stream that item, and
-  `/play/...` will resolve and start a torrent on demand.
+  `/play/...` will resolve and start a torrent on demand. Deleting the library item does not
+  revoke it either — `/play` resolves the identity out of the URL.
+
+  The one revocation is rotating the signing key:
+
+  ```bash
+  sudo jellyfreedom rotate-play-key
+  ```
+
+  Every `.strm` is re-signed on the restart that follows, so your library keeps playing and
+  Jellyfin does not need a rescan. Every URL that has already been copied out stops working,
+  which is the point.
 
 `GET /proxy/stream` is the legacy hash-pinned path kept for `.strm` files written before
 Resolve-at-Play. It now carries a capability token over `hash:<infohash>:<index>`, signed with

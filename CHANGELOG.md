@@ -9,6 +9,22 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Added
+- **`sudo jellyfreedom rotate-play-key`.** A play URL is a permanent bearer credential: it
+  never expires, is bound to no user, and deleting the library item does not revoke it, because
+  `/play` resolves the identity straight out of the URL. So a `.strm` that leaks — a backup, a
+  screenshot, a shared library path — kept working forever, and the only way to revoke it was
+  hand-editing SQLite. Rotating re-signs every `.strm` on the restart that follows, so your
+  library keeps playing and Jellyfin needs no rescan; every URL already copied out stops working.
+
+### Security
+- **A renamed Jellyfin-backed account no longer repoints its password at someone else.**
+  Authentication went to Jellyfin by *username*, while the account's `jellyfin_user_id` was
+  never used — so renaming such an account silently pointed its credential at whoever now held
+  that name in Jellyfin, handing them the row's admin flag and library grants. The ID Jellyfin
+  returns is now compared against the stored one. Rows with no stored ID, and servers that do
+  not return one, are unaffected.
+
 ### Fixed
 - **A dead link no longer re-runs the extractor on every play request.** The torrent path has
   had a resolve cooldown since a measured incident — 7,813 ffprobe re-requests of one
