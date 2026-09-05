@@ -156,6 +156,46 @@ func containedPath(dir string, elems ...string) (string, error) {
 	return p, nil
 }
 
+// writeStrm creates the directory tree and the .strm, then sets every mode EXPLICITLY.
+//
+// os.MkdirAll and os.WriteFile take a mode that the process umask then masks off. The
+// orchestrator's unit set UMask=0077 — added to keep the database private — so every
+// directory it created came out 0700 and every .strm 0600, owned by the service account.
+//
+// Jellyfin runs as a DIFFERENT user. It could not read them, so every entry added after that
+// change was simply absent from the library: no error anywhere, the files present and
+// correct, and Jellyfin's count quietly lower than the count on disk.
+//
+// A library exists to be read by another process. Say so, rather than inheriting whatever
+// umask the service happens to run with — chmod is not masked.
+//
+// root bounds the walk. MkdirAll creates intermediate levels with the same masked mode, and
+// a 0700 season folder hides its episodes just as effectively as a 0700 show folder, so
+// every level we may have created is fixed — but never root itself and never above it.
+func writeStrm(root, path, streamURL string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create library dir: %w", err)
+	}
+
+	cleanRoot := filepath.Clean(root)
+	for d := dir; d != cleanRoot && strings.HasPrefix(d, cleanRoot+string(filepath.Separator)); {
+		if err := os.Chmod(d, 0o755); err != nil {
+			return fmt.Errorf("set library dir mode: %w", err)
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			break // defensive: filepath.Dir is a fixed point at the filesystem root
+		}
+		d = parent
+	}
+
+	if err := os.WriteFile(path, []byte(streamURL), 0o644); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o644)
+}
+
 // WriteMovieStrm writes a .strm for a movie into dir and returns its path.
 // Layout: <dir>/<Title> (<Year>)/<Title> (<Year>).strm
 func WriteMovieStrm(dir, title, year, streamURL string) (string, error) {
@@ -164,10 +204,7 @@ func WriteMovieStrm(dir, title, year, streamURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("create movie dir: %w", err)
-	}
-	return path, os.WriteFile(path, []byte(streamURL), 0o644)
+	return path, writeStrm(dir, path, streamURL)
 }
 
 // movieFolderName is the "<Title> (<Year>)" convention Jellyfin's movie scanner expects
@@ -191,10 +228,7 @@ func WriteTVStrm(dir, show, year string, season, episode int, streamURL string) 
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("create tv dir: %w", err)
-	}
-	return path, os.WriteFile(path, []byte(streamURL), 0o644)
+	return path, writeStrm(dir, path, streamURL)
 }
 
 // TVStrmPath returns the path that WriteTVStrm would write, without creating anything.

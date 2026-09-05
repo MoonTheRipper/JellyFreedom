@@ -383,6 +383,7 @@ else
   # write them. Stated explicitly rather than inherited, because a copy takes its mode from
   # whatever umask happened to be in force.
   chmod -R a+rX,go-w "$APP_DIR/web"
+  xinstall -m 755 "$SRC/tmpreaper.sh" "$APP_DIR/tmpreaper.sh"
   if [ -f "$SRC/VERSION" ]; then xinstall -m 644 "$SRC/VERSION" "$APP_DIR/VERSION"; fi
   xinstall -m 755 "$SRC/vpntorrent/setup-netns.sh" "$VPN_DIR/setup-netns.sh"
   xinstall -m 755 "$SRC/vpntorrent/watchdog.sh"    "$VPN_DIR/watchdog.sh"
@@ -877,10 +878,18 @@ Wants=network-online.target
 Type=simple
 User=$RUN_USER
 WorkingDirectory=${APP_DIR#"$D"}
-# Anything this service creates is its own business and nobody else's. The database is
-# chmod'd explicitly too, but a umask covers every file the service writes later —
-# WAL sidecars, backups, uploaded VPN configs — without each needing to remember.
-UMask=0077
+# 0022, NOT 0077.
+#
+# 0077 was set here to keep what the service writes private, and it did — including the
+# LIBRARY. Every .strm and every folder came out 0700/0600 owned by the service account, and
+# Jellyfin runs as a different user: it silently could not read them, so entries added after
+# that change were simply missing from the library with no error anywhere.
+#
+# Privacy is not this knob's job. The data directory is 0700, the VPN config directory is
+# 0700, and the database file is chmod'd 0600 by the store itself — all explicit, none of
+# them relying on a umask. The library writer now sets 0755/0644 explicitly for the same
+# reason: a mode that matters should be stated, not inherited.
+UMask=0022
 ExecStart=${APP_DIR#"$D"}/bin/orchestrator --config ${CONF_DIR#"$D"}/config.yaml --db ${DATA_DIR#"$D"}/jellyfreedom.db --assets ${APP_DIR#"$D"}/web
 Restart=on-failure
 RestartSec=5
@@ -1024,43 +1033,19 @@ AccuracySec=10
 [Install]
 WantedBy=timers.target
 EOF
-cat > "$UNIT_DIR/jf-tmpreaper.service" <<'EOF'
+cat > "$UNIT_DIR/jf-tmpreaper.service" <<EOF
 [Unit]
-Description=Reap browser scratch directories left in /tmp
+Description=Reap browser and extractor scratch that nothing else cleans up
 
 [Service]
 Type=oneshot
-# WHY THIS EXISTS
-#
-# FlareSolverr drives a browser per request, and each launch leaves a scratch directory
-# behind. On a snap Chromium those land in /tmp/snap-private-tmp/snap.chromium/tmp, which
-# is root-owned 0700 — so flaresolverr.service's own ExecStartPre cleanup cannot see them,
-# let alone delete them. Observed on a live box: 3,894 directories, 7.7GB, 741k inodes,
-# filling a 7.8GB tmpfs three times in four days. A full /tmp then breaks package installs,
-# the updater (which stages downloads there) and the installer's own preflight.
-#
-# Deliberately narrow: entries must be inside a snap's tmp, untouched for an hour, AND
-# carry a browser's name. A stale directory costs a little memory; a wrong glob here would
-# delete somebody's work.
-ExecStart=-/usr/bin/find /tmp/snap-private-tmp -mindepth 3 -maxdepth 3 -path '*/tmp/*' -mmin +60 \
-  \( -name 'org.chromium.*' -o -name '.org.chromium.*' -o -name 'com.google.Chrome*' \
-     -o -name '.com.google.Chrome*' -o -name 'scoped_dir*' -o -name 'tmp*' \) \
-  -exec rm -rf {} +
-# The same residue from an unconfined Chrome or Chromium, which writes straight into /tmp.
-ExecStart=-/usr/bin/find /tmp -mindepth 1 -maxdepth 1 -mmin +60 \
-  \( -name '.org.chromium.*' -o -name '.com.google.Chrome*' -o -name 'scoped_dir*' \) \
-  -exec rm -rf {} +
-# yt-dlp's scratch: a different filesystem, a different failure, the same shape. The official
-# build is a PyInstaller bundle that unpacks ~76MB into _MEIxxxxxx on every run and removes it
-# on exit — but it is SIGKILLed whenever the extraction deadline passes OR the client
-# disconnects mid-resolve, and a killed bundle cleans up nothing. A link that keeps failing
-# therefore fills the DATA partition 76MB at a time, where nothing was watching.
-#
-# The path is the installer's fixed data dir; this heredoc is quoted, so it cannot read
-# $DATA_DIR, and an operator who moves web_sources.temp_dir elsewhere is choosing to manage it.
-ExecStart=-/usr/bin/find /var/lib/jellyfreedom/tmp -mindepth 1 -maxdepth 1 -mmin +60 \
-  \( -name '_MEI*' -o -name 'tmp*' -o -name 'yt-dlp*' \) \
-  -exec rm -rf {} +
+# A SCRIPT, not inline find expressions. This was three ExecStart= lines, and a systemd
+# ExecStart is not a shell: the \( and \) that find needs were passed through verbatim, so
+# every run died with "paths must precede expression" — silently, because the lines carried a
+# "-" prefix and systemd therefore called the service successful. It reaped nothing from
+# 0.6.2 until a /tmp at 100% gave it away. A script can be executed by a test; a string
+# inside a unit file can only be grepped, which is exactly what the old test did.
+ExecStart=${APP_DIR#"$D"}/tmpreaper.sh
 EOF
 
 cat > "$UNIT_DIR/jf-tmpreaper.timer" <<'EOF'
