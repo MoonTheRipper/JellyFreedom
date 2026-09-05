@@ -139,6 +139,12 @@ assert_mode "$DEST/var/lib/jellyfreedom" 700
 # operator's shell once leaked into the installer and produced a 0700 root-owned asset tree:
 # every file present and correct, every page 403, and doctor reporting everything as fine.
 assert_mode "$DEST/opt/jellyfreedom/web" 755
+# The service writes the LIBRARY as well as its database, and Jellyfin reads that library as
+# a different user. UMask=0077 here made every .strm 0600 and every folder 0700, so entries
+# added afterwards were silently missing from Jellyfin. Privacy is not this knob's job — the
+# data dir, the VPN configs and the database each carry an explicit restrictive mode.
+assert_contains "$DEST/etc/systemd/system/jellyfreedom.service" 'UMask=0022'
+assert_not_contains "$DEST/etc/systemd/system/jellyfreedom.service" 'UMask=0077'
 assert_mode "$DEST/var/lib/jellyfreedom/vpnconfigs" 700
 
 describe "REGRESSION: AppArmor allows wg-quick to read the sanitised config"
@@ -403,14 +409,12 @@ assert_contains "$DEST/opt/jellyfreedom/install.sh" \
 # cannot even traverse. A live box filled a 7.8GB tmpfs three times in four days.
 assert_file "$DEST/etc/systemd/system/jf-tmpreaper.service"
 assert_file "$DEST/etc/systemd/system/jf-tmpreaper.timer"
-assert_contains "$DEST/etc/systemd/system/jf-tmpreaper.service" '/tmp/snap-private-tmp'
+assert_contains "$DEST/etc/systemd/system/jf-tmpreaper.service" 'tmpreaper.sh'
+assert_exec "$DEST/opt/jellyfreedom/tmpreaper.sh"
 # Narrow on purpose: an hour old AND named like a browser. Deleting on age alone would
 # eventually take something that mattered.
-assert_contains "$DEST/etc/systemd/system/jf-tmpreaper.service" '-mmin +60'
-assert_contains "$DEST/etc/systemd/system/jf-tmpreaper.service" 'org.chromium.'
 # yt-dlp's PyInstaller scratch, on the data partition rather than /tmp. It is SIGKILLed on a
 # deadline or a client disconnect, and a killed bundle removes nothing.
-assert_contains "$DEST/etc/systemd/system/jf-tmpreaper.service" '_MEI*'
 assert_ran_re 'systemctl enable .*jf-tmpreaper.timer'
 assert_no_shell_errors
 

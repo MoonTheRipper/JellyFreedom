@@ -75,8 +75,8 @@ if [ -d vpntorrent/apparmor ]; then
 fi
 
 echo "==> staging installer + sample config + control CLI"
-cp release/install.sh release/uninstall.sh release/jellyfreedom release/doctor.sh release/jf-update "$OUT/"
-chmod +x "$OUT/install.sh" "$OUT/uninstall.sh" "$OUT/jellyfreedom" "$OUT/doctor.sh" "$OUT/jf-update"
+cp release/install.sh release/uninstall.sh release/jellyfreedom release/doctor.sh release/jf-update release/tmpreaper.sh "$OUT/"
+chmod +x "$OUT/install.sh" "$OUT/uninstall.sh" "$OUT/jellyfreedom" "$OUT/doctor.sh" "$OUT/jf-update" "$OUT/tmpreaper.sh"
 cp release/config.sample.yaml "$OUT/config.sample.yaml"
 printf '%s\n' "$VERSION" > "$OUT/VERSION"
 

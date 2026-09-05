@@ -9,6 +9,31 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **Links added since 0.7.0 were invisible in Jellyfin.** The orchestrator's unit set
+  `UMask=0077` — added to keep the database private — and the same service writes the
+  **library**. So every `.strm` came out `0600` and every folder `0700`, owned by the service
+  account. Jellyfin runs as a *different* user and simply could not read them: no error
+  anywhere, the files present and correct on disk, and Jellyfin's count quietly lower than
+  reality. On the affected box, 21 of 23 entries were visible.
+
+  `UMask` is now `0022`, and the library writer sets `0755`/`0644` **explicitly** — `MkdirAll`
+  and `WriteFile` take a mode the umask then masks off, `chmod` does not. Privacy was never
+  this knob's job: the data directory, the VPN configs and the database each carry their own
+  explicit restrictive mode.
+
+  Existing libraries are repaired with:
+  `sudo find /srv/jellyfreedom -type d -exec chmod 755 {} + && sudo find /srv/jellyfreedom -type f -exec chmod 644 {} +`
+  then a Jellyfin library scan.
+- **`doctor` now checks that Jellyfin can read the library**, because nothing else can detect
+  this: a title that Jellyfin cannot read is not an error, it is an absence.
+- **The `/tmp` reaper never worked.** Its `find` expressions were written with shell escaping
+  (`\(`), but a systemd `ExecStart` is not a shell, so `find` received a literal `\(` and
+  exited with *"paths must precede expression"* on every run since 0.6.2. The `-` prefix on
+  the lines meant systemd ignored the failure and reported success, and the unit test asserted
+  the file *contained* the right strings rather than that it worked. Both fixed: the reaper is
+  now a script that is executed by the test.
+
 ## [0.7.3] - 2026-09-01
 
 ### Fixed

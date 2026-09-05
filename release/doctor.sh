@@ -131,6 +131,27 @@ if section install "Install integrity"; then
   else
     pass "web assets present and readable by the service"
   fi
+
+  # The library is written by one service and read by ANOTHER (Jellyfin, as its own user).
+  # A .strm Jellyfin cannot read is not an error anywhere — the entry is simply absent from
+  # the library, file present and correct on disk, count quietly lower than reality.
+  #
+  # Checked by MODE rather than by sampling a file and testing it: an earlier version tried
+  # one .strm per library, picked a readable one, and reported everything fine while an
+  # entry two folders along was 0700 and invisible.
+  badp=0
+  for d in /srv/jellyfreedom/*/; do
+    [ -d "$d" ] || continue
+    n=$(( $(find "$d" -type d ! -perm -o+rx 2>/dev/null | wc -l) \
+        + $(find "$d" -type f -name '*.strm' ! -perm -o+r 2>/dev/null | wc -l) ))
+    badp=$((badp + n))
+  done
+  if [ "$badp" -gt 0 ]; then
+    fail "$badp library entries are not world-readable — Jellyfin runs as its own user and those titles will be MISSING" \
+         "sudo find /srv/jellyfreedom -type d -exec chmod 755 {} + && sudo find /srv/jellyfreedom -type f -exec chmod 644 {} +"
+  else
+    pass "library files are readable by Jellyfin"
+  fi
   [ -f "$APP_DIR/VERSION" ] && info "installed version $(cat "$APP_DIR/VERSION" 2>/dev/null)" \
     || warn "no VERSION file" "sudo jellyfreedom repair"
   [ -x "$APP_DIR/uninstall.sh" ] && pass "uninstaller is reachable" \
