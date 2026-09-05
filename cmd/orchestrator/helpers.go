@@ -572,8 +572,24 @@ func sweepOrphanStrmTokens(db *store.Store, cfg *config.Config) {
 				return nil
 			}
 			cur := strings.TrimSpace(string(raw))
-			if cur == "" || hasPlayToken(cur) {
-				return nil // already carries a capability token
+			if cur == "" {
+				return nil
+			}
+			if hasPlayToken(cur) {
+				// Signed already — but possibly signed MANY times. Files written before the
+				// append bug was fixed carry the same token repeated once per boot since
+				// 0.7.0. Skipping them outright leaves that mess on disk forever, because
+				// nothing else ever rewrites a file that is already signed.
+				if n := countQueryValues(cur, "t"); n > 1 {
+					if fixed := collapseDuplicateTokens(cur); fixed != cur {
+						if werr := os.WriteFile(path, []byte(fixed), 0o644); werr == nil {
+							slog.Info("play tokens: collapsed a .strm that had been re-signed repeatedly",
+								"path", path, "tokens", n)
+							rewritten++
+						}
+					}
+				}
+				return nil
 			}
 			mediaType, tmdbID, season, episode, ok := parsePlayURL(cur)
 			if !ok {
@@ -653,6 +669,36 @@ func parsePlayURL(raw string) (mediaType string, tmdbID, season, episode int, ok
 		}
 	}
 	return "", 0, 0, 0, false
+}
+
+// countQueryValues counts how many times a parameter appears in a URL's query.
+func countQueryValues(raw, key string) int {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return 0
+	}
+	return len(u.Query()[key])
+}
+
+// collapseDuplicateTokens rewrites a URL so a repeated parameter appears once, keeping the
+// FIRST value — which is the one every handler reads, so the file keeps working exactly as
+// it did rather than silently changing which token is in force.
+func collapseDuplicateTokens(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return raw
+	}
+	q := u.Query()
+	vs := q["t"]
+	if len(vs) <= 1 {
+		// Nothing to collapse. Return the input untouched rather than re-encoding it:
+		// Query().Encode() sorts the parameters, so a correct file would be rewritten for
+		// no reason, its mtime reset, and Jellyfin's "date added" ordering disturbed.
+		return raw
+	}
+	q.Set("t", vs[0])
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // hasPlayToken reports whether a .strm URL already carries a capability token.

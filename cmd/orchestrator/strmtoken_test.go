@@ -62,3 +62,42 @@ func TestPlayTokenIsDetectedAndSetNotAppended(t *testing.T) {
 		t.Error("an unsigned /play URL was reported as signed")
 	}
 }
+
+// Fixing the append was not enough on its own: once a file carries a token, the sweep skips
+// it, so the ones already grown to nine tokens would have stayed that way forever. Verified
+// on the live box — after the append fix the file stopped growing and stayed at nine.
+func TestDuplicateTokensCollapseToTheFirst(t *testing.T) {
+	const base = "http://box:1990/proxy/stream?link=2ef50cc10f6eb563314c2db47d6a4e04734312e1&index=0"
+	const tok = "UNhCvh-RuisST-JSN50Lq1M6aJwH_KA1o5H6l5iMjCM"
+
+	grown := base
+	for i := 0; i < 9; i++ {
+		grown += "&t=" + tok
+	}
+	if got := countQueryValues(grown, "t"); got != 9 {
+		t.Fatalf("fixture is wrong: %d tokens", got)
+	}
+
+	fixed := collapseDuplicateTokens(grown)
+	if got := countQueryValues(fixed, "t"); got != 1 {
+		t.Errorf("collapsed to %d tokens, want 1: %s", got, fixed)
+	}
+	// The FIRST value is what every handler reads, so keeping it means the file keeps
+	// working exactly as before rather than silently changing which token is in force.
+	if u, err := url.Parse(fixed); err != nil || u.Query().Get("t") != tok {
+		t.Errorf("collapse did not keep the original token: %s", fixed)
+	}
+	if u, err := url.Parse(fixed); err != nil ||
+		u.Query().Get("link") != "2ef50cc10f6eb563314c2db47d6a4e04734312e1" ||
+		u.Query().Get("index") != "0" {
+		t.Errorf("collapse lost a parameter: %s", fixed)
+	}
+	// Idempotent, and a file with one token is left exactly alone.
+	if again := collapseDuplicateTokens(fixed); again != fixed {
+		t.Errorf("not idempotent:\n  %s\n  %s", fixed, again)
+	}
+	single := base + "&t=" + tok
+	if collapseDuplicateTokens(single) != single {
+		t.Errorf("an already-correct URL was rewritten: %s", collapseDuplicateTokens(single))
+	}
+}
