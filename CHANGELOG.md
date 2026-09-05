@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-09-05
+
 ### Fixed
 - **Links added since 0.7.0 were invisible in Jellyfin.** The orchestrator's unit set
   `UMask=0077` — added to keep the database private — and the same service writes the
@@ -805,7 +807,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.0...v0.7.1
