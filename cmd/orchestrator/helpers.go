@@ -572,7 +572,7 @@ func sweepOrphanStrmTokens(db *store.Store, cfg *config.Config) {
 				return nil
 			}
 			cur := strings.TrimSpace(string(raw))
-			if cur == "" || strings.Contains(cur, "?t=") {
+			if cur == "" || hasPlayToken(cur) {
 				return nil // already carries a capability token
 			}
 			mediaType, tmdbID, season, episode, ok := parsePlayURL(cur)
@@ -594,10 +594,7 @@ func sweepOrphanStrmTokens(db *store.Store, cfg *config.Config) {
 				// closed. Signing keeps them working for exactly what they already point at.
 				if h, i, lok := parseLegacyStream(cur); lok {
 					if tok := streamToken(h, i); tok != "" {
-						signed := cur + "?t=" + tok
-						if strings.Contains(cur, "?") {
-							signed = cur + "&t=" + tok
-						}
+						signed := withPlayToken(cur, tok)
 						if werr := os.WriteFile(path, []byte(signed), 0o644); werr == nil {
 							rewritten++
 							return nil
@@ -656,6 +653,35 @@ func parsePlayURL(raw string) (mediaType string, tmdbID, season, episode int, ok
 		}
 	}
 	return "", 0, 0, 0, false
+}
+
+// hasPlayToken reports whether a .strm URL already carries a capability token.
+//
+// Parsed, not string-matched. The string test was `strings.Contains(cur, "?t=")`, and the
+// legacy route spells its token "&t=" because it already has a query (`?link=…&index=…`).
+// So a legacy file never looked signed, was re-signed on EVERY startup, and the token was
+// APPENDED each time — the file grew by one "&t=<43 chars>" per boot, indefinitely.
+func hasPlayToken(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	return u.Query().Get("t") != ""
+}
+
+// withPlayToken returns raw with exactly one t= parameter, whatever it had before.
+//
+// Set, never append. Appending is what grew the file; setting also REPAIRS one that has
+// already grown, because Query() collapses the repeats and Encode() writes a single value.
+func withPlayToken(raw, token string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return raw
+	}
+	q := u.Query()
+	q.Set("t", token)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // parseLegacyStreamHash pulls the info hash out of a pre-resolve-at-play .strm.

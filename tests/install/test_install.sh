@@ -144,6 +144,10 @@ assert_mode "$DEST/opt/jellyfreedom/web" 755
 # added afterwards were silently missing from Jellyfin. Privacy is not this knob's job — the
 # data dir, the VPN configs and the database each carry an explicit restrictive mode.
 assert_contains "$DEST/etc/systemd/system/jellyfreedom.service" 'UMask=0022'
+# TorrServer has an HTTP /shutdown that exits 0, so on-failure never restarts it and the box
+# is left with no streaming engine. This is not hypothetical — it happened.
+assert_contains "$DEST/etc/systemd/system/torrserver-netns.service" 'Restart=always'
+assert_not_contains "$DEST/etc/systemd/system/torrserver-netns.service" 'Restart=on-failure'
 assert_not_contains "$DEST/etc/systemd/system/jellyfreedom.service" 'UMask=0077'
 assert_mode "$DEST/var/lib/jellyfreedom/vpnconfigs" 700
 
