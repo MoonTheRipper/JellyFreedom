@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-09-05
+
 ### Fixed
 - **`.strm` files that had already grown are now collapsed back to one token.** 0.7.5 stopped
   them growing, but did not repair the ones that already had — once a file carries a token the
@@ -833,7 +835,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.2...v0.7.3
