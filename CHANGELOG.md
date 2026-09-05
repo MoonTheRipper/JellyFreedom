@@ -9,6 +9,13 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **`.strm` files that had already grown are now collapsed back to one token.** 0.7.5 stopped
+  them growing, but did not repair the ones that already had — once a file carries a token the
+  startup sweep skips it, so nothing ever rewrote them. The changelog for 0.7.5 claimed the
+  repair happened; it did not. The sweep now collapses a repeated `t` parameter to its **first**
+  value, which is the one every handler reads, so the file keeps working exactly as it did.
+
 ## [0.7.5] - 2026-09-05
 
 ### Fixed
