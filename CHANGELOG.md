@@ -9,6 +9,23 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **A legacy `.strm` grew on every restart.** The startup sweep decided a file was "already
+  signed" with `strings.Contains(url, "?t=")` — but the legacy `/proxy/stream` route spells its
+  token `&t=`, because that URL already has a query. So such a file never looked signed, was
+  re-signed on every boot, and the token was **appended** each time. One file on a live box had
+  the same token repeated nine times.
+
+  The check now parses the URL and looks for a `t` parameter, and signing **sets** rather than
+  appends — which also repairs a file that has already grown, collapsing the repeats back to
+  one on the next start.
+- **TorrServer could not recover from a clean exit.** Its unit used `Restart=on-failure`, and
+  TorrServer exposes an HTTP `/shutdown` that exits 0 — a success, as far as systemd is
+  concerned, so it was never restarted. Nothing noticed either: the VPN watchdog clears its
+  strike counter for a down TorrServer on the grounds that "systemd `Restart=` handles it".
+  It did not, and the box sat with no streaming engine. Now `Restart=always`; an explicit
+  `systemctl stop` is still respected.
+
 ## [0.7.4] - 2026-09-05
 
 ### Fixed

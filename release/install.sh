@@ -930,7 +930,13 @@ User=$TS_USER
 NetworkNamespacePath=/var/run/netns/vpntorrent
 BindReadOnlyPaths=/etc/netns/vpntorrent/resolv.conf:/etc/resolv.conf
 ExecStart=/usr/local/bin/torrserver --port 8090 --path /var/lib/torrserver
-Restart=on-failure
+# always, NOT on-failure. TorrServer exposes an HTTP /shutdown route that exits 0, so a
+# clean exit is a SUCCESS as far as systemd is concerned and on-failure never restarts it.
+# The box then has no streaming engine until somebody notices — and nothing notices:
+# vpntorrent/watchdog.sh clears its strike counter for a down TorrServer on the grounds that
+# "systemd Restart= handles it", which it did not. Verified by a real outage.
+# An explicit `systemctl stop` is still respected; systemd does not fight a deliberate stop.
+Restart=always
 RestartSec=3
 StartLimitIntervalSec=300
 StartLimitBurst=5
