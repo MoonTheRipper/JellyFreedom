@@ -4525,7 +4525,7 @@ func testConnection(ctx context.Context, service, url, key string) (bool, string
 		if err != nil {
 			return false, "could not build the request"
 		}
-		req.Header.Set("X-Emby-Token", key)
+		req.Header.Set("Authorization", jellyfin.AuthHeader(key))
 		return do(req)
 	case "torrserver":
 		if url == "" {

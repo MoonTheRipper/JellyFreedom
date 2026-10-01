@@ -52,7 +52,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("X-Emby-Token", c.key())
+	req.Header.Set("Authorization", c.auth())
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("Jellyfin is unreachable — check it is running and the URL in Settings → Connections")
@@ -86,6 +86,34 @@ func (c *Client) key() string {
 	return c.apiKey
 }
 
+// clientID is how JellyFreedom identifies itself to Jellyfin: the parameters of
+// the MediaBrowser list, without a token.
+var clientID = []string{
+	`Client="JellyFreedom"`,
+	`Device="Orchestrator"`,
+	`DeviceId="jellyfreedom-orchestrator"`,
+	`Version="1.0"`,
+}
+
+// AuthHeader builds the value of the Authorization header Jellyfin expects.
+//
+// Current servers ignore X-Emby-Token and X-Emby-Authorization entirely and read
+// the token out of the MediaBrowser parameter list of Authorization, so that is
+// the only header this client sets.
+func AuthHeader(apiKey string) string {
+	params := make([]string, 0, len(clientID)+1)
+	params = append(params, clientID...)
+	if apiKey != "" {
+		params = append(params, `Token="`+apiKey+`"`)
+	}
+	return "MediaBrowser " + strings.Join(params, ", ")
+}
+
+// auth is AuthHeader for this client's current key.
+func (c *Client) auth() string {
+	return AuthHeader(c.key())
+}
+
 // TriggerLibraryScan runs the "Scan Media Library" scheduled task, which picks
 // up newly written .strm files. Falls back to /Library/Refresh if the task
 // cannot be found.
@@ -106,7 +134,7 @@ func (c *Client) scanTaskID() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("X-Emby-Token", c.key())
+	req.Header.Set("Authorization", c.auth())
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", err
@@ -132,7 +160,7 @@ func (c *Client) apiPost(path string, body interface{}) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("X-Emby-Token", c.key())
+	req.Header.Set("Authorization", c.auth())
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("jellyfin %s: %w", path, err)
@@ -177,7 +205,7 @@ func (c *Client) ActiveSessionsForItem(itemID string) int {
 	if err != nil {
 		return 0
 	}
-	req.Header.Set("X-Emby-Token", c.key())
+	req.Header.Set("Authorization", c.auth())
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return 0
@@ -216,7 +244,7 @@ func (c *Client) ActivePlaybackCount() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("X-Emby-Token", c.key())
+	req.Header.Set("Authorization", c.auth())
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("jellyfin sessions: %w", err)
@@ -254,7 +282,7 @@ func (c *Client) ListUsers() ([]JellyfinUser, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Emby-Token", c.key())
+	req.Header.Set("Authorization", c.auth())
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("jellyfin list users: %w", err)
@@ -290,8 +318,8 @@ func (c *Client) AuthenticateUser(username, password string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Emby-Authorization",
-		`MediaBrowser Client="JellyFreedom", Device="Orchestrator", DeviceId="jellyfreedom-orchestrator", Version="1.0"`)
+	// No token: there is no key yet, this call is what establishes the session.
+	req.Header.Set("Authorization", AuthHeader(""))
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("jellyfin auth: %w", err)
@@ -322,7 +350,7 @@ func (c *Client) GetItemPath(itemID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("X-Emby-Token", c.key())
+	req.Header.Set("Authorization", c.auth())
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
