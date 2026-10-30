@@ -250,7 +250,8 @@ Jellyfin finds the file but cannot match it: no poster, no title, and it does no
 search. It is in the database, invisible.
 
 **4. Did Jellyfin scan?** JellyFreedom triggers a scan after writing a `.strm`, using its
-Jellyfin API key. If that key is wrong, files are written and never picked up. Test the
+Jellyfin API key. If Jellyfin refuses that key, files are written and never picked up — see
+[Jellyfin refuses JellyFreedom's API key](#jellyfin-refuses-jellyfreedoms-api-key). Test the
 Jellyfin connection in **Settings → Connections**, then run the `jellyfin-scan` task from the
 dashboard's **Tasks** panel, or trigger a scan in Jellyfin itself.
 
@@ -260,6 +261,31 @@ dashboard's **Tasks** panel, or trigger a scan in Jellyfin itself.
 ```bash
 sudo jellyfreedom doctor library
 ```
+
+---
+
+## Jellyfin refuses JellyFreedom's API key
+
+**Symptoms:** the Jellyfin connection test in **Settings → Connections** says the key was
+rejected; `jellyfreedom doctor` says *Jellyfin answers but refuses the orchestrator*; the
+orchestrator's log has `jellyfin sessions: status 401`; accounts imported from Jellyfin cannot
+log in; new `.strm` files never appear in Jellyfin.
+
+**After upgrading Jellyfin to 12**, this is JellyFreedom older than 0.8.0: it sends the key in
+a header Jellyfin 12 no longer reads. Update JellyFreedom:
+
+```bash
+sudo jellyfreedom --update
+```
+
+If you cannot update yet, Jellyfin 12 still has a switch for the old headers: set
+`<EnableLegacyAuthorization>true</EnableLegacyAuthorization>` in `/etc/jellyfin/system.xml`
+and restart Jellyfin. Set it back to `false` once you have updated — Jellyfin plans to remove
+the switch.
+
+**Otherwise the key itself is wrong** — deleted in Jellyfin, or pasted with a stray character.
+Create a new one under Jellyfin → **Dashboard → API Keys** and paste it into **Settings →
+Connections**.
 
 ---
 

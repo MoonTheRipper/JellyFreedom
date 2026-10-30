@@ -91,6 +91,54 @@ else
   ok "no namespace on this host — VPN branch not exercised"
 fi
 
+# REGRESSION (issue #46): the Jellyfin section only asked /System/Info/Public, which needs
+# no key, so doctor stayed green while Jellyfin 12 refused every call the orchestrator made.
+FAKES=()
+fake(){ # name PATH=BODY... — serve fixed JSON on a free loopback port; print the port
+  local name=$1; shift
+  python3 -I -c '
+import http.server, sys
+routes = dict(a.split("=", 1) for a in sys.argv[1:])
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = routes.get(self.path.split("?")[0])
+        if body is None:
+            self.send_response(404); self.end_headers(); return
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+        self.wfile.write(body.encode())
+    def log_message(self, *a): pass
+s = http.server.HTTPServer(("127.0.0.1", 0), H)
+print(s.server_address[1], flush=True)
+s.serve_forever()' "$@" > "$TD/$name.port" 2>/dev/null &
+  FAKES+=("$!")
+  for _ in $(seq 1 50); do [ -s "$TD/$name.port" ] && break; sleep 0.1; done
+  cat "$TD/$name.port"
+}
+jf_up=$(fake jf_up '/System/Info/Public={"Version":"12.4.0"}')
+jf_starting=$(fake jf_starting '/System/Info/Public={"Version":null}')
+orch_known=$(fake orch_known '/api/playback/active={"active":false,"known":true}')
+orch_unknown=$(fake orch_unknown '/api/playback/active={"active":true,"known":false}')
+jf_doctor(){ JELLYFREEDOM_JELLYFIN_URL="http://127.0.0.1:$1" JELLYFREEDOM_ORCH_URL="http://127.0.0.1:$2" \
+  bash "$REPO/release/doctor.sh" jellyfin 2>&1; }
+
+out5="$(jf_doctor "$jf_up" "$orch_unknown")"
+grep -q 'refuses the orchestrator' <<<"$out5" \
+  && ok "a refused API key fails the Jellyfin section" \
+  || no "a refused API key fails the Jellyfin section" "$(tail -n 3 <<<"$out5")"
+out6="$(jf_doctor "$jf_up" "$orch_known")"
+grep -q 'Jellyfin 12.4.0 answering' <<<"$out6" && grep -q 'accepts the orchestrator' <<<"$out6" \
+  && ok "an accepted key passes, and the version is shown" \
+  || no "an accepted key passes, and the version is shown" "$(tail -n 3 <<<"$out6")"
+out7="$(jf_doctor "$jf_starting" "$orch_known")"
+grep -q 'still starting' <<<"$out7" && ! grep -q 'not answering' <<<"$out7" \
+  && ok "\"Version\": null reads as starting or migrating, not as down" \
+  || no "\"Version\": null reads as starting or migrating" "$(tail -n 3 <<<"$out7")"
+out8="$(jf_doctor "$jf_up" 1)"
+grep -q 'not checked' <<<"$out8" \
+  && ok "with the orchestrator down, says the key was not checked" \
+  || no "with the orchestrator down, says the key was not checked" "$(tail -n 3 <<<"$out8")"
+kill "${FAKES[@]}" 2>/dev/null
+
 printf '\n'
 [ "$FAIL" -eq 0 ] && { printf '\033[1;32m%d checks passed\033[0m\n' "$PASS"; exit 0; }
 printf '\033[1;31m%d of %d FAILED\033[0m\n' "$FAIL" "$((PASS+FAIL))"; exit 1
