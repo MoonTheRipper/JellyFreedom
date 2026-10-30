@@ -210,6 +210,23 @@ run_task(){ # port key id — start a task, wait for it to finish, print its res
   return 1
 }
 
+remux_first_segment(){ # port token item mediasource — print "status bytes" of the first HLS segment
+  local auth base q variant seg out
+  auth="Authorization: MediaBrowser Client=\"jfcompat\", Device=\"harness\", DeviceId=\"jfcompat-harness\", Version=\"1.0\", Token=\"$2\""
+  base="http://127.0.0.1:$1/Videos/$3"
+  q="MediaSourceId=$4&PlaySessionId=jfcompat-hls&DeviceId=jfcompat-harness&VideoCodec=h264&AudioCodec=aac"
+  q+="&SegmentContainer=ts&TranscodingMaxAudioChannels=2&AudioBitrate=128000&VideoBitrate=8000000"
+  variant=$(curl -sS -m 60 -H "$auth" "$base/master.m3u8?$q" </dev/null | grep -v '^#' | head -n 1 | tr -d '\r')
+  [ -n "$variant" ] || return 0
+  seg=$(curl -sS -m 60 -H "$auth" "$base/$variant" </dev/null | grep -v '^#' | head -n 1 | tr -d '\r')
+  [ -n "$seg" ] || { echo "no segments in $variant"; return 0; }
+  out=$(curl -sS -o /dev/null -m 120 -w '%{http_code} %{size_download}' -H "$auth" "$base/$seg" </dev/null)
+  # Stop the encoder, or it keeps pulling the stream after we have gone.
+  curl -sS -o /dev/null -m 30 -X DELETE -H "$auth" \
+    "http://127.0.0.1:$1/Videos/ActiveEncodings?DeviceId=jfcompat-harness&PlaySessionId=jfcompat-hls" </dev/null
+  echo "$out"
+}
+
 make_library(){ # dir stubport — the shape the orchestrator writes: a folder per movie, seasons for shows
   local lib=$1/library url="http://127.0.0.1:$2/play"
   mkdir -p "$lib/movies/Big Buck Bunny (2008)" "$lib/movies/Sintel (2010)" "$lib/tv/Pioneer One (2010)/Season 01"
@@ -453,6 +470,16 @@ for V in "${VERSIONS[@]}"; do
         no "stream answered HTTP $res without touching the stub"
     else
       no "static stream of the .strm failed: HTTP $res"
+    fi
+    # A browser gets HLS instead: Jellyfin's own ffmpeg opens the .strm URL and remuxes it.
+    # That is a different reader from the static proxy above, and it changes with every
+    # jellyfin-ffmpeg major (Jellyfin 12 moves from ffmpeg 7 to 8).
+    m=$(mark)
+    seg=$(remux_first_segment "$PORT" "$TOKEN" "$ITEM" "$MSID")
+    if [ "${seg%% *}" = 200 ] && [ "${seg#* }" -gt 0 ] 2>/dev/null && [ "$(hit_count "$m")" -gt 0 ]; then
+      ok "HLS remux through Jellyfin's ffmpeg reads the .strm (first segment ${seg#* } bytes; stub: $(hits "$m"); agent $(agents "$m"))"
+    else
+      no "HLS remux of the .strm failed: ${seg:-no playlist}" "stub: $(hits "$m"); see $DIR/log/"
     fi
   fi
 
