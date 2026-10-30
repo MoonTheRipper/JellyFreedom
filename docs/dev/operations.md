@@ -259,13 +259,20 @@ without NAT-PMP it simply never gets a mapping, backs off, and idles.
 - **Disable these scheduled tasks** (clear their triggers): *Extract Chapter Images*, *Scan
   Media Library*, *Media Segment Scan*. Each seeks and probes whole files through the streaming
   proxy — see the network-collapse note in §2. The orchestrator triggers scans on demand.
+  Measured on Jellyfin 10.11.11 and 12.4 with these library options (`tests/jellyfin`), no
+  scheduled task, scan, or post-upgrade rescan opened a `.strm` URL — only playback did, and
+  its probe read about 2.5 MB. Keep them disabled anyway; the Jellyfin behind the collapse did
+  not behave that way, and the next one may not either.
 - **Playback policy** on the user: video transcoding **off**, audio transcoding **on**,
   remuxing **on**. See [decisions.md](decisions.md) D11.
 - **The playback-stopped webhook** is optional. Point Jellyfin's Webhook plugin at
-  `POST http://127.0.0.1:1990/webhook/jellyfin` for PlaybackStop events, with the shared secret
-  in an `X-JellyFreedom-Token` header (or `?token=` in the URL). Without the secret the endpoint
-  refuses every call. The secret is generated on first run and currently readable only from the
-  database:
+  `POST http://127.0.0.1:1990/webhook/jellyfin` for PlaybackStop events on Movies and
+  Episodes, with the shared secret in an `X-JellyFreedom-Token` header (or `?token=` in the
+  URL), and the template from [first-run.md §8](../first-run.md#8-optional-the-playback-stopped-webhook)
+  — a destination with no template sends a body the orchestrator cannot parse. Without the
+  secret the endpoint refuses every call. Jellyfin 12 needs Webhook plugin 22 or later, which it
+  installs on its own after an upgrade and loads at the next restart. The secret is generated
+  on first run and currently readable only from the database:
   ```bash
   sudo apt-get install -y sqlite3      # not installed by default
   sudo sqlite3 /var/lib/jellyfreedom/jellyfreedom.db \
@@ -278,7 +285,13 @@ On PlaybackStop the orchestrator resolves the item's `.strm` path, checks that n
 session is still playing it, counts other library rows sharing the same info hash (a season pack
 may back several episodes), and drops the torrent only if nothing else needs it. If the
 reference count cannot be determined it **keeps** the torrent, because dropping one another
-episode is streaming would kill someone else's playback.
+episode is streaming would kill someone else's playback. The same goes for every other answer
+it cannot get — the item lookup, or who is still watching — and each says why in the log.
+
+Two Jellyfin details it depends on, both checked by `tests/jellyfin` on 10.11.11 and 12.4: by
+the time the webhook arrives, Jellyfin has already cleared the stopping session while still
+listing anyone else who is watching; and the plugin sends the item id as a dashed GUID where
+the API prints it as 32 hex digits, so ids are compared in one spelling.
 
 **The item stays `ready`.** Finishing a video is not expiry. Staleness is decided solely by
 resolvability, by the library health check, and never by playback ending.

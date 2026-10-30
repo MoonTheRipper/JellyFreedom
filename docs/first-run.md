@@ -211,11 +211,22 @@ works.
 Without it, everything still works — TorrServer drops idle torrents on its own timeout. With
 it, the cache is freed the moment you stop watching.
 
-Install Jellyfin's official **Webhook** plugin and add a destination:
+Install Jellyfin's official **Webhook** plugin and add a **Generic** destination:
 
-- URL: `http://127.0.0.1:1990/webhook/jellyfin`
+- Webhook URL: `http://127.0.0.1:1990/webhook/jellyfin`
 - Notification type: **Playback Stop** only
+- Item types: **Movies** and **Episodes**
+- Template — exactly the fields the orchestrator reads. A destination with no template sends
+  a body it cannot parse, and every call is rejected:
+
+  ```json
+  {"NotificationType":"{{NotificationType}}","ItemId":"{{ItemId}}","ItemType":"{{ItemType}}"}
+  ```
+
 - Add a request header `X-JellyFreedom-Token` with the shared secret
+
+After you upgrade Jellyfin to 12, it replaces the plugin with a build for 12 by itself; restart
+Jellyfin once more for that build to take over. The old one keeps working until then.
 
 The endpoint **fails closed**: without the correct secret it rejects every call, so that a
 stranger who guesses an item ID cannot drop a torrent mid-playback. The secret is generated on
