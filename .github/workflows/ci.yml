@@ -114,6 +114,7 @@ jobs:
             vpntorrent/jf-netns-helper*
             tests/install/*.sh
             tests/doctor/*.sh
+            tests/jellyfin/*.sh
             .github/scripts/*.sh
             release/jf-update
           )
