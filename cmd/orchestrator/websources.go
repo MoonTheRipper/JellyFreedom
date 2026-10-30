@@ -405,6 +405,7 @@ func (p *webPlayer) streamWebSource(w http.ResponseWriter, r *http.Request, ws *
 		w.Header().Set("Accept-Ranges", "bytes")
 	}
 	w.WriteHeader(resp.StatusCode)
+	defer trackStream()()
 	if _, err := io.Copy(w, resp.Body); err != nil {
 		// Overwhelmingly this is the player seeking or closing the connection, which is
 		// normal traffic and not an error worth a warning.

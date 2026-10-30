@@ -370,22 +370,9 @@ func main() {
 	// keys, IPs or unit names — see internal/api/health.go. (API contract §4.)
 	mux.HandleFunc("GET /api/health/summary", api.HealthSummaryHandler)
 
-	// Lightweight "is anyone watching?" signal for the VPN watchdog / port-forward keeper so
-	// they can DEFER non-urgent TorrServer restarts while a stream is live.
-	//
-	// FAILS CLOSED. This used to report {"active":false} on ANY error, so an unreachable
-	// Jellyfin told the watchdog nobody was watching and it would restart TorrServer in
-	// the middle of a stream. When the answer is unknown, "someone is watching" is the
-	// only safe answer.
-	mux.HandleFunc("GET /api/playback/active", func(w http.ResponseWriter, r *http.Request) {
-		n, err := jfClient.ActivePlaybackCount()
-		if err != nil {
-			slog.Warn("playback/active: assuming active because Jellyfin could not be queried", "err", err)
-			jsonOK(w, map[string]any{"active": true, "known": false})
-			return
-		}
-		jsonOK(w, map[string]any{"active": n > 0, "known": true})
-	})
+	// Lightweight "is anyone watching?" signal for the VPN watchdog / port-forward keeper.
+	// It counts open streams as well as Jellyfin sessions, and fails closed; see streams.go.
+	mux.HandleFunc("GET /api/playback/active", playbackActiveHandler(jfClient.ActivePlaybackCount))
 
 	// Media UI — served from the embedded assets (or --assets in development).
 	mux.Handle("/", http.FileServerFS(subFS(assets, "public")))
@@ -1313,40 +1300,7 @@ func main() {
 	// streamProxy forwards a Range request to TorrServer's /stream for the given hash+index.
 	// Shared by the legacy /proxy/stream path and Resolve-at-Play (/play).
 	streamProxy := func(w http.ResponseWriter, r *http.Request, hash string, index int) {
-		// hash is 40-hex-validated by every caller; StreamURL additionally escapes the
-		// query values rather than interpolating them raw.
-		if !torrserver.ValidInfoHash(hash) {
-			http.Error(w, "bad torrent reference", http.StatusBadRequest)
-			return
-		}
-		target := tsClient.StreamURL(hash, index)
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
-		if err != nil {
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
-		}
-		if rng := r.Header.Get("Range"); rng != "" {
-			req.Header.Set("Range", rng)
-		}
-		// A dedicated client with NO timeout: a film streams for hours on one response,
-		// and http.DefaultClient's transport state is shared process-wide.
-		resp, err := streamClient.Do(req)
-		if err != nil {
-			http.Error(w, "upstream unreachable", http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-		for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"} {
-			if v := resp.Header.Get(h); v != "" {
-				w.Header().Set(h, v)
-			}
-		}
-		w.WriteHeader(resp.StatusCode)
-		if _, err := io.Copy(w, resp.Body); err != nil {
-			// Almost always the player seeking or closing the connection; log at debug
-			// level so a normal seek does not look like an error.
-			slog.Debug("stream copy ended", "hash", hash, "err", err)
-		}
+		proxyTorrentStream(tsClient, w, r, hash, index)
 	}
 
 	// Legacy hash-pinned stream URL (older .strm files written before Resolve-at-Play).
