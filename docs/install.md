@@ -255,6 +255,15 @@ helper, and would leave a new binary calling a helper that was never installed.
 Your `config.yaml`, database and uploaded VPN configs survive. If the version is unchanged it
 exits without doing anything; `JELLYFREEDOM_FORCE=1` reinstalls anyway.
 
+It never moves you backwards. If the download is **older** than what is installed — you are on
+a nightly, or on a build newer than the latest release — it stops and changes nothing. A nightly
+counts as newer than the release it was built after, so after `jellyfreedom channel stable` you
+stay on the nightly until a newer stable release exists. To install an older release on purpose:
+
+```bash
+sudo JELLYFREEDOM_ALLOW_DOWNGRADE=1 jellyfreedom --update
+```
+
 ```bash
 jellyfreedom --version    # what is installed
 sudo jellyfreedom repair  # re-run the installer over this instance (safe, keeps everything)

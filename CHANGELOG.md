@@ -44,6 +44,14 @@ in-place upgrade from one to the other.
   checked the one endpoint that needs no key. It now shows Jellyfin's version, checks that
   Jellyfin accepts the orchestrator's key, and reports a Jellyfin that is still starting — or
   migrating its database after an upgrade — as starting rather than down.
+- **`jellyfreedom --update` would install an older release.** It only checked whether the
+  downloaded version was *different*, so a box on a newer build than the latest release — a
+  nightly, or one built from source — was taken back to that release. It now orders versions
+  the way the dashboard does, and refuses anything older or anything it cannot place. A nightly
+  ranks above the release it was built after, so switching from nightly back to stable waits
+  until stable catches up, as the nightly release notes always said it would.
+  `JELLYFREEDOM_ALLOW_DOWNGRADE=1` installs an older release on purpose; `JELLYFREEDOM_FORCE=1`,
+  which `repair` uses, still only reinstalls the same version.
 
 ### Added
 - `tests/jellyfin/test_jellyfin_compat.sh`, for contributors: runs the Jellyfin client and the
