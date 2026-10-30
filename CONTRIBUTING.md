@@ -102,8 +102,14 @@ tests/jellyfin/test_jellyfin_compat.sh 12.4       # one version
 It downloads Jellyfin's official portable builds and runs each as your own user, on loopback
 only, with its own data directory and a library of test `.strm` files that point at a stub
 (`tests/jellyfin/stub`). No root, no Docker, and nothing on your network can see it or be
-reached by it. It needs `curl`, `jq`, `go`, and an ffmpeg (`JFCOMPAT_FFMPEG`, default
-`/usr/lib/jellyfin-ffmpeg/ffmpeg`).
+reached by it. It needs `curl`, `jq`, `go`, `python3`, and an ffmpeg (`JFCOMPAT_FFMPEG`,
+default `/usr/lib/jellyfin-ffmpeg/ffmpeg`).
+
+CI runs it too (`.github/workflows/jellyfin-compat.yml`): on every pull request that touches
+`internal/jellyfin`, the webhook or the harness, and nightly regardless. That covers the oldest
+supported Jellyfin and the newest one in Jellyfin's apt repository, with the ffmpeg it depends
+on, which is what a fresh install gets. A nightly failure with nothing merged means Jellyfin
+changed.
 
 ## Commit style
 
