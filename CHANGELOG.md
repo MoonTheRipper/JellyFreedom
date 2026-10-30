@@ -59,6 +59,10 @@ in-place upgrade from one to the other.
   streams it is proxying as well, torrent and web source alike.
 
 ### Added
+- **`sudo jellyfreedom webhook`** sets up Jellyfin's Webhook plugin for you: the Playback Stop
+  event on movies and episodes, the payload template and the shared secret. It reads the result
+  back to confirm Jellyfin kept it, and leaves your other webhooks alone. The dashboard's webhook
+  card now shows the template too, which it had left out although every call fails without it.
 - `tests/jellyfin/test_jellyfin_compat.sh`, for contributors: runs the Jellyfin client and the
   webhook path against throwaway Jellyfin servers of any version, as an ordinary user, and
   measures which Jellyfin tasks open the `.strm` URLs — the requests that, on a real install,

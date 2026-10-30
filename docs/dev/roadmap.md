@@ -21,10 +21,6 @@ nothing on its own — Prowlarr needs an indexer proxy pointing at it, and that 
 indexer that needs it. Prowlarr has an API; this could be offered as a one-click action, or at
 least detected and reported by `doctor`.
 
-**The Jellyfin webhook secret is generated but never shown.** It is only readable by querying
-SQLite directly, and `sqlite3` is not among the installed packages. It should appear in the
-dashboard's settings, alongside the exact webhook URL to paste into Jellyfin.
-
 **Jellyfin's own configuration is entirely manual** — adding the two libraries, enabling
 metadata providers, disabling the three scheduled tasks that probe whole files, and setting the
 playback policy. All of it is reachable through Jellyfin's API with the key the orchestrator

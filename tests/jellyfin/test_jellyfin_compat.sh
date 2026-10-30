@@ -54,7 +54,7 @@ section(){ printf '\n\033[1m%s\033[0m\n' "$*"; }
 die(){ printf '\033[1;31mfatal:\033[0m %s\n' "$*" >&2; exit 2; }
 rand(){ head -c 18 /dev/urandom | base64 | tr -d '/+='; }
 
-for t in curl jq go tar ss; do command -v "$t" >/dev/null || die "$t is required"; done
+for t in curl jq go tar ss python3; do command -v "$t" >/dev/null || die "$t is required"; done
 [ -x "$FFMPEG" ] || die "no ffmpeg at $FFMPEG (set JFCOMPAT_FFMPEG)"
 case "$(uname -m)" in
   x86_64) ARCH=amd64 ;;
@@ -253,20 +253,22 @@ apply_library_options(){ # dir — production options from fixtures/, with this 
   done
 }
 
-configure_webhook(){ # port token stubport — PlaybackStop for movies and episodes, with the secret
-  local id tmpl cfg
-  id=$(api "$1" GET /Plugins "$2" | jq -r '.[] | select(.Name=="Webhook") | .Id') || return 1
-  [ -n "$id" ] || return 1
-  # Only the fields the orchestrator reads (internal/jellyfin WebhookPayload), all strings.
-  tmpl=$(printf '%s' '{"NotificationType":"{{NotificationType}}","ItemId":"{{ItemId}}","ItemType":"{{ItemType}}"}' | base64 -w0)
-  cfg=$(api "$1" GET "/Plugins/$id/Configuration" "$2" | jq -c \
-    --arg uri "http://127.0.0.1:$3/webhook/jellyfin" --arg t "$tmpl" --arg s "$WEBHOOK_SECRET" '
-    .GenericOptions = [{NotificationTypes: ["PlaybackStop"], WebhookName: "jellyfreedom", WebhookUri: $uri,
-      EnableMovies: true, EnableEpisodes: true, EnableSeries: false, EnableSeasons: false,
-      EnableAlbums: false, EnableSongs: false, EnableVideos: true, SendAllProperties: false,
-      TrimWhitespace: false, SkipEmptyMessageBody: false, EnableWebhook: true, Template: $t,
-      UserFilter: [], Headers: [{Key: "X-JellyFreedom-Token", Value: $s}], Fields: []}]') || return 1
-  api "$1" POST "/Plugins/$id/Configuration" "$2" "$cfg" >/dev/null
+configure_webhook(){ # dir port token stubport — through `orchestrator configure-webhook`, as
+  # `jellyfreedom webhook` does on a real install. Its Jellyfin connection comes from
+  # config.yaml (the fallback a fresh install uses), the secret from its database.
+  local d="$1/orch" out
+  mkdir -p "$d" && chmod 700 "$d" || return 1
+  ( umask 077; printf 'server:\n  listen: "127.0.0.1:%s"\njellyfin:\n  base_url: "http://127.0.0.1:%s"\n  api_key: "%s"\nlibraries:\n  - name: Movies\n    type: movie\n    path: "%s"\n' \
+      "$4" "$2" "$3" "$1/library/movies" > "$d/config.yaml" )
+  rm -f "$d/jellyfreedom.db"*
+  # With no secret yet it must refuse and say how to get one; this run also creates the schema.
+  out=$("$WORK/orchestrator" configure-webhook --config "$d/config.yaml" --db "$d/jellyfreedom.db" 2>&1) &&
+    { echo "configured a webhook with no secret" >&2; return 1; }
+  grep -q 'no webhook secret yet' <<<"$out" || { echo "$out" >&2; return 1; }
+  SECRET="$WEBHOOK_SECRET" python3 -I -c 'import os, sqlite3, sys
+c = sqlite3.connect(sys.argv[1]); c.execute("insert into settings (key, value) values (?, ?)", ("webhook.secret", os.environ["SECRET"])); c.commit()' \
+    "$d/jellyfreedom.db" || return 1
+  "$WORK/orchestrator" configure-webhook --config "$d/config.yaml" --db "$d/jellyfreedom.db" >/dev/null
 }
 
 run_go_tests(){ # label tree port key item strm out
@@ -328,6 +330,7 @@ two_viewers(){ # port item
 
 section "Setup"
 go build -o "$WORK/stub" "$HERE/stub" || die "could not build the stub"
+( cd "$REPO" && go build -o "$WORK/orchestrator" ./cmd/orchestrator ) || die "could not build the orchestrator"
 make_clip || die "could not make the test clip with $FFMPEG"
 ok "stub built, test clip $(du -h "$CLIP" | cut -f1)"
 declare -A TREE
@@ -411,7 +414,7 @@ for V in "${VERSIONS[@]}"; do
     no "production library options did not take" "copied=$opts_copied; the probe numbers below use Jellyfin's defaults"
   fi
   if [ -n "$plugin" ]; then
-    configure_webhook "$PORT" "$KEY" "$SPORT" && ok "webhook → stub, PlaybackStop, X-JellyFreedom-Token" ||
+    configure_webhook "$DIR" "$PORT" "$KEY" "$SPORT" && ok "orchestrator configure-webhook → stub, PlaybackStop, X-JellyFreedom-Token" ||
       no "could not configure the webhook"
   fi
 

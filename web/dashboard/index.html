@@ -290,8 +290,10 @@
         <h3 class="set-card-title">Jellyfin webhook <span class="set-ro">read-only</span></h3>
         <p class="set-hint">Jellyfin tells JellyFreedom when playback stops, so the torrent can be
           dropped and its cache freed. Without it, torrents keep seeding after everyone stops
-          watching. Add a <b>Webhook</b> in Jellyfin (Dashboard &rarr; Plugins) using the values
-          below, sending the <b>Playback Stop</b> event.</p>
+          watching. With Jellyfin's <b>Webhook</b> plugin installed, <code>sudo jellyfreedom
+          webhook</code> sets it up. To do it by hand, add a Generic destination with the values
+          below, for the <b>Playback Stop</b> event on <b>Movies</b> and <b>Episodes</b>. Every
+          field matters: without the template or the header, Jellyfin's calls are rejected.</p>
         <div id="webhook-info"></div>
       </div>
 

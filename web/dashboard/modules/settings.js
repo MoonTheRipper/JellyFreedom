@@ -94,6 +94,11 @@ function renderWebhook(w) {
       <input id="wh-secret" type="password" readonly value="${esc(w.secret)}">
       <button class="btn" data-reveal="wh-secret">Show</button>
       <button class="btn" data-copy="wh-secret">Copy</button>
+    </div>
+    <div class="form-row">
+      <label for="wh-template">Template</label>
+      <input id="wh-template" type="text" readonly value="${esc(w.template || '')}">
+      <button class="btn" data-copy="wh-template">Copy</button>
     </div>`;
 }
 
