@@ -1,0 +1,117 @@
+name: Jellyfin compat
+
+# Runs tests/jellyfin against the Jellyfin a fresh install gets today, with the ffmpeg that
+# Jellyfin depends on, and against the oldest Jellyfin we support.
+#
+# Jellyfin ships on its own schedule, and every install made after a release gets it. On
+# 0.7.6 that is how Jellyfin 12 broke every new install for weeks before anyone said so:
+# nothing here changed, so no CI run noticed. This runs nightly, whether or not anything
+# merged, so a breaking Jellyfin release turns up here first.
+#
+# The servers are throwaway: loopback only, a disposable admin, a library of test .strm
+# files pointing at tests/jellyfin/stub. No secret of this repository is used.
+
+on:
+  # Also on a change to the Jellyfin client or this harness, which is when a regression
+  # against a real server would be introduced rather than discovered.
+  pull_request:
+    paths:
+      - 'internal/jellyfin/**'
+      - 'tests/jellyfin/**'
+      - 'cmd/orchestrator/webhook*.go'
+      - '.github/workflows/jellyfin-compat.yml'
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: 'Jellyfin versions to test, space-separated (default: oldest supported + newest)'
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jellyfin-compat
+  cancel-in-progress: true
+
+env:
+  # The oldest Jellyfin JellyFreedom supports. Raise it when support for it is dropped.
+  OLDEST_SUPPORTED: '10.11.11'
+
+jobs:
+  compat:
+    name: Jellyfin ${{ github.event.inputs.versions || 'oldest + newest' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The same repository and suite release/install.sh uses, so "newest" means what a
+      # fresh install would get, not whatever GitHub calls the latest tag.
+      - name: Add Jellyfin's apt repository
+        run: |
+          set -euo pipefail
+          sudo install -d -m 755 /etc/apt/keyrings
+          curl -4 -fsSL --retry 3 https://repo.jellyfin.org/jellyfin_team.gpg.key \
+            | sudo gpg --dearmor --yes -o /etc/apt/keyrings/jellyfin.gpg
+          sudo tee /etc/apt/sources.list.d/jellyfin.sources >/dev/null <<EOF
+          Types: deb
+          URIs: https://repo.jellyfin.org/ubuntu
+          Suites: noble
+          Components: main
+          Architectures: $(dpkg --print-architecture)
+          Signed-By: /etc/apt/keyrings/jellyfin.gpg
+          EOF
+          sudo apt-get update -qq
+
+      - name: Resolve versions
+        id: v
+        run: |
+          set -euo pipefail
+          # "12.4+ubu2404" -> "12.4", the form Jellyfin's tarballs are named by.
+          cand="$(apt-cache policy jellyfin | awk '/Candidate:/ {print $2}')"
+          newest="${cand%%+*}"
+          [ -n "$newest" ] && [ "$newest" != "(none)" ] || { echo "::error::no jellyfin package in the repository"; exit 1; }
+          ffmpeg_pkg="$(apt-cache depends "jellyfin=$cand" | grep -o 'jellyfin-ffmpeg[0-9]*' | head -1)"
+          [ -n "$ffmpeg_pkg" ] || { echo "::error::jellyfin $cand names no jellyfin-ffmpeg package"; exit 1; }
+          versions="${{ github.event.inputs.versions }}"
+          if [ -z "$versions" ]; then
+            versions="$OLDEST_SUPPORTED"
+            [ "$newest" = "$OLDEST_SUPPORTED" ] || versions="$versions $newest"
+          fi
+          echo "newest Jellyfin: $newest, which depends on $ffmpeg_pkg; testing: $versions"
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          echo "ffmpeg_pkg=$ffmpeg_pkg" >> "$GITHUB_OUTPUT"
+
+      - name: Install ${{ steps.v.outputs.ffmpeg_pkg }}
+        run: |
+          sudo apt-get install -y -qq --no-install-recommends "${{ steps.v.outputs.ffmpeg_pkg }}"
+          /usr/lib/jellyfin-ffmpeg/ffmpeg -hide_banner -version | head -1
+
+      - name: Run tests/jellyfin
+        env:
+          JFCOMPAT_WORK: ${{ runner.temp }}/jfcompat
+          VERSIONS: ${{ steps.v.outputs.versions }}
+        run: |
+          # shellcheck disable=SC2086 # one argument per version
+          bash tests/jellyfin/test_jellyfin_compat.sh $VERSIONS 2>&1 | tee "$RUNNER_TEMP/jellyfin-compat.log"
+          exit "${PIPESTATUS[0]}"
+
+      # The harness output and Jellyfin's own logs. Not the work directory: it holds the
+      # disposable credentials, and they have no business in an artifact.
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: jellyfin-compat
+          path: |
+            ${{ runner.temp }}/jellyfin-compat.log
+            ${{ runner.temp }}/jfcompat/srv-*/log/
+          if-no-files-found: warn
+          retention-days: 14
