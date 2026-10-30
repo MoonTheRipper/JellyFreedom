@@ -56,8 +56,9 @@ jobs:
         run: |
           # <released version>+nightly.<utc date>.<sha> — semver build metadata, so it reads
           # as "0.6.3 plus what has landed since" rather than pretending to be a version
-          # nobody released. The updater compares versions for EQUALITY only, so this never
-          # has to sort correctly against a stable tag.
+          # nobody released. Semver ignores build metadata, so the updater has its own rule:
+          # a nightly ranks above that release, and nightlies rank by this date
+          # (internal/update/verdict.go). Keep the nightly.<YYYYMMDD>.<sha> shape.
           base="$(tr -d '[:space:]' < VERSION)"
           sha="$(git rev-parse --short=7 HEAD)"
           day="$(date -u +%Y%m%d)"

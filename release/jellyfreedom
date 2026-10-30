@@ -22,6 +22,8 @@
 #   jellyfreedom restart      restart the service
 #   jellyfreedom logs         follow the service log
 #
+# --update never installs an older release than the one installed; to do that on purpose:
+#   JELLYFREEDOM_ALLOW_DOWNGRADE=1 jellyfreedom --update
 # Override for testing/forks:  JELLYFREEDOM_URL=... jellyfreedom --update
 set -euo pipefail
 
@@ -140,10 +142,39 @@ case "$cmd" in
 
     new="$(cat "$src/VERSION" 2>/dev/null || echo '?')"
     cur="$(cat "$APP_DIR/VERSION" 2>/dev/null || echo '?')"
-    if [ "$new" = "$cur" ] && [ "$new" != "?" ] && [ "${JELLYFREEDOM_FORCE:-0}" != "1" ]; then
-      echo "==> already on $cur — nothing to do.  (JELLYFREEDOM_FORCE=1 to reinstall anyway)"
-      exit 0
+    # Ordering is the orchestrator's job, not a string compare's. An equality check alone
+    # installed anything that differed — including an OLDER release, which is how a box on
+    # an unreleased build would have been "updated" back to the published one. The
+    # installed binary uses the same semver rules as the dashboard, plus the nightly ones.
+    # Without a recorded version there is nothing to protect, so that case proceeds: it is
+    # how `repair` recovers an instance whose VERSION file was lost.
+    verdict=upgrade
+    if [ "$cur" != "?" ]; then
+      verdict="$("$APP_DIR/bin/orchestrator" update-verdict "$cur" "$new" 2>/dev/null || true)"
     fi
+    case "$verdict" in
+      upgrade) ;;
+      same)
+        if [ "${JELLYFREEDOM_FORCE:-0}" != "1" ]; then
+          echo "==> already on $cur — nothing to do.  (JELLYFREEDOM_FORCE=1 to reinstall anyway)"
+          exit 0
+        fi
+        ;;
+      *)
+        # FORCE deliberately does not cover this: `repair` sets it, and a repair must
+        # never become a downgrade.
+        if [ "${JELLYFREEDOM_ALLOW_DOWNGRADE:-0}" != "1" ]; then
+          if [ "$verdict" = downgrade ]; then
+            echo "refusing: $new is OLDER than the installed $cur. Nothing has been changed." >&2
+          else
+            echo "refusing: cannot tell whether $new is newer than the installed $cur. Nothing has been changed." >&2
+          fi
+          echo "Override with JELLYFREEDOM_ALLOW_DOWNGRADE=1 if you mean to install it anyway." >&2
+          exit 1
+        fi
+        echo "==> JELLYFREEDOM_ALLOW_DOWNGRADE=1 — installing $new over $cur"
+        ;;
+    esac
     echo "==> updating ${cur} -> ${new}"
 
     # Run the bundle's OWN installer rather than hand-swapping files.
