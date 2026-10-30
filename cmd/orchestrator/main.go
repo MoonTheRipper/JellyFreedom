@@ -2604,45 +2604,7 @@ func main() {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		strmPath, err := jfClient.GetItemPath(payload.ItemID)
-		if err != nil || strmPath == "" {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		item, err := db.GetByStrmPath(strmPath)
-		if err != nil || item == nil {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if active := jfClient.ActiveSessionsForItem(payload.ItemID); active > 0 {
-			slog.Info("playback stopped but other sessions active, not dropping",
-				"title", item.Title, "active_sessions", active)
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		// Playback ended: free the TorrServer cache, but the item STAYS 'ready'. It's still
-		// resolvable, and /play re-adds the torrent on demand next time. Staleness is decided
-		// solely by resolvability (the health check) — never by playback ending. Drop only when
-		// no OTHER live item (e.g. another episode from the same season pack) needs this hash.
-		n, err := db.CountReadyByHashExcept(item.InfoHash, item.StrmPath)
-		if err != nil {
-			// Unknown reference count: KEEP the torrent. Dropping one that another
-			// episode is still streaming would kill someone else's playback.
-			slog.Error("webhook: could not count references for this hash; keeping the torrent",
-				"hash", item.InfoHash, "err", err)
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if n == 0 {
-			if err := tsClient.Drop(item.InfoHash); err != nil {
-				slog.Warn("webhook: could not drop torrent after playback stop", "title", item.Title, "err", err)
-			} else {
-				slog.Info("torrent dropped after playback stop", "title", item.Title)
-			}
-		} else {
-			slog.Info("torrent kept, other episodes still in library",
-				"title", item.Title, "remaining", n)
-		}
+		dropAfterPlaybackStop(db, jfClient, tsClient, payload.ItemID)
 		w.WriteHeader(http.StatusNoContent)
 	})
 

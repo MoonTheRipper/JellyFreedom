@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -97,9 +98,10 @@ var clientID = []string{
 
 // AuthHeader builds the value of the Authorization header Jellyfin expects.
 //
-// Current servers ignore X-Emby-Token and X-Emby-Authorization entirely and read
-// the token out of the MediaBrowser parameter list of Authorization, so that is
-// the only header this client sets.
+// Jellyfin 12 ignores X-Emby-Token and X-Emby-Authorization unless an admin turns
+// EnableLegacyAuthorization back on, and reads the token out of the MediaBrowser
+// parameter list of Authorization — which 10.11 reads as well — so that is the only
+// header this client sets.
 func AuthHeader(apiKey string) string {
 	params := make([]string, 0, len(clientID)+1)
 	params = append(params, clientID...)
@@ -189,43 +191,67 @@ func ParseWebhook(r *http.Request) (*WebhookPayload, error) {
 	return &p, nil
 }
 
-type mediaItem struct {
-	Path string `json:"Path"`
+// canonicalID spells a Jellyfin item id one way. The API prints ids as 32 hex digits and
+// the Webhook plugin as a dashed GUID, so a plain comparison of the two never matched.
+func canonicalID(id string) string {
+	return strings.ToLower(strings.ReplaceAll(id, "-", ""))
 }
 
-type itemResponse struct {
-	MediaSources []mediaItem `json:"MediaSources"`
-}
-
-// ActiveSessionsForItem returns the number of Jellyfin sessions currently playing
-// the given item ID. Used by the webhook handler to avoid dropping a torrent that
-// another session is still streaming.
-func (c *Client) ActiveSessionsForItem(itemID string) int {
+// nowPlaying returns the item id of every Jellyfin session that is playing something.
+func (c *Client) nowPlaying() ([]string, error) {
+	if !c.Configured() {
+		return nil, ErrNotConfigured
+	}
 	req, err := http.NewRequest(http.MethodGet, c.base()+"/Sessions", nil)
 	if err != nil {
-		return 0
+		return nil, err
 	}
 	req.Header.Set("Authorization", c.auth())
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return 0
+		return nil, fmt.Errorf("jellyfin sessions: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("jellyfin sessions: status %d", resp.StatusCode)
+	}
 	var sessions []struct {
 		NowPlayingItem *struct {
 			ID string `json:"Id"`
 		} `json:"NowPlayingItem"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-		return 0
+		return nil, fmt.Errorf("jellyfin sessions: %w", err)
+	}
+	var ids []string
+	for _, s := range sessions {
+		if s.NowPlayingItem != nil {
+			ids = append(ids, s.NowPlayingItem.ID)
+		}
+	}
+	return ids, nil
+}
+
+// ActiveSessionsForItem returns how many Jellyfin sessions are playing the given item.
+// The webhook handler asks before dropping a torrent, so that one viewer stopping does
+// not cut off another who is still watching.
+//
+// It FAILS CLOSED, like ActivePlaybackCount: on any error it returns the error, never a
+// guessed 0, because 0 is the answer that lets the caller drop the torrent. It used to
+// return 0 on every failure, and compared ids in two different spellings, so it always
+// reported that nobody else was watching.
+func (c *Client) ActiveSessionsForItem(itemID string) (int, error) {
+	ids, err := c.nowPlaying()
+	if err != nil {
+		return 0, err
 	}
 	n := 0
-	for _, s := range sessions {
-		if s.NowPlayingItem != nil && s.NowPlayingItem.ID == itemID {
+	for _, id := range ids {
+		if canonicalID(id) == canonicalID(itemID) {
 			n++
 		}
 	}
-	return n
+	return n, nil
 }
 
 // ActivePlaybackCount returns how many Jellyfin sessions are currently playing anything.
@@ -237,37 +263,11 @@ func (c *Client) ActiveSessionsForItem(itemID string) int {
 // "nobody is watching" and it would restart TorrServer in the middle of a stream. When
 // the truth is unknown the safe answer is "assume someone is watching".
 func (c *Client) ActivePlaybackCount() (int, error) {
-	if !c.Configured() {
-		return 0, ErrNotConfigured
-	}
-	req, err := http.NewRequest(http.MethodGet, c.base()+"/Sessions", nil)
+	ids, err := c.nowPlaying()
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("Authorization", c.auth())
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("jellyfin sessions: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("jellyfin sessions: status %d", resp.StatusCode)
-	}
-	var sessions []struct {
-		NowPlayingItem *struct {
-			ID string `json:"Id"`
-		} `json:"NowPlayingItem"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-		return 0, fmt.Errorf("jellyfin sessions: %w", err)
-	}
-	n := 0
-	for _, s := range sessions {
-		if s.NowPlayingItem != nil {
-			n++
-		}
-	}
-	return n, nil
+	return len(ids), nil
 }
 
 // JellyfinUser is a minimal user record returned by the Jellyfin /Users API.
@@ -342,11 +342,19 @@ func (c *Client) AuthenticateUser(username, password string) (string, error) {
 	return out.User.ID, nil
 }
 
-// GetItemPath resolves the file path for a Jellyfin item by its ID.
-// Used to map a webhook ItemId back to a .strm path.
+// GetItemPath returns the path of the file behind a Jellyfin item — for a library .strm,
+// the .strm itself. The webhook uses it to map a stopped ItemId back to a library row.
+//
+// It asks the item list for that one id instead of calling /Items/{id}: with an API key
+// and no user, Jellyfin 10.11 and 12 both answer /Items/{id} with 400, while the list
+// answers and takes either spelling of the id. And it reads the item's own Path, because
+// MediaSources[0].Path is the URL inside the .strm, which no library row is keyed on.
 func (c *Client) GetItemPath(itemID string) (string, error) {
-	req, err := http.NewRequest(http.MethodGet,
-		fmt.Sprintf("%s/Items/%s", c.base(), itemID), nil)
+	if !c.Configured() {
+		return "", ErrNotConfigured
+	}
+	q := url.Values{"ids": {itemID}, "Fields": {"Path"}}
+	req, err := http.NewRequest(http.MethodGet, c.base()+"/Items?"+q.Encode(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -361,12 +369,16 @@ func (c *Client) GetItemPath(itemID string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("jellyfin get item: status %d", resp.StatusCode)
 	}
-	var item itemResponse
-	if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
-		return "", err
+	var page struct {
+		Items []struct {
+			Path string `json:"Path"`
+		} `json:"Items"`
 	}
-	if len(item.MediaSources) > 0 {
-		return item.MediaSources[0].Path, nil
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return "", fmt.Errorf("jellyfin get item: %w", err)
 	}
-	return "", nil
+	if len(page.Items) == 0 {
+		return "", nil
+	}
+	return page.Items[0].Path, nil
 }

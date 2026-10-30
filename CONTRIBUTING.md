@@ -87,6 +87,24 @@ Use one of these instead:
 If your change touches `install.sh`, `get.sh`, `uninstall.sh`, or anything under
 `vpntorrent/`, say in the pull request **which** of the above you used.
 
+## Testing against real Jellyfin
+
+Anything that talks to Jellyfin — `internal/jellyfin`, the webhook, the connection test — is
+worth checking against real servers, because Jellyfin changes under us: 12.0 stopped reading
+the header 0.7.6 sent its key in, and the webhook was broken on every version with nothing in
+the unit tests to notice.
+
+```bash
+tests/jellyfin/test_jellyfin_compat.sh            # Jellyfin 10.11.11 and 12.4
+tests/jellyfin/test_jellyfin_compat.sh 12.4       # one version
+```
+
+It downloads Jellyfin's official portable builds and runs each as your own user, on loopback
+only, with its own data directory and a library of test `.strm` files that point at a stub
+(`tests/jellyfin/stub`). No root, no Docker, and nothing on your network can see it or be
+reached by it. It needs `curl`, `jq`, `go`, and an ffmpeg (`JFCOMPAT_FFMPEG`, default
+`/usr/lib/jellyfin-ffmpeg/ffmpeg`).
+
 ## Commit style
 
 Match what is already in `git log`:

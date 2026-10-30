@@ -32,6 +32,7 @@ if [ -z "$SVC_USER" ] && command -v systemctl >/dev/null; then
 fi
 [ -n "$SVC_USER" ] || SVC_USER=jellyfreedom
 ORCH_URL="${JELLYFREEDOM_ORCH_URL:-http://127.0.0.1:1990}"
+JELLYFIN_URL="${JELLYFREEDOM_JELLYFIN_URL:-http://127.0.0.1:8096}"
 FS_URL="${FLARESOLVERR_URL:-http://127.0.0.1:8191}"
 # TorrServer listens inside the vpntorrent namespace, reachable over the veth. setup-netns.sh
 # publishes the resolved addressing to /run/vpntorrent/netns.env, so read it rather than
@@ -436,9 +437,29 @@ fi
 
 # ---------------------------------------------------------------- jellyfin
 if section jellyfin "Jellyfin"; then
-  st="$(code http://127.0.0.1:8096/System/Info/Public)"
-  if [ "$st" = "200" ]; then pass "Jellyfin answering"
-  else fail "Jellyfin not answering on 8096 (HTTP ${st:-no response})" "systemctl status jellyfin ; journalctl -u jellyfin -n 50"; fi
+  st="$(code "$JELLYFIN_URL/System/Info/Public")"
+  jver="$(body "$JELLYFIN_URL/System/Info/Public" | sed -n 's/.*"Version":"\([^"]*\)".*/\1/p')"
+  if [ "$st" = "200" ] && [ -n "$jver" ]; then
+    pass "Jellyfin $jver answering"
+    # Answering is not accepting our key: /System/Info/Public needs none, so this section
+    # stayed green while Jellyfin 12 refused every call the orchestrator made (issue #46).
+    # Ask the orchestrator rather than handle the key here: /api/playback/active reports
+    # known:false whenever it could not query Jellyfin.
+    pa="$(body "$ORCH_URL/api/playback/active")"
+    case "$pa" in
+      *'"known":true'*) pass "Jellyfin accepts the orchestrator's API key" ;;
+      *'"known":false'*) fail "Jellyfin answers but refuses the orchestrator — its API key is missing or rejected" \
+          "create a key in Jellyfin → Dashboard → API Keys and paste it in $ORCH_URL/dashboard/ → Settings → Connections" ;;
+      *) info "API key not checked — the orchestrator is not answering" ;;
+    esac
+  elif [ "$st" = "200" ]; then
+    # 200 with "Version": null is Jellyfin starting up — or migrating its database after an
+    # upgrade, which must not be interrupted.
+    warn "Jellyfin is still starting (after an upgrade it may be migrating its database)" \
+      "leave it running, then: jellyfreedom doctor jellyfin"
+  else
+    fail "Jellyfin not answering on ${JELLYFIN_URL##*:} (HTTP ${st:-no response})" "systemctl status jellyfin ; journalctl -u jellyfin -n 50"
+  fi
 fi
 
 # ---------------------------------------------------------------- vpn
