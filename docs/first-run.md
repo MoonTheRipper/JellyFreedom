@@ -211,9 +211,22 @@ works.
 Without it, everything still works — TorrServer drops idle torrents on its own timeout. With
 it, the cache is freed the moment you stop watching.
 
-Install Jellyfin's official **Webhook** plugin and add a **Generic** destination:
+Install Jellyfin's official **Webhook** plugin (Dashboard → Plugins → Catalog), restart
+Jellyfin, then let JellyFreedom configure it:
 
-- Webhook URL: `http://127.0.0.1:1990/webhook/jellyfin`
+```bash
+sudo jellyfreedom webhook
+```
+
+It adds a **Generic** destination named `JellyFreedom` with everything below, reads it back to
+confirm Jellyfin kept it, and leaves any other webhooks you have alone. Run it again any time;
+it replaces its own destination rather than adding another.
+
+To set it up by hand instead, the dashboard's **Settings → Jellyfin webhook** card shows every
+value, ready to copy. Add a **Generic** destination:
+
+- Webhook URL: `http://127.0.0.1:1990/webhook/jellyfin` when Jellyfin runs on the same machine,
+  otherwise your `public_url` followed by `/webhook/jellyfin`
 - Notification type: **Playback Stop** only
 - Item types: **Movies** and **Episodes**
 - Template — exactly the fields the orchestrator reads. A destination with no template sends
@@ -230,14 +243,7 @@ Jellyfin once more for that build to take over. The old one keeps working until 
 
 The endpoint **fails closed**: without the correct secret it rejects every call, so that a
 stranger who guesses an item ID cannot drop a torrent mid-playback. The secret is generated on
-first run and is currently only readable from the database (the `sqlite3` CLI is not
-installed by default):
-
-```bash
-sudo apt-get install -y sqlite3
-sudo sqlite3 /var/lib/jellyfreedom/jellyfreedom.db \
-  "select value from settings where key='webhook.secret';"
-```
+first run; an admin can read it on the dashboard card.
 
 If the plugin build you have cannot add a header, append `?token=<secret>` to the URL instead
 — the endpoint accepts either.

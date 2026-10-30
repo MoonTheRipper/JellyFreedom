@@ -67,8 +67,10 @@ func main() {
 			os.Exit(runRotatePlayKey(os.Args[2:]))
 		case "update-verdict":
 			os.Exit(runUpdateVerdict(os.Args[2:]))
+		case "configure-webhook":
+			os.Exit(runConfigureWebhook(os.Args[2:]))
 		default:
-			fmt.Fprintf(os.Stderr, "unknown subcommand %q (known: netns-proxy, rotate-play-key, update-verdict)\n", os.Args[1])
+			fmt.Fprintf(os.Stderr, "unknown subcommand %q (known: netns-proxy, rotate-play-key, update-verdict, configure-webhook)\n", os.Args[1])
 			os.Exit(2)
 		}
 	}
@@ -2062,11 +2064,13 @@ func main() {
 				"jellyfin":   map[string]any{"url": get("conn.jellyfin.url"), "key_set": keySet("conn.jellyfin.key")},
 				"torrserver": map[string]any{"url": get("conn.torrserver.url")},
 			},
-			// Everything the operator needs to configure the Jellyfin webhook plugin.
+			// Everything the operator needs to configure the Jellyfin webhook plugin, chosen
+			// the same way `jellyfreedom webhook` chooses it.
 			"webhook": map[string]any{
-				"secret": webhookSecret,
-				"header": WebhookHeader,
-				"url":    strings.TrimRight(cfg.Server.PublicURL, "/") + "/webhook/jellyfin",
+				"secret":   webhookSecret,
+				"header":   WebhookHeader,
+				"url":      webhookURLFor(cfg, get("conn.jellyfin.url")),
+				"template": jellyfin.WebhookTemplate,
 			},
 			// Everything a provider daemon needs to call the ingest API.
 			"ingest": map[string]any{

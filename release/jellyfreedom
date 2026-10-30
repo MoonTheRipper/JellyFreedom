@@ -15,6 +15,7 @@
 #   jellyfreedom --version    show the installed version
 #   jellyfreedom channel      show the release channel; `channel nightly` switches to it
 #   jellyfreedom rotate-play-key   invalidate every play URL ever handed out, and re-sign
+#   jellyfreedom webhook      set up Jellyfin's Webhook plugin so stopping playback frees the torrent
 #   jellyfreedom doctor       diagnose the whole stack and say how to fix what is broken
 #   jellyfreedom repair       re-run the installer over this instance (safe, keeps config)
 #   jellyfreedom uninstall    remove JellyFreedom (keeps your data + config)
@@ -30,6 +31,7 @@ set -euo pipefail
 APP_DIR="${JELLYFREEDOM_APP_DIR:-/opt/jellyfreedom}"
 VPN_DIR="${JELLYFREEDOM_VPN_DIR:-/opt/vpntorrent}"
 DATA_DIR="${JELLYFREEDOM_DATA_DIR:-/var/lib/jellyfreedom}"
+CONF_DIR="${JELLYFREEDOM_CONF_DIR:-/etc/jellyfreedom}"
 SERVICE="jellyfreedom"
 REPO="MoonTheRipper/JellyFreedom"
 
@@ -264,6 +266,15 @@ case "$cmd" in
     "$APP_DIR/bin/orchestrator" rotate-play-key --db "$DATA_DIR/jellyfreedom.db" "$@" || exit $?
     systemctl restart "$SERVICE"
     echo "restarted — the library has been re-signed."
+    ;;
+  webhook)
+    # Run as the service user: it owns the database, and root opening it while the service
+    # is stopped can leave journal files the service cannot write.
+    need_root webhook
+    svc_user="$(stat -c %U "$DATA_DIR/jellyfreedom.db" 2>/dev/null || true)"
+    [ -n "$svc_user" ] || { echo "no database at $DATA_DIR/jellyfreedom.db — is JellyFreedom installed?" >&2; exit 1; }
+    runuser -u "$svc_user" -- "$APP_DIR/bin/orchestrator" configure-webhook \
+      --config "$CONF_DIR/config.yaml" --db "$DATA_DIR/jellyfreedom.db" || exit $?
     ;;
   status)  systemctl status "$SERVICE" --no-pager ;;
   restart) need_root restart; systemctl restart "$SERVICE"; echo "restarted." ;;
