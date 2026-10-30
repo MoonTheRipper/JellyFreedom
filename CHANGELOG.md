@@ -9,17 +9,54 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+JellyFreedom now works with **Jellyfin 12**. Every install made since Jellyfin 12.0 shipped on
+2026-09-08 got Jellyfin 12, and on 0.7.6 Jellyfin refused every request it made; upgrading an
+existing Jellyfin to 12 did the same. Tested against Jellyfin 10.11.11 and 12.4, and across an
+in-place upgrade from one to the other.
+
 ### Fixed
-- **Jellyfin stopped accepting JellyFreedom's API key.** Current Jellyfin servers ignore the
-  `X-Emby-Token` and `X-Emby-Authorization` headers entirely and read the token from the
-  `MediaBrowser` parameter list of `Authorization`, so every call went out unauthenticated: the
-  connection test reported the key was rejected, library scans did nothing, sessions and user
-  lists came back empty, and `.strm` files were written but never picked up.
+- **Jellyfin 12 refused JellyFreedom's API key.** JellyFreedom sent the key in the legacy
+  `X-Emby-Token` header and identified its login call with `X-Emby-Authorization`. Jellyfin 12
+  stops reading both — `EnableLegacyAuthorization` defaults to `false`, and an upgrade from
+  10.11 switches it off — so every call went out unauthenticated: the connection test reported
+  the key was rejected, library scans did nothing, sessions and user lists came back empty,
+  accounts imported from Jellyfin could not log in, and `.strm` files were written but never
+  picked up. Fixed by Marco Trevisan (#47), reported in #46.
 
   Every Jellyfin request now carries `Authorization: MediaBrowser Client="JellyFreedom",
-  Device="Orchestrator", DeviceId="jellyfreedom-orchestrator", Version="1.0", Token="…"`. The
-  login call identifies the client the same way but sends no token, since there is no key yet.
-  The old headers are no longer sent at all.
+  Device="Orchestrator", DeviceId="jellyfreedom-orchestrator", Version="1.0", Token="…"`, which
+  Jellyfin 10.11 accepts too. The login call identifies the client the same way but sends no
+  token, since there is no key yet. The old headers are no longer sent at all.
+- **Stopping playback never freed the torrent.** The PlaybackStop webhook had three faults, on
+  every Jellyfin version, and each step gave up without a word in the log:
+  - it looked the item up with `/Items/{id}`, which Jellyfin 10.11 and 12 answer with 400 for
+    an API key with no user;
+  - had that answered, it read the URL *inside* the `.strm` rather than the `.strm`'s path, so
+    it could never match a library entry;
+  - its "is anyone else still watching?" check compared the webhook's dashed item id with
+    Jellyfin's undashed ones, so it never matched either, and on any error it answered "no".
+
+  The torrent is now dropped when the last viewer stops, and **kept** while anyone else is
+  watching, whenever Jellyfin cannot be asked, and while another episode shares it. Each step
+  that keeps a torrent says why in the log. TorrServer's idle timeout was freeing these
+  torrents all along, which is why nobody noticed.
+- **`jellyfreedom doctor` called Jellyfin healthy while it refused every request.** It only
+  checked the one endpoint that needs no key. It now shows Jellyfin's version, checks that
+  Jellyfin accepts the orchestrator's key, and reports a Jellyfin that is still starting — or
+  migrating its database after an upgrade — as starting rather than down.
+
+### Added
+- `tests/jellyfin/test_jellyfin_compat.sh`, for contributors: runs the Jellyfin client and the
+  webhook path against throwaway Jellyfin servers of any version, as an ordinary user, and
+  measures which Jellyfin tasks open the `.strm` URLs — the requests that, on a real install,
+  each resolve a torrent through the VPN. On 10.11.11 and 12.4 only playback does.
+
+### Upgrading
+- On **Jellyfin 12**, if you turned `EnableLegacyAuthorization` back on to keep 0.7.6 working,
+  turn it off again after updating.
+- The webhook needs a payload template, which the setup instructions never mentioned; without
+  one, Jellyfin sends a body the orchestrator rejects. See
+  [first-run.md §8](docs/first-run.md#8-optional-the-playback-stopped-webhook).
 
 ## [0.7.6] - 2026-09-05
 
