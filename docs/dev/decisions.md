@@ -153,8 +153,11 @@ the picker's direct-play preference keeps that rare.
 BT client **crashed the BT engine mid-session** — every subsequent add returned 500 — and
 degraded playback badly.
 
-**Implemented:** `GET /api/playback/active` exposes whether a Jellyfin session is playing. The
-watchdog skips its TorrServer probe entirely while a stream is live, and requires two
+**Implemented:** `GET /api/playback/active` reports playback as active when the orchestrator
+is proxying any stream or any Jellyfin session is playing. Counting streams catches a transcode
+Jellyfin has no session for, which still reads a `/play` URL; sessions catch a paused player
+that holds no connection. An open stream answers without asking Jellyfin; otherwise a Jellyfin
+error reads as active. The watchdog skips its TorrServer probe entirely while a stream is live, and requires two
 consecutive failures before restarting anything. The port-forward keeper defers its
 restart-on-port-change until playback stops. Resolve-at-Play removed the background bulk
 resolve phase that caused the original problem.

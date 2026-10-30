@@ -52,6 +52,11 @@ in-place upgrade from one to the other.
   until stable catches up, as the nightly release notes always said it would.
   `JELLYFREEDOM_ALLOW_DOWNGRADE=1` installs an older release on purpose; `JELLYFREEDOM_FORCE=1`,
   which `repair` uses, still only reinstalls the same version.
+- **The VPN watchdog could restart TorrServer under a transcode.** It defers restarts while
+  someone is watching, and asked only Jellyfin's sessions. A transcode Jellyfin has lost track
+  of, after its client disconnected or across a Jellyfin restart, keeps reading the stream with
+  no session behind it, so it looked like nobody was watching. The orchestrator now counts the
+  streams it is proxying as well, torrent and web source alike.
 
 ### Added
 - `tests/jellyfin/test_jellyfin_compat.sh`, for contributors: runs the Jellyfin client and the
