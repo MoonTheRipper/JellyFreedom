@@ -9,6 +9,18 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **Jellyfin stopped accepting JellyFreedom's API key.** Current Jellyfin servers ignore the
+  `X-Emby-Token` and `X-Emby-Authorization` headers entirely and read the token from the
+  `MediaBrowser` parameter list of `Authorization`, so every call went out unauthenticated: the
+  connection test reported the key was rejected, library scans did nothing, sessions and user
+  lists came back empty, and `.strm` files were written but never picked up.
+
+  Every Jellyfin request now carries `Authorization: MediaBrowser Client="JellyFreedom",
+  Device="Orchestrator", DeviceId="jellyfreedom-orchestrator", Version="1.0", Token="…"`. The
+  login call identifies the client the same way but sends no token, since there is no key yet.
+  The old headers are no longer sent at all.
+
 ## [0.7.6] - 2026-09-05
 
 ### Fixed
