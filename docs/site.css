@@ -19,6 +19,7 @@ nav .wrap{display:flex;align-items:center;justify-content:space-between;height:6
 .brand .logo{width:26px;height:26px}
 .nav-links{display:flex;gap:22px;align-items:center;font-size:14px}
 .nav-links a{color:var(--muted)}.nav-links a:hover{color:var(--text)}
+.icon-link{display:inline-flex}.icon-link svg{width:20px;height:20px}
 .btn{display:inline-block;padding:11px 22px;border-radius:8px;font-weight:600;font-size:14px;transition:transform .15s,box-shadow .15s}
 .btn-primary{background:var(--grad);color:#fff;box-shadow:0 6px 22px rgba(120,80,200,.35)}
 .btn-primary:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(120,80,200,.5)}
