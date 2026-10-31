@@ -29,6 +29,7 @@ import {state, savePrefs, loadQueue, loadQueueGroups, loadQueueFor, showTitle, e
         RING_COLOR, RING_ICON} from './state.js';
 import {requireLogin} from './auth.js';
 import {navItem} from './router.js';
+import * as pager from './pager.js';
 
 /* Contract §6: closed, ordered set. */
 const STAGES = ['queued', 'indexing', 'picking', 'adding', 'verifying', 'writing', 'done'];
@@ -91,6 +92,16 @@ const openDiagnosis = new Map();    // queue id -> {loading, error, data}
 const seasonRows = new Map();
 let qSearch = '';
 let lastSignature = null;
+
+/* PAGING. Each status group shows ten titles at a time, and the groups that
+   need nothing from you (Completed, Cancelled) start folded to their heading
+   and count. Every finished request stayed on this page forever, so the
+   things that did need you sat above an ever-growing tail of green. */
+const Q_PAGE = 10;
+const qPages = new Map();          // bucket key, or 'list' when a status filter is on
+function collapsed() {
+  return new Set(Array.isArray(state.prefs.qCollapsed) ? state.prefs.qCollapsed : []);
+}
 let loadedOnce = false;      // before the first successful load, show skeletons
 let loadError = null;        // last poll failure, surfaced instead of "empty"
 
@@ -107,11 +118,13 @@ function msOf(iso) {
 export function initQueue() {
   el('queue-search').addEventListener('input', e => {
     qSearch = e.target.value.trim().toLowerCase();
+    qPages.clear();
     render(true);
   });
   el('queue-sort').addEventListener('change', e => {
     state.prefs.qSort = e.target.value;
     savePrefs();
+    qPages.clear();
     render(true);
   });
 
@@ -122,6 +135,7 @@ export function initQueue() {
       if (f.dataset.grp === 'status') state.prefs.qFilterStatus = f.dataset.val;
       else state.prefs.qFilterType = f.dataset.val;
       savePrefs();
+      qPages.clear();
       render(true);
       return;
     }
@@ -142,6 +156,23 @@ export function initQueue() {
 }
 
 function onListClick(e) {
+  const pg = e.target.closest('[data-pg]');
+  if (pg) {
+    qPages.set(pg.dataset.pg, num(pg.dataset.to));
+    render(true);
+    pager.reveal(document.querySelector(`[data-qsection="${pg.dataset.pg}"]`));
+    return;
+  }
+  const fold = e.target.closest('[data-qbucket]');
+  if (fold) {
+    const c = collapsed();
+    const k = fold.dataset.qbucket;
+    if (c.has(k)) c.delete(k); else c.add(k);
+    state.prefs.qCollapsed = [...c];
+    savePrefs();
+    render(true);
+    return;
+  }
   const act = e.target.closest('[data-qact]');
   if (act) {
     switch (act.dataset.qact) {
@@ -348,17 +379,36 @@ function render(force) {
   }
 
   if (state.prefs.qFilterStatus !== 'all') {
-    list.innerHTML = staleWarning + entries.map(renderEntry).join('');
+    // One status chosen: one paged list, no group headings to fold.
+    const page = pager.clamp(qPages.get('list'), entries.length, Q_PAGE);
+    qPages.set('list', page);
+    const pg = pager.html('list', entries.length, page, Q_PAGE, 'items');
+    list.innerHTML = staleWarning + `<section data-qsection="list">
+      ${pg ? `<div class="queue-pager">${pg}</div>` : ''}
+      ${pager.slice(entries, page, Q_PAGE).map(renderEntry).join('')}
+      ${pg ? `<div class="queue-pager foot">${pg}</div>` : ''}</section>`;
     return;
   }
+  const folded = collapsed();
   let html = staleWarning;
   for (const b of BUCKETS) {
     const inBucket = entries.filter(e => e.agg === b.key);
     if (!inBucket.length) continue;
-    html += `<section class="queue-bucket">
-      <h2 class="queue-bucket-title"><span class="bucket-dot" style="background:${b.color}"></span>
-        ${icon(b.glyph)} ${b.label} (${inBucket.length})</h2>
-      ${inBucket.map(renderEntry).join('')}
+    // A search folds nothing: you are looking for something, and it may be done.
+    const shut = folded.has(b.key) && !qSearch;
+    const page = pager.clamp(qPages.get(b.key), inBucket.length, Q_PAGE);
+    qPages.set(b.key, page);
+    const pg = shut ? '' : pager.html(b.key, inBucket.length, page, Q_PAGE, `${b.label.toLowerCase()} items`);
+    html += `<section class="queue-bucket${shut ? ' folded' : ''}" data-qsection="${b.key}">
+      <div class="queue-bucket-head">
+        <h2><button type="button" class="queue-bucket-title" data-qbucket="${b.key}" aria-expanded="${!shut}">
+          <span class="bucket-chev" aria-hidden="true">${icon('chevron-right')}</span>
+          <span class="bucket-dot" style="background:${b.color}"></span>
+          ${icon(b.glyph)} ${b.label} <span class="lib-count">${inBucket.length}</span></button></h2>
+        ${pg ? `<div class="queue-pager">${pg}</div>` : ''}
+      </div>
+      ${shut ? '' : pager.slice(inBucket, page, Q_PAGE).map(renderEntry).join('')}
+      ${pg ? `<div class="queue-pager foot">${pg}</div>` : ''}
     </section>`;
   }
   list.innerHTML = html;
@@ -501,6 +551,7 @@ function signature(entries) {
   const diag = [...openDiagnosis.entries()]
     .map(([k, v]) => `${k}:${v.loading ? 'L' : v.error ? 'E' : 'D'}`).join(',');
   return [core, [...openShows].sort().join(','), [...openSeasons].sort().join(','), diag, qSearch,
+    [...qPages.entries()].map(([k, v]) => k + v).join(','), [...collapsed()].sort().join(','),
     state.prefs.qFilterStatus, state.prefs.qFilterType, state.prefs.qSort,
     entries.length].join('#');
 }

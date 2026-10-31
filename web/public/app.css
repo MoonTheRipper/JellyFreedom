@@ -306,9 +306,19 @@ header.transparent input[type=search]#q{background:rgba(12,13,16,.55);border-col
 .queue-page-header h1{font-size:20px;font-weight:700}
 .queue-count-label{font-size:13px;color:var(--muted)}
 .queue-bucket{margin-bottom:24px}
-.queue-bucket-title{font-size:12px;font-weight:700;color:var(--muted2);
-  text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;
+.queue-bucket.folded{margin-bottom:10px}
+.queue-bucket-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.queue-bucket-head h2{font:inherit}
+.queue-bucket-title{font-size:12px;font-weight:700;color:var(--muted2);background:none;border:none;
+  text-transform:uppercase;letter-spacing:.05em;padding:6px 8px 6px 0;border-radius:var(--r-sm);
   display:flex;align-items:center;gap:8px}
+.queue-bucket-title:hover{color:var(--text)}
+.queue-bucket-title .lib-count{text-transform:none;letter-spacing:0}
+.bucket-chev{display:flex;transition:transform .15s}
+.queue-bucket-title[aria-expanded="true"] .bucket-chev{transform:rotate(90deg)}
+.queue-pager{display:flex;align-items:center;gap:8px}
+.queue-pager.foot{justify-content:center;margin:14px 0 4px}
+.queue-pager:empty{display:none}
 .bucket-dot{width:8px;height:8px;border-radius:50%}
 .queue-item{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;
   background:var(--surface);border:1px solid var(--border);border-radius:10px;
@@ -698,8 +708,16 @@ select.lib-picker{flex:1}
   .queue-page-layout{flex-direction:column;gap:14px;padding:16px 14px 32px}
   .queue-sidebar{width:100%;flex-direction:row;flex-wrap:wrap;gap:10px;align-items:center}
   .qs-search{flex:1 1 100%}
-  .qs-group{flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px}
-  .qs-group-title{width:100%;margin-bottom:2px}
+  /* Each filter group is one swipeable row with no heading: stacked with
+     headings, the filters filled half the screen before the queue began. */
+  .queue-sidebar{gap:8px}
+  .qs-group{flex-direction:row;flex-wrap:nowrap;align-items:center;gap:6px;flex:1 1 100%;
+    overflow-x:auto;scrollbar-width:none}
+  .qs-group::-webkit-scrollbar{display:none}
+  .qs-group-title{display:none}
+  .qs-filter{flex-shrink:0}
+  .qs-group:has(#queue-sort){flex:1 1 0}
+  .qs-group:has(#queue-clear){flex:0 0 auto}
   .qs-filter{padding:9px 13px}
   .queue-action-btn{padding:8px 13px}
 

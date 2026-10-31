@@ -18,6 +18,11 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
   title filter, a status filter (Needs attention / Ready) and a sort (Needs attention first,
   Recently updated, Title, Year); the sort and status are remembered. The Needs attention
   strip shows eight titles with "Show all" for the rest.
+- **The Queue is paged and folds what is finished.** Each status group (Failed, In
+  Progress, Completed, Cancelled) shows ten titles at a time. Completed and Cancelled start
+  folded to their heading and count; click a heading to open or fold it, and the choice is
+  remembered. Searching the queue unfolds everything. On a phone the filters collapse into
+  swipeable rows instead of filling half the screen.
 - **Cleaner movie posters in the Library.** The Replace / Remove buttons under every poster
   are gone; those actions are in the title popup. Posters are badged only when it matters:
   Expired, Resolving, or which library when you have more than one.

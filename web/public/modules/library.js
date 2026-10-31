@@ -38,6 +38,7 @@ import {libSkeleton, statusBadgeHTML} from './cards.js';
 import {requireLogin} from './auth.js';
 import {navItem} from './router.js';
 import {pollQueue} from './queue.js';
+import * as pager from './pager.js';
 
 /**
  * ROLLUP maps a rolled-up node — a season, or a whole show — onto one status.
@@ -206,10 +207,7 @@ function goPage(key, to) {
   if (!(key in pages) || to < 1) return;
   pages[key] = to;
   paint(true);
-  const head = el(key === 'shows' ? 'lib-sec-shows' : 'lib-sec-movies');
-  if (head && head.getBoundingClientRect().top < 70) {
-    window.scrollTo({top: window.scrollY + head.getBoundingClientRect().top - 76, behavior: 'instant'});
-  }
+  pager.reveal(el(key === 'shows' ? 'lib-sec-shows' : 'lib-sec-movies'));
 }
 
 function syncTabs() {
@@ -336,8 +334,8 @@ function paint(force) {
 
   const wantShows = filter === 'all' || filter === 'tv' || filter === 'mine';
   const wantMovies = filter === 'all' || filter === 'movie' || filter === 'mine';
-  pages.shows = clampPage(pages.shows, shows.length, PAGE.shows);
-  pages.movies = clampPage(pages.movies, movies.length, PAGE.movies);
+  pages.shows = pager.clamp(pages.shows, shows.length, PAGE.shows);
+  pages.movies = pager.clamp(pages.movies, movies.length, PAGE.movies);
 
   const sig = signature(shows, movies, filter) +
     `#${q}#${status}#${state.prefs.libSort}#${pages.shows}/${pages.movies}#${attnAll}`;
@@ -351,8 +349,8 @@ function paint(force) {
 
   renderAttention(wantShows ? strip : []);
 
-  const showPage = pageSlice(shows, pages.shows, PAGE.shows);
-  const moviePage = pageSlice(movies, pages.movies, PAGE.movies);
+  const showPage = pager.slice(shows, pages.shows, PAGE.shows);
+  const moviePage = pager.slice(movies, pages.movies, PAGE.movies);
   el('lib-sec-shows').hidden = !(wantShows && shows.length);
   el('lib-sec-movies').hidden = !(wantMovies && movies.length);
   el('lib-shows-n').textContent = shows.length;
@@ -361,7 +359,8 @@ function paint(force) {
   grid.innerHTML = wantMovies ? moviePage.map(renderLibCard).join('') : '';
   document.querySelectorAll('#page-library [data-pager]').forEach(p => {
     const key = p.dataset.pager;
-    p.innerHTML = pagerHTML(key, key === 'shows' ? shows.length : movies.length, pages[key]);
+    p.innerHTML = pager.html(key, key === 'shows' ? shows.length : movies.length, pages[key],
+      PAGE[key], key === 'shows' ? 'shows' : 'movies');
   });
 
   empty.innerHTML = '';
@@ -383,26 +382,6 @@ function paint(force) {
 /** fold lowercases and strips accents, so "pokemon" finds "Pokémon". */
 function fold(s) {
   return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-}
-
-function clampPage(page, total, size) {
-  const last = Math.max(1, Math.ceil(total / size));
-  return Math.min(Math.max(1, page), last);
-}
-function pageSlice(list, page, size) { return list.slice((page - 1) * size, page * size); }
-
-function pagerHTML(key, total, page) {
-  const size = PAGE[key];
-  const last = Math.ceil(total / size);
-  if (last <= 1) return '';
-  const from = (page - 1) * size + 1;
-  const to = Math.min(total, page * size);
-  const what = key === 'shows' ? 'shows' : 'movies';
-  return `<button type="button" class="pg-btn" data-pg="${key}" data-to="${page - 1}"
-      ${page <= 1 ? 'disabled' : ''} aria-label="Previous ${what}">${icon('chevron-left')}</button>
-    <span class="pg-label">${from}–${to} <span class="pg-of">of ${total}</span></span>
-    <button type="button" class="pg-btn" data-pg="${key}" data-to="${page + 1}"
-      ${page >= last ? 'disabled' : ''} aria-label="Next ${what}">${icon('chevron-right')}</button>`;
 }
 
 const byTitle = (a, b) => String(a.title).localeCompare(String(b.title), undefined, {sensitivity: 'base'});
