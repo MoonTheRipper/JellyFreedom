@@ -264,6 +264,19 @@ stay on the nightly until a newer stable release exists. To install an older rel
 sudo JELLYFREEDOM_ALLOW_DOWNGRADE=1 jellyfreedom --update
 ```
 
+### After updating
+
+Most updates need nothing more. When one does, it is listed here and on the
+[What's new](https://moontheripper.github.io/JellyFreedom/whats-new.html) page.
+
+**From 0.7.x to 0.8.0:**
+
+- If you use the playback-stop webhook, run `sudo jellyfreedom webhook` once. It adds the
+  payload template that earlier setup instructions left out, without which the webhook never
+  freed a torrent.
+- On Jellyfin 12, if you turned `EnableLegacyAuthorization` back on to keep 0.7.6 working,
+  turn it off again.
+
 ```bash
 jellyfreedom --version    # what is installed
 sudo jellyfreedom repair  # re-run the installer over this instance (safe, keeps everything)
