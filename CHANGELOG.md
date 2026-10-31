@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-31
+
 ### Changed
 - **Search is in the header**, so it is on screen from every page and at any scroll depth.
   Typing from Library, Queue or Calendar opens the results on Home, and Back returns you to
@@ -944,7 +946,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.6...v0.8.0
 [0.7.6]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.4...v0.7.5
