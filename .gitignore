@@ -4,7 +4,8 @@
 # ── Claude Code / AI assistant local tooling ──
 # CLAUDE.md is the private agent brief and stays out of the published repo.
 # Everything under docs/ IS tracked and published: the user guides (install, first-run,
-# configuration, troubleshooting, security, faq) and the design docs under docs/dev/.
+# configuration, troubleshooting, security, faq) and the design docs under docs/dev/ —
+# except the maintainer's release procedure, which stays local.
 .claude/
 .claude.json
 CLAUDE.local.md
@@ -12,6 +13,7 @@ CLAUDE.local.md
 .cursor/
 .aider*
 CLAUDE.md
+docs/RELEASING.md
 
 # ── Secrets & local state — NEVER publish ──
 # config.yaml = live keys (ship release/config.sample.yaml); *.db = users/sessions;
