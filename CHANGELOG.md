@@ -13,6 +13,16 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 - **Search is in the header**, so it is on screen from every page and at any scroll depth.
   Typing from Library, Queue or Calendar opens the results on Home, and Back returns you to
   where you were. `/` still focuses it.
+- **The Library page is organised instead of endless.** TV shows and movies are separate
+  sections, each with its count and paged (10 shows, 24 posters at a time). A toolbar adds a
+  title filter, a status filter (Needs attention / Ready) and a sort (Needs attention first,
+  Recently updated, Title, Year); the sort and status are remembered. The Needs attention
+  strip shows eight titles with "Show all" for the rest.
+- **Cleaner movie posters in the Library.** The Replace / Remove buttons under every poster
+  are gone; those actions are in the title popup. Posters are badged only when it matters:
+  Expired, Resolving, or which library when you have more than one.
+- **An expired movie's popup now explains it and offers Remove**, alongside requesting it
+  again. Previously only a ready movie had that panel.
 - **A calmer look.** Neutral charcoal greys replace the blue-violet tint, the purple-to-cyan
   gradient is kept for the logo only, and the glows behind buttons, tabs, cards and status
   dots are gone. Buttons use one indigo accent; every text colour still meets WCAG AA.

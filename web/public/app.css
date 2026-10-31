@@ -220,22 +220,54 @@ header.transparent input[type=search]#q{background:rgba(12,13,16,.55);border-col
   gap:4px;font-size:10px;font-weight:700;padding:3px 8px;border-radius:999px;backdrop-filter:blur(6px)}
 .status-badge.ready{background:rgba(20,83,45,.92);color:var(--green)}
 .status-badge.stale{background:rgba(120,53,15,.92);color:var(--yellow)}
+.status-badge.resolving{background:rgba(30,58,95,.92);color:var(--blue)}
 .card.is-expired{border-color:rgba(251,191,36,.45)}
 .card.is-expired img{opacity:.55;filter:saturate(.7)}
 .card.is-expired:hover img{opacity:.75}
 
 /* ── Library page ────────────────────────────────────────────────────────── */
-#page-library{padding:0 24px 40px}
+#page-library{padding:0 24px 40px;max-width:1400px;margin:0 auto}
 .library-toolbar{display:flex;align-items:center;justify-content:space-between;
-  padding:20px 0 18px;border-bottom:1px solid var(--border);margin-bottom:22px;gap:12px;flex-wrap:wrap}
+  padding:20px 0 18px;border-bottom:1px solid var(--border);margin-bottom:22px;gap:12px 20px;flex-wrap:wrap}
 .library-toolbar h1{font-size:20px;font-weight:700}
+.lib-heading{display:flex;align-items:baseline;gap:12px}
+.lib-total{font-size:13px;color:var(--muted)}
+.lib-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.lib-find{position:relative;display:flex;align-items:center}
+.lib-find .ic{position:absolute;left:11px;width:15px;height:15px;color:var(--muted);pointer-events:none}
+.lib-find input{width:200px;padding-left:33px}
+.lib-controls select{min-width:0}
+
+/* Sections: a heading with its count and a pager, the content, the pager again. */
+.lib-section{margin-bottom:34px}
+.lib-section[hidden]{display:none}
+.lib-section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  margin-bottom:14px}
+.lib-section-head h2{font-size:17px;font-weight:700;display:flex;align-items:center;gap:9px}
+.lib-count{font-size:12px;font-weight:600;color:var(--muted);background:var(--surface);
+  border:1px solid var(--border);border-radius:999px;padding:1px 9px}
+.lib-pager{display:flex;align-items:center;gap:8px}
+.lib-pager:empty{display:none}
+.lib-pager-foot{justify-content:center;margin-top:18px}
+.pg-btn{width:32px;height:32px;border-radius:50%;background:var(--surface);border:1px solid var(--border);
+  color:var(--muted2);display:flex;align-items:center;justify-content:center;transition:all .12s}
+.pg-btn:hover:not(:disabled){background:var(--surface2);border-color:var(--border-strong);color:var(--text)}
+.pg-btn:disabled{opacity:.35;cursor:default}
+.pg-label{font-size:13px;font-weight:600;color:var(--text);min-width:92px;text-align:center;
+  font-variant-numeric:tabular-nums}
+.pg-of{color:var(--muted);font-weight:500}
+.card-who{display:inline-flex;align-items:center;gap:3px;margin-left:auto;color:rgba(255,255,255,.7)}
+.card-who .ic{width:11px;height:11px}
+.attn-more{margin-left:auto;background:none;border:none;color:var(--accent);font-size:11px;
+  font-weight:700;text-transform:none;letter-spacing:0;padding:2px 4px}
+.attn-more:hover{text-decoration:underline}
 .filter-tabs{display:flex;gap:4px;background:var(--surface);
   border:1px solid var(--border);border-radius:8px;padding:3px}
 .filter-tab{padding:6px 14px;border-radius:6px;font-size:13px;font-weight:600;
   color:var(--muted2);border:none;background:none;transition:all .12s}
 .filter-tab:hover{color:var(--text)}
 .filter-tab.active{background:var(--accent-strong);color:#fff}
-.library-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:16px}
+.library-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(146px,1fr));gap:14px}
 .lib-card-wrap{position:relative}
 .lib-card-actions{display:flex;gap:6px;margin-top:8px}
 .season-rings{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
@@ -495,6 +527,8 @@ select.lib-picker{flex:1}
 .in-lib-panel h3{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;
   color:var(--green);margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em}
 .in-lib-panel p{font-size:12px;color:var(--muted2);margin-bottom:10px}
+.in-lib-panel.stale{background:rgba(120,53,15,.16);border-color:rgba(251,191,36,.4)}
+.in-lib-panel.stale h3{color:var(--yellow)}
 .in-lib-actions{display:flex;gap:8px}
 .in-lib-actions .btn{flex:1}
 .req-btn{width:100%;background:var(--accent-strong);border:none;color:#fff;padding:14px;
@@ -678,6 +712,14 @@ select.lib-picker{flex:1}
   .cal-nav-btn{width:36px;height:36px}
   .cal-view-btn{padding:9px 14px}
   .filter-tab{padding:9px 14px}
+  #page-library{padding:0 12px 32px}
+  .lib-controls{width:100%}
+  .lib-find{flex:1 1 100%}
+  .lib-find input{width:100%;font-size:16px}
+  .lib-controls .filter-tabs{flex:1 1 100%}
+  .lib-controls .filter-tab{flex:1}
+  .lib-controls select{flex:1 1 0;min-width:0}
+  .lib-section-head .lib-pager{display:none}
   .cal-list-section .cal-entry-poster{width:36px;height:54px}
 
   .modal-overlay{padding:0;align-items:flex-end}
@@ -849,7 +891,12 @@ select.lib-picker{flex:1}
   .show-group-head .queue-poster,.show-group-head .queue-poster-placeholder{
     width:38px;height:57px}
   .sg-counts{gap:6px 8px}
-  .lib-attention-chips{flex-direction:column;align-items:flex-start}
+  /* One swipeable row on a phone: a column of chips pushed the library itself
+     a full screen down. */
+  .lib-attention-chips{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;
+    margin:0 -14px;padding:0 14px 2px}
+  .lib-attention-chips::-webkit-scrollbar{display:none}
+  .attn-chip{flex-shrink:0}
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

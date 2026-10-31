@@ -203,22 +203,61 @@
 <!-- ── Library ───────────────────────────────────────────────────────────── -->
 <div id="page-library" class="page">
   <div class="library-toolbar">
-    <h1>My Library</h1>
-    <div class="filter-tabs" role="group" aria-label="Filter library">
-      <button type="button" class="filter-tab active" data-filter="all" aria-pressed="true">All</button>
-      <button type="button" class="filter-tab" data-filter="movie" aria-pressed="false">Movies</button>
-      <button type="button" class="filter-tab" data-filter="tv" aria-pressed="false">TV</button>
-      <button type="button" class="filter-tab" data-filter="mine" aria-pressed="false">Mine</button>
+    <div class="lib-heading">
+      <h1>My Library</h1>
+      <span class="lib-total" id="lib-total" role="status" aria-live="polite"></span>
+    </div>
+    <div class="lib-controls">
+      <div class="lib-find">
+        <svg class="ic" aria-hidden="true"><use href="#i-search"></use></svg>
+        <label class="sr-only" for="lib-find">Filter your library by title</label>
+        <input type="search" id="lib-find" placeholder="Filter by title" autocomplete="off">
+      </div>
+      <div class="filter-tabs" role="group" aria-label="Show">
+        <button type="button" class="filter-tab active" data-filter="all" aria-pressed="true">All</button>
+        <button type="button" class="filter-tab" data-filter="movie" aria-pressed="false">Movies</button>
+        <button type="button" class="filter-tab" data-filter="tv" aria-pressed="false">TV</button>
+        <button type="button" class="filter-tab" data-filter="mine" aria-pressed="false">Mine</button>
+      </div>
+      <label class="sr-only" for="lib-status">Status</label>
+      <select id="lib-status">
+        <option value="any">Any status</option>
+        <option value="attention">Needs attention</option>
+        <option value="ready">Ready</option>
+      </select>
+      <label class="sr-only" for="lib-sort">Sort</label>
+      <select id="lib-sort">
+        <option value="attention">Needs attention first</option>
+        <option value="recent">Recently updated</option>
+        <option value="title">Title A–Z</option>
+        <option value="year">Year, newest first</option>
+      </select>
     </div>
   </div>
   <!-- Shows that need a human, resolved to the exact episode. Hidden when
        there are none, so an all-clear library carries no strip at all. -->
   <div id="library-attention" class="lib-attention" role="region"
        aria-label="Shows that need attention" hidden></div>
-  <!-- Level 1 of the show tree. Movies stay in the poster grid below: a movie
-       is one file, and a one-child tree is noise. -->
-  <div id="library-shows" class="lib-shows"></div>
-  <div id="library-grid" class="library-grid"></div>
+  <!-- Two paged sections. A library of a thousand rows used to render as one
+       unbroken list of every show followed by every poster. -->
+  <section class="lib-section" id="lib-sec-shows" aria-labelledby="lib-shows-h" hidden>
+    <div class="lib-section-head">
+      <h2 id="lib-shows-h">TV Shows <span class="lib-count" id="lib-shows-n"></span></h2>
+      <div class="lib-pager" data-pager="shows"></div>
+    </div>
+    <!-- Level 1 of the show tree. -->
+    <div id="library-shows" class="lib-shows"></div>
+    <div class="lib-pager lib-pager-foot" data-pager="shows"></div>
+  </section>
+  <section class="lib-section" id="lib-sec-movies" aria-labelledby="lib-movies-h" hidden>
+    <div class="lib-section-head">
+      <h2 id="lib-movies-h">Movies <span class="lib-count" id="lib-movies-n"></span></h2>
+      <div class="lib-pager" data-pager="movies"></div>
+    </div>
+    <div id="library-grid" class="library-grid"></div>
+    <div class="lib-pager lib-pager-foot" data-pager="movies"></div>
+  </section>
+  <div id="library-empty"></div>
 </div>
 
 <!-- ── Queue ─────────────────────────────────────────────────────────────── -->

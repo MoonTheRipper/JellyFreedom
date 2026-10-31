@@ -213,7 +213,11 @@ function renderFallback(item, reason) {
 
 function renderRich(d) {
   const inLib = state.libraryStatus[d.tmdb_id];
-  const libItem = state.myLibrary.find(i => i.tmdb_id === d.tmdb_id && i.status === 'ready');
+  // Ready first, else an expired copy: the library page no longer carries a
+  // Remove button per poster, so this panel is where an expired movie is
+  // re-requested or removed too.
+  const mine = state.myLibrary.filter(i => i.tmdb_id === d.tmdb_id && i.media_type === 'movie');
+  const libItem = mine.find(i => i.status === 'ready') || mine.find(i => i.status === 'stale');
   const libHash = (libItem && libItem.info_hash) || '';
 
   let html = headerHTML(d) + castHTML(d.cast);
@@ -327,6 +331,14 @@ function similarHTML(similar, mediaType) {
 
 function inLibPanelHTML(d, inLib, libHash) {
   if (ctx.forcePicker) return '';
+  if (inLib && inLib.status === 'stale') {
+    return `<div class="in-lib-panel stale">
+    <h3>${icon('clock')} Expired — ${esc(inLib.library || '')}</h3>
+    <p>This copy can no longer be streamed. Request it again below to pick a fresh release, or remove it.</p>
+    ${libHash && state.user ? `<div class="in-lib-actions"><button class="btn danger" type="button" data-mact="remove-movie"
+        data-hash="${esc(libHash)}" data-title="${esc(d.title)}">${icon('trash')} Remove</button></div>` : ''}
+  </div>`;
+  }
   if (!inLib || inLib.status !== 'ready') return '';
   return `<div class="in-lib-panel">
     <h3>${icon('check')} In Library — ${esc(inLib.library || '')}</h3>

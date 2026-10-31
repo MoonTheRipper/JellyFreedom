@@ -27,9 +27,9 @@
    it — that would be a cycle.
    ========================================================================== */
 
-import {apiFetch, esc, num, toast, errorState} from '../shared/api.js';
+import {apiFetch, esc, num, toast, errorState, debounce} from '../shared/api.js';
 import {icon} from '../shared/icons.js';
-import {state, savePrefs, loadMyLibrary, loadQueueFor, canManage, showTitle, isAiring,
+import {state, savePrefs, loadMyLibrary, loadQueueFor, showTitle, isAiring,
         showCounts, seasonCounts, seasonNumbersOf, rollupCounts, unknownEpisodes,
         cachedSeasons, cachedEpisodes, loadSeasons, loadEpisodes, loadQueueSeason,
         queueAggFor, shapeError, shapeLoading, seasonShapeKey, showShapeKey, queueShapeKey,
@@ -71,6 +71,20 @@ const openShows = new Set();     // tmdb id (number)
 const openSeasons = new Set();   // "id:season"
 let lastSignature = null;
 
+/* PAGING. Each section shows one page at a time. A large library used to
+   render as a single list of every show followed by every poster, so the page
+   was thousands of pixels of things you were not looking for. Ten show rows
+   (each one expands) and 24 posters (divisible by every column count the grid
+   uses) keep a page to about one screen. */
+const PAGE = {shows: 10, movies: 24};
+const pages = {shows: 1, movies: 1};
+let findText = '';               // the title filter; deliberately not persisted
+let attnAll = false;             // "Show all" on the Needs attention strip
+const ATTN_PREVIEW = 8;
+
+const SORTS = ['attention', 'recent', 'title', 'year'];
+const STATUSES = ['any', 'attention', 'ready'];
+
 function el(id) { return document.getElementById(id); }
 function seasonKey(tmdbId, season) { return `${num(tmdbId)}:${num(season)}`; }
 function pageActive() { const p = el('page-library'); return !!p && p.classList.contains('active'); }
@@ -78,14 +92,33 @@ function pageActive() { const p = el('page-library'); return !!p && p.classList.
 export function initLibrary() {
   const page = el('page-library');
 
+  if (!SORTS.includes(state.prefs.libSort)) state.prefs.libSort = 'attention';
+  if (!STATUSES.includes(state.prefs.libStatus)) state.prefs.libStatus = 'any';
+  el('lib-sort').value = state.prefs.libSort;
+  el('lib-status').value = state.prefs.libStatus;
+
+  const refilter = () => { pages.shows = 1; pages.movies = 1; paint(true); };
+  const findLater = debounce(() => { findText = el('lib-find').value.trim(); refilter(); }, 150);
+  el('lib-find').addEventListener('input', findLater);
+  el('lib-sort').addEventListener('change', e => {
+    state.prefs.libSort = e.target.value; savePrefs(); refilter();
+  });
+  el('lib-status').addEventListener('change', e => {
+    state.prefs.libStatus = e.target.value; savePrefs(); refilter();
+  });
+
   page.addEventListener('click', e => {
     const tab = e.target.closest('.filter-tab');
     if (tab) {
       state.prefs.libFilter = tab.dataset.filter;
       savePrefs();
+      pages.shows = 1; pages.movies = 1;
       renderLibraryPage();
       return;
     }
+
+    const pg = e.target.closest('[data-pg]');
+    if (pg) { goPage(pg.dataset.pg, num(pg.dataset.to)); return; }
 
     const act = e.target.closest('[data-lib-act]');
     if (act) {
@@ -155,6 +188,27 @@ function onAction(act) {
     case 'jump':     jumpToActive(tmdbId); break;
     case 'retry-shape': retryShape(tmdbId, act.dataset.season); break;
     case 'retry-load': renderLibraryPage(); break;
+    case 'attn-all':   attnAll = !attnAll; paint(true); break;
+    case 'clear-filters':
+      findText = ''; el('lib-find').value = '';
+      state.prefs.libStatus = 'any'; el('lib-status').value = 'any';
+      if (state.prefs.libFilter !== 'mine') state.prefs.libFilter = 'all';
+      savePrefs();
+      pages.shows = 1; pages.movies = 1;
+      paint(true);
+      break;
+  }
+}
+
+/** goPage turns a section's page and brings its heading back into view when
+ *  the turn happened at the foot of a long page. */
+function goPage(key, to) {
+  if (!(key in pages) || to < 1) return;
+  pages[key] = to;
+  paint(true);
+  const head = el(key === 'shows' ? 'lib-sec-shows' : 'lib-sec-movies');
+  if (head && head.getBoundingClientRect().top < 70) {
+    window.scrollTo({top: window.scrollY + head.getBoundingClientRect().top - 76, behavior: 'instant'});
   }
 }
 
@@ -215,14 +269,19 @@ function retryShape(tmdbId, season) {
 export async function renderLibraryPage() {
   syncTabs();
   const grid = el('library-grid');
-  if (!state.myLibrary.length) grid.innerHTML = libSkeleton();
+  if (!state.myLibrary.length) {
+    el('lib-sec-movies').hidden = false;
+    grid.innerHTML = libSkeleton();
+  }
 
   try {
     await Promise.all([loadMyLibrary(), pollQueue()]);
   } catch (e) {
     el('library-shows').innerHTML = '';
     el('library-attention').hidden = true;
-    grid.innerHTML = errorState(e.message, {retryAttr: 'data-lib-act="retry-load"'});
+    el('lib-sec-shows').hidden = true;
+    el('lib-sec-movies').hidden = true;
+    el('library-empty').innerHTML = errorState(e.message, {retryAttr: 'data-lib-act="retry-load"'});
     lastSignature = null;
     return;
   }
@@ -236,10 +295,13 @@ function paint(force) {
   syncTabs();
 
   const filter = state.prefs.libFilter;
+  const empty = el('library-empty');
   if (filter === 'mine' && !state.user) {
     el('library-attention').hidden = true;
-    showsHost.innerHTML = '';
-    grid.innerHTML = `<div class="empty-state">${icon('key')}<p>Sign in to see your own requests</p></div>`;
+    el('lib-sec-shows').hidden = true;
+    el('lib-sec-movies').hidden = true;
+    el('lib-total').textContent = '';
+    empty.innerHTML = `<div class="empty-state">${icon('key')}<p>Sign in to see your own requests</p></div>`;
     lastSignature = null;
     return;
   }
@@ -250,22 +312,117 @@ function paint(force) {
     movies = movies.filter(i => i.requested_by === state.user.username);
     shows = shows.filter(s => s.requesters.has(state.user.username));
   }
+  const ownedShows = shows.length, ownedMovies = movies.length;
+
+  // The title filter narrows everything on the page, the strip included: typing
+  // a show's name is also how you find its problem.
+  const q = fold(findText);
+  if (q) {
+    movies = movies.filter(m => fold(m.title).includes(q));
+    shows = shows.filter(x => fold(x.title).includes(q));
+  }
+  const strip = shows;
+
+  const status = state.prefs.libStatus;
+  if (status === 'attention') {
+    shows = shows.filter(needsAttention);
+    movies = movies.filter(m => m.status !== 'ready');
+  } else if (status === 'ready') {
+    shows = shows.filter(x => !needsAttention(x));
+    movies = movies.filter(m => m.status === 'ready');
+  }
+  sortShows(shows, state.prefs.libSort);
+  sortMovies(movies, state.prefs.libSort);
+
   const wantShows = filter === 'all' || filter === 'tv' || filter === 'mine';
   const wantMovies = filter === 'all' || filter === 'movie' || filter === 'mine';
+  pages.shows = clampPage(pages.shows, shows.length, PAGE.shows);
+  pages.movies = clampPage(pages.movies, movies.length, PAGE.movies);
 
-  const sig = signature(shows, movies, filter);
+  const sig = signature(shows, movies, filter) +
+    `#${q}#${status}#${state.prefs.libSort}#${pages.shows}/${pages.movies}#${attnAll}`;
   if (!force && sig === lastSignature) return;
   lastSignature = sig;
 
-  renderAttention(wantShows ? shows : []);
-  showsHost.innerHTML = wantShows ? shows.map(renderShow).join('') : '';
-  grid.innerHTML = wantMovies ? movies.map(renderLibCard).join('') : '';
+  el('lib-total').textContent = [
+    ownedShows ? `${ownedShows} show${ownedShows === 1 ? '' : 's'}` : '',
+    ownedMovies ? `${ownedMovies} movie${ownedMovies === 1 ? '' : 's'}` : '',
+  ].filter(Boolean).join(' · ');
 
+  renderAttention(wantShows ? strip : []);
+
+  const showPage = pageSlice(shows, pages.shows, PAGE.shows);
+  const moviePage = pageSlice(movies, pages.movies, PAGE.movies);
+  el('lib-sec-shows').hidden = !(wantShows && shows.length);
+  el('lib-sec-movies').hidden = !(wantMovies && movies.length);
+  el('lib-shows-n').textContent = shows.length;
+  el('lib-movies-n').textContent = movies.length;
+  showsHost.innerHTML = wantShows ? showPage.map(renderShow).join('') : '';
+  grid.innerHTML = wantMovies ? moviePage.map(renderLibCard).join('') : '';
+  document.querySelectorAll('#page-library [data-pager]').forEach(p => {
+    const key = p.dataset.pager;
+    p.innerHTML = pagerHTML(key, key === 'shows' ? shows.length : movies.length, pages[key]);
+  });
+
+  empty.innerHTML = '';
   if (!(wantShows && shows.length) && !(wantMovies && movies.length)) {
-    grid.innerHTML = `<div class="empty-state">${icon('library')}
-      <p>Nothing here${filter === 'mine' ? " — you haven't requested anything yet" : ''}</p>
-      <p class="sub">Search for a title and request it; it lands here once it resolves.</p></div>`;
+    const narrowed = q || status !== 'any' ||
+      (wantShows && !wantMovies && ownedMovies) || (wantMovies && !wantShows && ownedShows);
+    const nothingAtAll = !ownedShows && !ownedMovies;
+    empty.innerHTML = (narrowed && !nothingAtAll)
+      ? `<div class="empty-state">${icon('filter')}
+          <p>${q ? `Nothing in your library matches “${esc(findText)}”` : 'Nothing matches these filters'}</p>
+          <div class="empty-actions"><button type="button" class="btn primary" data-lib-act="clear-filters">
+            Clear filters</button></div></div>`
+      : `<div class="empty-state">${icon('library')}
+          <p>Nothing here${filter === 'mine' ? " — you haven't requested anything yet" : ''}</p>
+          <p class="sub">Search for a title and request it; it lands here once it resolves.</p></div>`;
   }
+}
+
+/** fold lowercases and strips accents, so "pokemon" finds "Pokémon". */
+function fold(s) {
+  return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function clampPage(page, total, size) {
+  const last = Math.max(1, Math.ceil(total / size));
+  return Math.min(Math.max(1, page), last);
+}
+function pageSlice(list, page, size) { return list.slice((page - 1) * size, page * size); }
+
+function pagerHTML(key, total, page) {
+  const size = PAGE[key];
+  const last = Math.ceil(total / size);
+  if (last <= 1) return '';
+  const from = (page - 1) * size + 1;
+  const to = Math.min(total, page * size);
+  const what = key === 'shows' ? 'shows' : 'movies';
+  return `<button type="button" class="pg-btn" data-pg="${key}" data-to="${page - 1}"
+      ${page <= 1 ? 'disabled' : ''} aria-label="Previous ${what}">${icon('chevron-left')}</button>
+    <span class="pg-label">${from}–${to} <span class="pg-of">of ${total}</span></span>
+    <button type="button" class="pg-btn" data-pg="${key}" data-to="${page + 1}"
+      ${page >= last ? 'disabled' : ''} aria-label="Next ${what}">${icon('chevron-right')}</button>`;
+}
+
+const byTitle = (a, b) => String(a.title).localeCompare(String(b.title), undefined, {sensitivity: 'base'});
+const yearOf = x => parseInt(x.year, 10) || 0;
+
+/** sortShows: 'attention' keeps buildShows' order (problems first). */
+function sortShows(list, mode) {
+  if (mode === 'recent') list.sort((a, b) => b.updated - a.updated || byTitle(a, b));
+  else if (mode === 'title') list.sort(byTitle);
+  else if (mode === 'year') list.sort((a, b) => yearOf(b) - yearOf(a) || byTitle(a, b));
+}
+
+/** sortMovies: 'attention' puts anything not playable (expired, still
+ *  resolving) first, then the most recently touched. */
+function sortMovies(list, mode) {
+  const t = m => Date.parse(m.updated) || 0;
+  if (mode === 'title') list.sort(byTitle);
+  else if (mode === 'year') list.sort((a, b) => yearOf(b) - yearOf(a) || byTitle(a, b));
+  else if (mode === 'recent') list.sort((a, b) => t(b) - t(a) || byTitle(a, b));
+  else list.sort((a, b) => (a.status === 'ready') - (b.status === 'ready') || t(b) - t(a) || byTitle(a, b));
 }
 
 /**
@@ -312,11 +469,13 @@ function buildShows(tvItems) {
     if (!g) {
       g = {
         tmdbId: it.tmdb_id, title: showTitle(it.title), year: it.year,
-        poster: it.poster_url || '', requesters: new Set(),
+        poster: it.poster_url || '', requesters: new Set(), updated: 0,
       };
       map.set(it.tmdb_id, g);
     }
     if (it.requested_by) g.requesters.add(it.requested_by);
+    const u = Date.parse(it.updated) || 0;
+    if (u > g.updated) g.updated = u;
     if (!g.poster && it.poster_url) g.poster = it.poster_url;
     if (!g.year && it.year) g.year = it.year;
   }
@@ -476,7 +635,8 @@ function renderAttention(shows) {
       String(a.title).localeCompare(String(b.title)));
   if (!hits.length) { host.hidden = true; host.innerHTML = ''; return; }
 
-  const chips = hits.map(s => {
+  const shown = attnAll ? hits : hits.slice(0, ATTN_PREVIEW);
+  const chips = shown.map(s => {
     const roll = ATTENTION.includes(s.roll) ? s.roll : (aggFailed(s.agg) ? 'failed' : 'working');
     const r = ROLLUP[roll];
     const why = attentionWhy(s, roll);
@@ -488,8 +648,11 @@ function renderAttention(shows) {
   }).join('');
 
   host.hidden = false;
+  const more = hits.length > ATTN_PREVIEW
+    ? `<button type="button" class="attn-more" data-lib-act="attn-all" aria-expanded="${attnAll}">
+        ${attnAll ? 'Show fewer' : `Show all ${hits.length}`}</button>` : '';
   host.innerHTML = `<div class="lib-attention-head">${icon('alert')}
-      Needs attention <span class="lib-attention-n">${hits.length}</span></div>
+      Needs attention <span class="lib-attention-n">${hits.length}</span>${more}</div>
     <div class="lib-attention-chips">${chips}</div>`;
 }
 
@@ -668,25 +831,11 @@ function renderLibCard(item) {
     ? `<img src="${esc(item.poster_url)}" alt="" loading="lazy">`
     : `<span class="card-placeholder">${icon('film')}</span>`;
   const isStale = item.status === 'stale';
-  const manage = canManage(item);
-  // info_hash is required to remove; strm_path/magnet are stripped for
-  // anonymous callers (contract §2) and are not used here at all.
-  const hash = item.info_hash || '';
-  let actions = '';
-  if (manage && hash) {
-    actions = `<div class="lib-card-actions">
-      <button class="btn-sm btn-replace" type="button" data-lib-act="rerequest"
-        data-type="${esc(item.media_type)}" data-tmdb-id="${id}"
-        data-season="${num(item.season)}" data-episode="${num(item.episode)}"
-        data-prev="${esc(item.release_title || '')}">${icon('refresh')} ${isStale ? 'Re-request' : 'Replace'}</button>
-      <button class="btn-sm btn-remove" type="button" data-lib-act="remove-item"
-        data-hash="${esc(hash)}" data-title="${esc(item.title)}">${icon('trash')} Remove</button>
-    </div>`;
-  }
-  const requesterChip = item.requested_by
-    ? `<span class="requester-chip">${icon('users')} ${esc(item.requested_by)}</span>` : '';
-  return `<div class="lib-card-wrap">
-    <button type="button" class="card${isStale ? ' is-expired' : ''}" data-nav-item="1"
+  // Replace / Remove live in the title popup (its In Library panel), not in a
+  // row of buttons under every poster: in a grid of hundreds those rows were
+  // most of what the page showed. Who asked for it rides in the poster's meta.
+  const who = item.requested_by ? `<span class="card-who">${icon('users')} ${esc(item.requested_by)}</span>` : '';
+  return `<button type="button" class="card${isStale ? ' is-expired' : ''}" data-nav-item="1"
       data-type="${esc(item.media_type)}" data-tmdb-id="${id}"
       data-title="${esc(item.title)}" data-year="${esc(item.year || '')}" data-poster="${esc(item.poster_url || '')}"
       aria-label="${esc(item.title)} — ${isStale ? 'expired, needs re-request' : 'ready'}">
@@ -694,13 +843,23 @@ function renderLibCard(item) {
       <span class="card-scrim" aria-hidden="true"></span>
       <span class="card-overlay">
         <span class="card-title">${esc(item.title)}</span>
-        <span class="card-meta"><span>${esc(item.year || '')}</span></span>
+        <span class="card-meta"><span>${esc(item.year || '')}</span>${who}</span>
       </span>
-      ${statusBadgeHTML({status: item.status, library: item.library_name})}
-    </button>
-    <div class="lib-card-info">${requesterChip}</div>
-    ${actions}
-  </div>`;
+      ${libBadge(item)}
+    </button>`;
+}
+
+/** libBadge marks only what is worth a glance on a page where everything is,
+ *  by definition, in your library: an expired copy, one still resolving, or —
+ *  only when there is more than one movie library — which library it is in.
+ *  A "✓ Movies" stamp on every poster said nothing. */
+function libBadge(item) {
+  if (item.status === 'ready') {
+    const several = state.libraries.filter(l => l.type === 'movie').length > 1;
+    return several ? statusBadgeHTML({status: 'ready', library: item.library_name}) : '';
+  }
+  if (item.status === 'stale') return statusBadgeHTML({status: 'stale'});
+  return `<span class="status-badge resolving">${icon('clock')} Resolving</span>`;
 }
 
 /* ── Going to an episode ─────────────────────────────────────────────────── */
