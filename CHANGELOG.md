@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-31
+
 JellyFreedom now works with **Jellyfin 12**. Every install made since Jellyfin 12.0 shipped on
 2026-09-08 got Jellyfin 12, and on 0.7.6 Jellyfin refused every request it made; upgrading an
 existing Jellyfin to 12 did the same. Tested against Jellyfin 10.11.11 and 12.4, and across an
@@ -901,7 +903,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.6...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.6...v0.8.0
 [0.7.6]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.3...v0.7.4
