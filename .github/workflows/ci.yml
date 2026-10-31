@@ -2,8 +2,7 @@
 #
 # Jobs:
 #   go              build / vet / test / gofmt
-#   cross-compile   proves linux/amd64 AND linux/arm64 both build (arm64 support is a goal;
-#                   see docs/RELEASING.md)
+#   cross-compile   proves linux/amd64 AND linux/arm64 both build (arm64 support is a goal)
 #   shell           shellcheck over every shell script we ship (~900 lines of root-executed bash)
 #   installer-harness  fast hermetic pre-check (tests/install/ + tests/doctor/, no root)
 #   installer-smoke    THE important one — runs the REAL installer on a throwaway runner VM

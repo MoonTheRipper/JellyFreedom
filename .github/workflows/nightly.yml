@@ -10,7 +10,7 @@ name: Nightly
 #
 # Tags here are immutable: nightly-<date>-<sha>, never moved. Moving a tag invalidates the
 # provenance attestation and the published checksums of whatever it pointed at before, which
-# is why docs/RELEASING.md forbids it for releases; a moving `nightly` pointer would have the
+# is why release tags are never moved either; a moving `nightly` pointer would have the
 # same defect nightly after nightly. Old ones are pruned instead.
 
 on:

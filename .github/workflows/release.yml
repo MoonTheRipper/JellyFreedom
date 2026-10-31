@@ -2,13 +2,11 @@
 #
 #   git tag -a v0.3.0 -m 'JellyFreedom 0.3.0' && git push origin v0.3.0
 #
-# See docs/RELEASING.md for the full checklist.
-#
 # ── Contract with release/build.sh ──────────────────────────────────────────────
 # This workflow calls:   JF_VERSION=<v> GOOS=linux GOARCH=<amd64|arm64> ./release/build.sh <v>
-# and expects exactly one tarball to appear under dist/ for that invocation. See
-# docs/RELEASING.md § "build.sh contract" for the required behaviour (version from the
-# VERSION file — never a date, GOARCH honoured, version stamped into the binary).
+# and expects exactly one tarball to appear under dist/ for that invocation, with the
+# version from the VERSION file — never a date — GOARCH honoured, and the version
+# stamped into the binary.
 # The workflow renames whatever tarball build.sh produced to the canonical asset name,
 # so it works both before and after build.sh grows arch awareness.
 name: Release
