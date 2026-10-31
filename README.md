@@ -3,6 +3,7 @@
 [![CI](https://github.com/MoonTheRipper/JellyFreedom/actions/workflows/ci.yml/badge.svg)](https://github.com/MoonTheRipper/JellyFreedom/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/MoonTheRipper/JellyFreedom)](https://github.com/MoonTheRipper/JellyFreedom/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Discord](https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/DkXgr22Aan)
 
 **Watch things straight from a torrent, in Jellyfin, without filling up your disk.**
 
@@ -20,37 +21,38 @@ distributions, or anything else you host or have the right to use.
 
 ## What it looks like
 
+*Screenshots are from a demo install, using public-domain and Creative Commons films.*
+
 **Search for something.** Type a name and pick the right title.
 
 ![Searching for a title](docs/img/search.png)
 
+**Everything about a title, in one place** — cast, details, similar titles, and one button
+to request it.
+
+![A title's page, with its artwork, details and cast](docs/img/title.png)
+
 **Choose exactly which file you want** — or let it decide for you. Each option shows its
 quality, video and audio format, size, and how many people are sharing it, so you can tell
 a good file from a bad one at a glance.
-
-![Choosing which file to play](docs/img/choose-release.png)
 
 **Your library, as a tree.** Shows open into seasons, and seasons into episodes, so you can
 see what you have and what is still coming without scrolling through hundreds of rows. A
 show that is still airing says *"Up to date"*, never *"Complete"* — so you notice when the
 next episode lands.
 
-![The library, showing shows, seasons and episodes](docs/img/library.png)
-
 **Watch things arrive.** The queue is a tree too, and anything that needs you sorts to the
 top.
-
-![The request queue](docs/img/queue.png)
 
 **Paste a link to a video page** and it becomes an entry in your library. JellyFreedom
 works out what the video is, shows you the title and thumbnail, and adds it to Jellyfin —
 and it looks the link up again every time you press play, so it keeps working when the site
 changes its addresses. Both the lookup and the stream go through your VPN.
 
-**A dashboard that tells you what is left to do.** Every row links to the thing that fixes
-it.
+**A dashboard for the whole stack** — health, VPN, logs, users and settings, plus a setup
+page where every row links to the thing that fixes it.
 
-![The setup dashboard](docs/img/dashboard.png)
+![The dashboard's health page, showing every service running](docs/img/dashboard.png)
 
 ---
 
@@ -163,6 +165,7 @@ finds another one next time.
 | [Operations](docs/dev/operations.md) | VPN details, buffer tuning, Jellyfin and Apple TV setup |
 | [Roadmap](docs/dev/roadmap.md) | What is genuinely still open |
 | [Project website](https://moontheripper.github.io/JellyFreedom/) | Overview |
+| [Discord](https://discord.gg/DkXgr22Aan) | Help, setups, ideas &mdash; come say hi |
 
 ## Your files, your responsibility
 
