@@ -65,7 +65,7 @@ export const state = {
      lives on state rather than inside carousels.js because it is serialised
      into the URL, and the URL is read at boot before any module renders. */
   browse: newBrowse(),
-  prefs: {libFilter: 'all', qFilterStatus: 'all', qFilterType: 'all', qSort: 'newest',
+  prefs: {libFilter: 'all', libSort: 'attention', libStatus: 'any', qCollapsed: ['done', 'cancelled'], qFilterStatus: 'all', qFilterType: 'all', qSort: 'newest',
     calView: 'month', searchType: 'all'},
 };
 

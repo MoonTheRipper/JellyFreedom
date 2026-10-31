@@ -22,7 +22,7 @@ import {apiFetch, esc, sequencer, isAbort, errorState, debounce, num} from '../s
 import {icon} from '../shared/icons.js';
 import {state, savePrefs, setQueryParams, queryParam} from './state.js';
 import {renderGrid, annotateCards, cardSkeleton} from './cards.js';
-import {navSearch, noteRoute} from './router.js';
+import {navSearch, noteRoute, getPage} from './router.js';
 import {setSearchMode} from './carousels.js';
 
 const seq = sequencer();
@@ -45,6 +45,10 @@ export function initSearch() {
   const debounced = debounce(() => {
     const v = input.value.trim();
     if (!v) return;
+    // The box is in the header now, so it is typed into from every page. Results
+    // live on Home: from anywhere else this is a real navigation (which renders
+    // Home and runs the search), so Back returns to the page you were on.
+    if (getPage() !== 'home') { navSearch(v); return; }
     const h = '#search/' + encodeURIComponent(v);
     noteRoute(h);
     history.replaceState(null, '', h);
@@ -55,6 +59,7 @@ export function initSearch() {
     const v = input.value.trim();
     if (!v) {
       debounced.cancel();
+      if (getPage() !== 'home') return;   // nothing of ours is on screen to clear
       history.replaceState(null, '', location.pathname + location.search);
       noteRoute('');
       clearSearch();
@@ -135,6 +140,10 @@ export async function runSearch(q) {
   const grid = el('results');
   grid.innerHTML = cardSkeleton(12);
   setSearchMode(true);
+  // Searching from far down the page would otherwise fill a grid nobody can
+  // see. Only when the results are actually off screen: refining a query while
+  // reading the results must not yank the page.
+  if (wrap.getBoundingClientRect().top < 0) window.scrollTo({top: 0, behavior: 'instant'});
 
   const token = seq.next();
   let results;

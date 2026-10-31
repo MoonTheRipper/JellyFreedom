@@ -7,9 +7,7 @@
 
 .auth-body{min-height:100vh;display:flex;align-items:center;justify-content:center;
   padding:max(24px,var(--sat)) max(20px,var(--sar)) max(24px,var(--sab)) max(20px,var(--sal));
-  background-image:radial-gradient(900px 500px at 50% -10%,rgba(124,92,255,.14),transparent 62%),
-    radial-gradient(700px 420px at 10% 100%,rgba(0,164,220,.09),transparent 60%);
-  background-attachment:fixed;font-size:14px;line-height:1.55}
+  font-size:14px;line-height:1.55}
 
 .auth-card{background:var(--surface);border:1px solid var(--border);
   border-radius:var(--r-xl);padding:34px 36px;width:400px;max-width:100%;
@@ -31,7 +29,7 @@
   margin-bottom:16px;outline:none}
 .auth-form input:focus-visible{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
 
-.auth-submit{width:100%;background:var(--grad);border:none;color:#fff;padding:13px;
+.auth-submit{width:100%;background:var(--accent-strong);border:none;color:#fff;padding:13px;
   border-radius:var(--r-md);font-size:15px;font-weight:700;cursor:pointer;
   box-shadow:var(--sh-2);transition:filter .15s,transform .12s;margin-top:4px}
 .auth-submit:hover{filter:brightness(1.08)}

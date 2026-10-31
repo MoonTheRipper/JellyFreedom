@@ -7,32 +7,40 @@
    ========================================================================== */
 
 :root{
-  --bg:#0a0b10;
-  --surface:#13151f;
-  --surface2:#1a1d2a;
-  --sidebar:#111420;
-  --border:#252836;
-  --border-strong:#333850;
+  /* Neutral charcoal, not navy: posters bring all the colour a media app needs,
+     and a blue-violet tint under them fought every one of them. */
+  --bg:#0c0d10;
+  --surface:#15171b;
+  --surface2:#1c1f25;
+  --sidebar:#121418;
+  --border:#262930;
+  --border-strong:#363a44;
 
-  --text:#e6e8f3;
+  --text:#e9eaee;
   /* --muted / --muted2 are used for BODY text, so both must clear WCAG AA
-     (4.5:1) on --bg and on --surface. Measured: muted 6.3:1, muted2 8.9:1. */
-  --muted:#8a90b2;
-  --muted2:#aab0d2;
+     (4.5:1) on --bg, --surface and --surface2. Measured: muted 7.0/6.4/5.9,
+     muted2 10.4/9.6/8.9. */
+  --muted:#959ba7;
+  --muted2:#b9bec8;
 
   --green:#4ade80;--red:#f87171;--yellow:#fbbf24;--blue:#60a5fa;--purple:#a78bfa;
 
-  /* brand — matches the purple->cyan favicon */
+  /* brand — matches the purple->cyan favicon. The gradient is the LOGO's and
+     nothing else's: spread over buttons, tabs and borders with glows behind it,
+     it made the whole UI shout. Interactive colour is one calm accent:
+       --accent         text, focus rings, active marks (7:1 on --surface)
+       --accent-strong  filled buttons; white text on it is 5.0:1 */
   --brand-1:#aa5cc3;--brand-2:#00a4dc;
   --grad:linear-gradient(135deg,#aa5cc3 0%,#7c5cff 45%,#00a4dc 100%);
-  --accent:#8b6cff;--accent-h:#7857ff;--accent-soft:rgba(139,108,255,.14);
-  --overlay:rgba(0,0,0,.7);
+  --accent:#8f9cff;--accent-h:#a7b1ff;--accent-soft:rgba(143,156,255,.12);
+  --accent-strong:#5563dd;--accent-strong-h:#4c58d0;
+  --overlay:rgba(0,0,0,.72);
 
   --r-sm:8px;--r-md:12px;--r-lg:16px;--r-xl:22px;
   --sh-1:0 1px 2px rgba(0,0,0,.4);
   --sh-2:0 6px 20px rgba(0,0,0,.45);
   --sh-3:0 18px 50px rgba(0,0,0,.6);
-  --glow:0 0 0 1px rgba(139,108,255,.35),0 8px 30px rgba(124,92,255,.25);
+  --glow:0 0 0 1px rgba(143,156,255,.35);
 
   --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Inter,Roboto,system-ui,sans-serif;
   --mono:ui-monospace,'Cascadia Code','Fira Code',Menlo,Consolas,monospace;
@@ -57,7 +65,10 @@ code,pre{font-family:var(--mono)}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 /* TV remotes and some browsers only ever emit :focus — make that visible too
    for anything we made focusable by hand. */
-[tabindex]:focus,[role="button"]:focus{outline:2px solid var(--accent);outline-offset:2px}
+/* tabindex="-1" is excluded: that marks a container that takes focus only
+   programmatically (the modal pane), and clicking any blank part of it drew a
+   ring round the whole dialog. */
+[tabindex]:not([tabindex="-1"]):focus,[role="button"]:focus{outline:2px solid var(--accent);outline-offset:2px}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
   clip:rect(0 0 0 0);white-space:nowrap;border:0}
 
@@ -72,9 +83,8 @@ code,pre{font-family:var(--mono)}
   padding:7px 14px;border-radius:var(--r-sm);cursor:pointer;font-size:13px;
   font-weight:600;white-space:nowrap;transition:background .12s,border-color .12s,color .12s}
 .btn:hover{background:var(--surface2);border-color:var(--border-strong)}
-.btn.primary{background:var(--grad);border-color:transparent;color:#fff;
-  box-shadow:0 4px 14px rgba(124,92,255,.25)}
-.btn.primary:hover{filter:brightness(1.08)}
+.btn.primary{background:var(--accent-strong);border-color:transparent;color:#fff}
+.btn.primary:hover{background:var(--accent-strong-h)}
 .btn.danger:hover{background:#450a0a;border-color:#7f1d1d;color:var(--red)}
 .btn.ghost{background:transparent}
 .btn.sm{padding:4px 10px;font-size:11px}
@@ -95,10 +105,10 @@ code,pre{font-family:var(--mono)}
 .badge.tv{background:rgba(59,31,94,.85);color:var(--purple)}
 
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
-.dot.active,.dot.ok{background:var(--green);box-shadow:0 0 5px var(--green)}
-.dot.failed,.dot.err{background:var(--red);box-shadow:0 0 5px var(--red)}
+.dot.active,.dot.ok{background:var(--green)}
+.dot.failed,.dot.err{background:var(--red)}
 .dot.inactive{background:var(--muted)}
-.dot.unknown,.dot.degraded{background:var(--yellow);box-shadow:0 0 5px var(--yellow)}
+.dot.unknown,.dot.degraded{background:var(--yellow)}
 
 .pill{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;white-space:nowrap}
 .pill.ok{background:#14532d;color:var(--green)}

@@ -18,10 +18,12 @@ import {state, loadMyLibrary, loadSubscriptions, findSub, on, episodeStatus,
   EP_LABEL, EP_TAG, RING_COLOR, RING_ICON} from './state.js';
 import {openDialog, closeDialog, isDialogOpen, focusFirst} from './dialog.js';
 import {requireLogin} from './auth.js';
-import {navItem, closeModalRoute, syncHash} from './router.js';
+import {navItem, closeModalRoute, syncHash, canModalGoBack, previousModalTitle,
+  noteModalTitle, modalBack} from './router.js';
 import {removeSeries, removeSeason, removeEpisode, removeLibItem} from './library.js';
 import {pollQueue} from './queue.js';
 import * as picker from './releases.js';
+import * as hscroll from './hscroll.js';
 
 /**
  * SEASON_ROLL words the rolled-up season states. It is the same table
@@ -54,6 +56,7 @@ const ctx = {
   forcePicker: false,
   pendingSeason: null,    // from the route, applied once seasons load
   pendingEpisode: null,
+  restoreScroll: null,    // modal scrollTop to return to when coming Back
 };
 
 function el(id) { return document.getElementById(id); }
@@ -63,7 +66,14 @@ function content() { return el('modal-content'); }
 export function initModal() {
   overlay().addEventListener('click', e => { if (e.target === e.currentTarget) closeModalRoute(); });
   el('modal-close').addEventListener('click', () => closeModalRoute());
+  el('modal-back').addEventListener('click', () => modalBack());
   content().addEventListener('click', onContentClick);
+  // Cast and "More like this" rows: wheel scrolls them sideways, arrows page them.
+  hscroll.wireWheel(content(), '.mini-strip, .cast-strip');
+  content().addEventListener('scroll', e => {
+    const t = e.target;
+    if (t.classList && t.classList.contains('mini-strip')) syncStripArrows(t);
+  }, true);
   content().addEventListener('keydown', e => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     const row = e.target.closest('.ep-row');
@@ -106,6 +116,7 @@ export async function openItem(item, opts = {}) {
   ctx.forcePicker = !!opts.forcePicker;
   ctx.pendingSeason = opts.season || null;
   ctx.pendingEpisode = opts.episode || null;
+  ctx.restoreScroll = typeof opts.restoreScroll === 'number' ? opts.restoreScroll : null;
   picker.resetPicker(opts.previousRelease || '');
 
   let hash = `#${item.media_type}/${item.tmdb_id}`;
@@ -124,6 +135,11 @@ export async function openItem(item, opts = {}) {
     onEscape: () => closeModalRoute(),
     onClose: () => { seasonsSeq.abort(); epsSeq.abort(); },
   });
+  syncBack();
+  // A new title starts at its top. Without this the modal kept the previous
+  // title's scroll, so a recommendation opened from the bottom of one page
+  // landed somewhere in the middle of the next.
+  el('modal').scrollTop = 0;
 
   let details;
   try {
@@ -136,7 +152,40 @@ export async function openItem(item, opts = {}) {
   if (!ctx.item || ctx.item.tmdb_id !== item.tmdb_id) return;   // superseded
   if (!details.poster_url && item.poster_url) details.poster_url = item.poster_url;
   ctx.details = details;
+  noteModalTitle(details.title);
   renderRich(details);
+  applyRestoreScroll(item.media_type === 'tv');
+}
+
+/** syncBack shows the Back arrow only when there is a title to go back to. */
+function syncBack() {
+  const b = el('modal-back');
+  const can = canModalGoBack();
+  b.hidden = !can;
+  const prev = can ? previousModalTitle() : '';
+  const label = prev ? `Back to ${prev}` : 'Back';
+  b.setAttribute('aria-label', label);
+  b.title = label;
+}
+
+/**
+ * applyRestoreScroll puts the modal back where it was read when the user came
+ * Back to this title. A TV show's height is not final until its seasons render,
+ * so for TV it runs once now and again (finally) from renderSeasons.
+ */
+function applyRestoreScroll(keepForSeasons) {
+  if (ctx.restoreScroll == null) return;
+  el('modal').scrollTop = ctx.restoreScroll;
+  if (!keepForSeasons) ctx.restoreScroll = null;
+}
+
+function syncStripArrows(strip) {
+  const sec = strip.closest('.modal-section');
+  if (!sec) return;
+  const ok = hscroll.syncArrows(strip,
+    sec.querySelector('[data-strip-scroll="-1"]'), sec.querySelector('[data-strip-scroll="1"]'));
+  const arrows = sec.querySelector('.strip-arrows');
+  if (arrows) arrows.hidden = !ok;
 }
 
 function modalSkeleton() {
@@ -164,7 +213,11 @@ function renderFallback(item, reason) {
 
 function renderRich(d) {
   const inLib = state.libraryStatus[d.tmdb_id];
-  const libItem = state.myLibrary.find(i => i.tmdb_id === d.tmdb_id && i.status === 'ready');
+  // Ready first, else an expired copy: the library page no longer carries a
+  // Remove button per poster, so this panel is where an expired movie is
+  // re-requested or removed too.
+  const mine = state.myLibrary.filter(i => i.tmdb_id === d.tmdb_id && i.media_type === 'movie');
+  const libItem = mine.find(i => i.status === 'ready') || mine.find(i => i.status === 'stale');
   const libHash = (libItem && libItem.info_hash) || '';
 
   let html = headerHTML(d) + castHTML(d.cast);
@@ -177,6 +230,7 @@ function renderRich(d) {
   }
   content().innerHTML = html;
   focusFirst(el('modal'));
+  content().querySelectorAll('.mini-strip').forEach(syncStripArrows);
 
   if (d.media_type === 'movie' && ctx.forcePicker) {
     setTimeout(() => picker.togglePicker(
@@ -265,13 +319,26 @@ function similarHTML(similar, mediaType) {
         aria-label="${esc(s.title)}">
       ${img}<span class="mini-card-title">${esc(s.title)}</span></button>`;
   };
+  const arrows = `<div class="strip-arrows" hidden>
+      <button type="button" class="strip-arrow" data-strip-scroll="-1" aria-label="Scroll left">${icon('chevron-left')}</button>
+      <button type="button" class="strip-arrow" data-strip-scroll="1" aria-label="Scroll right">${icon('chevron-right')}</button>
+    </div>`;
   return groups.map(g =>
-    `<section class="modal-section"><h3 class="modal-section-title">${esc(g.label)}</h3>
+    `<section class="modal-section"><div class="modal-section-head">
+       <h3 class="modal-section-title">${esc(g.label)}</h3>${arrows}</div>
      <div class="mini-strip">${g.items.map(card).join('')}</div></section>`).join('');
 }
 
 function inLibPanelHTML(d, inLib, libHash) {
   if (ctx.forcePicker) return '';
+  if (inLib && inLib.status === 'stale') {
+    return `<div class="in-lib-panel stale">
+    <h3>${icon('clock')} Expired — ${esc(inLib.library || '')}</h3>
+    <p>This copy can no longer be streamed. Request it again below to pick a fresh release, or remove it.</p>
+    ${libHash && state.user ? `<div class="in-lib-actions"><button class="btn danger" type="button" data-mact="remove-movie"
+        data-hash="${esc(libHash)}" data-title="${esc(d.title)}">${icon('trash')} Remove</button></div>` : ''}
+  </div>`;
+  }
   if (!inLib || inLib.status !== 'ready') return '';
   return `<div class="in-lib-panel">
     <h3>${icon('check')} In Library — ${esc(inLib.library || '')}</h3>
@@ -468,6 +535,10 @@ function renderSeasons(seasons) {
   } else if (ctx.season) {
     selectSeason(ctx.season, ctx.episode);
   }
+  if (ctx.restoreScroll != null) {
+    el('modal').scrollTop = ctx.restoreScroll;
+    ctx.restoreScroll = null;
+  }
 }
 
 /* ── Episodes ────────────────────────────────────────────────────────────── */
@@ -623,6 +694,12 @@ function onContentClick(e) {
   const nav = e.target.closest('[data-nav-item]');
   if (nav) { navItem(nav.dataset.type, Number(nav.dataset.tmdbId)); return; }
   if (e.target.closest('[data-copy-link]')) { copyLink(); return; }
+  const arrow = e.target.closest('[data-strip-scroll]');
+  if (arrow) {
+    const strip = arrow.closest('.modal-section')?.querySelector('.mini-strip');
+    if (strip) hscroll.page(strip, Number(arrow.dataset.stripScroll));
+    return;
+  }
   if (e.target.closest('[data-modal-retry]')) { if (ctx.item) openItem(ctx.item, {}); return; }
 
   const row = e.target.closest('.ep-row');

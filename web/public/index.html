@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0a0b10">
+<meta name="theme-color" content="#0c0d10">
 <meta name="color-scheme" content="dark">
 <meta name="description" content="Search and stream movies and TV straight into your Jellyfin library.">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -27,7 +27,7 @@
         <stop offset="0" stop-color="#aa5cc3"/><stop offset="1" stop-color="#00a4dc"/>
       </linearGradient></defs>
       <circle cx="12" cy="12" r="10" fill="url(#jf-logo)"/>
-      <path d="M10 8.2 16.5 12 10 15.8z" fill="#0a0b10"/>
+      <path d="M10 8.2 16.5 12 10 15.8z" fill="#0c0d10"/>
     </svg>
     <span class="logo-text"><span class="grad">Jelly</span>Freedom</span>
   </div>
@@ -47,6 +47,16 @@
       <span class="nav-ico"><svg class="ic" aria-hidden="true"><use href="#i-calendar"></use></svg></span>
       <span class="nav-txt">Calendar</span></button>
   </nav>
+
+  <!-- Search lives in the header so it is on screen from every page and at any
+       scroll depth; results still render on Home, under #search-results. -->
+  <form class="search-box" id="search-form" role="search">
+    <svg class="ic search-ico" aria-hidden="true"><use href="#i-search"></use></svg>
+    <label class="sr-only" for="q">Search movies and TV shows</label>
+    <input type="search" id="q" name="q" placeholder="Search movies and TV shows" autocomplete="off"
+      enterkeyhint="search" aria-keyshortcuts="/">
+    <kbd class="search-kbd" aria-hidden="true">/</kbd>
+  </form>
 
   <div class="header-right">
     <div class="health-wrap">
@@ -70,19 +80,8 @@
 
   <div id="setup-banner" class="setup-banner" hidden></div>
 
-  <div class="search-wrap">
-    <form class="search-box" id="search-form" role="search">
-      <label class="sr-only" for="q">Search movies and TV shows</label>
-      <input type="search" id="q" name="q" placeholder="Search movies and TV shows…" autocomplete="off">
-      <button type="submit" class="search-submit">
-        <svg class="ic" aria-hidden="true"><use href="#i-search"></use></svg>
-        <span>Search</span>
-      </button>
-    </form>
-    <p class="hint" id="hint" role="status" aria-live="polite"></p>
-  </div>
-
   <div id="search-results" hidden>
+    <p class="hint" id="hint" role="status" aria-live="polite"></p>
     <div class="search-filter-wrap">
       <div class="filter-tabs" role="group" aria-label="Filter results by type">
         <button type="button" class="filter-tab active" data-search-type="all" aria-pressed="true">All</button>
@@ -204,22 +203,61 @@
 <!-- ── Library ───────────────────────────────────────────────────────────── -->
 <div id="page-library" class="page">
   <div class="library-toolbar">
-    <h1>My Library</h1>
-    <div class="filter-tabs" role="group" aria-label="Filter library">
-      <button type="button" class="filter-tab active" data-filter="all" aria-pressed="true">All</button>
-      <button type="button" class="filter-tab" data-filter="movie" aria-pressed="false">Movies</button>
-      <button type="button" class="filter-tab" data-filter="tv" aria-pressed="false">TV</button>
-      <button type="button" class="filter-tab" data-filter="mine" aria-pressed="false">Mine</button>
+    <div class="lib-heading">
+      <h1>My Library</h1>
+      <span class="lib-total" id="lib-total" role="status" aria-live="polite"></span>
+    </div>
+    <div class="lib-controls">
+      <div class="lib-find">
+        <svg class="ic" aria-hidden="true"><use href="#i-search"></use></svg>
+        <label class="sr-only" for="lib-find">Filter your library by title</label>
+        <input type="search" id="lib-find" placeholder="Filter by title" autocomplete="off">
+      </div>
+      <div class="filter-tabs" role="group" aria-label="Show">
+        <button type="button" class="filter-tab active" data-filter="all" aria-pressed="true">All</button>
+        <button type="button" class="filter-tab" data-filter="movie" aria-pressed="false">Movies</button>
+        <button type="button" class="filter-tab" data-filter="tv" aria-pressed="false">TV</button>
+        <button type="button" class="filter-tab" data-filter="mine" aria-pressed="false">Mine</button>
+      </div>
+      <label class="sr-only" for="lib-status">Status</label>
+      <select id="lib-status">
+        <option value="any">Any status</option>
+        <option value="attention">Needs attention</option>
+        <option value="ready">Ready</option>
+      </select>
+      <label class="sr-only" for="lib-sort">Sort</label>
+      <select id="lib-sort">
+        <option value="attention">Needs attention first</option>
+        <option value="recent">Recently updated</option>
+        <option value="title">Title A–Z</option>
+        <option value="year">Year, newest first</option>
+      </select>
     </div>
   </div>
   <!-- Shows that need a human, resolved to the exact episode. Hidden when
        there are none, so an all-clear library carries no strip at all. -->
   <div id="library-attention" class="lib-attention" role="region"
        aria-label="Shows that need attention" hidden></div>
-  <!-- Level 1 of the show tree. Movies stay in the poster grid below: a movie
-       is one file, and a one-child tree is noise. -->
-  <div id="library-shows" class="lib-shows"></div>
-  <div id="library-grid" class="library-grid"></div>
+  <!-- Two paged sections. A library of a thousand rows used to render as one
+       unbroken list of every show followed by every poster. -->
+  <section class="lib-section" id="lib-sec-shows" aria-labelledby="lib-shows-h" hidden>
+    <div class="lib-section-head">
+      <h2 id="lib-shows-h">TV Shows <span class="lib-count" id="lib-shows-n"></span></h2>
+      <div class="lib-pager" data-pager="shows"></div>
+    </div>
+    <!-- Level 1 of the show tree. -->
+    <div id="library-shows" class="lib-shows"></div>
+    <div class="lib-pager lib-pager-foot" data-pager="shows"></div>
+  </section>
+  <section class="lib-section" id="lib-sec-movies" aria-labelledby="lib-movies-h" hidden>
+    <div class="lib-section-head">
+      <h2 id="lib-movies-h">Movies <span class="lib-count" id="lib-movies-n"></span></h2>
+      <div class="lib-pager" data-pager="movies"></div>
+    </div>
+    <div id="library-grid" class="library-grid"></div>
+    <div class="lib-pager lib-pager-foot" data-pager="movies"></div>
+  </section>
+  <div id="library-empty"></div>
 </div>
 
 <!-- ── Queue ─────────────────────────────────────────────────────────────── -->
@@ -246,7 +284,7 @@
       </div>
       <div class="qs-group">
         <label class="qs-group-title" for="queue-sort">Sort</label>
-        <select id="queue-sort">
+        <select id="queue-sort" aria-label="Sort the queue">
           <option value="newest">Newest first</option>
           <option value="oldest">Oldest first</option>
           <option value="az">A–Z</option>
@@ -295,9 +333,14 @@
 <!-- ── Detail modal ──────────────────────────────────────────────────────── -->
 <div class="modal-overlay hidden" id="overlay" aria-hidden="true">
   <div class="modal" id="modal" tabindex="-1">
-    <button type="button" class="modal-close" id="modal-close" aria-label="Close">
-      <svg class="ic" aria-hidden="true"><use href="#i-x"></use></svg>
-    </button>
+    <div class="modal-bar">
+      <button type="button" class="modal-btn" id="modal-back" aria-label="Back" hidden>
+        <svg class="ic" aria-hidden="true"><use href="#i-chevron-left"></use></svg>
+      </button>
+      <button type="button" class="modal-btn modal-close" id="modal-close" aria-label="Close">
+        <svg class="ic" aria-hidden="true"><use href="#i-x"></use></svg>
+      </button>
+    </div>
     <div id="modal-content"></div>
   </div>
 </div>
