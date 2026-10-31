@@ -23,7 +23,9 @@ function unlockScroll() {
   lockCount = 0;
   document.body.classList.remove('scroll-locked');
   document.body.style.top = '';
-  window.scrollTo({top: savedScrollY, behavior: 'auto'});
+  // 'instant': 'auto' defers to CSS scroll-behavior, and a smooth one replayed
+  // the whole distance back down the page as an animation on every close.
+  window.scrollTo({top: savedScrollY, behavior: 'instant'});
 }
 
 const stack = [];

@@ -23,6 +23,7 @@ import {state, newBrowse, cachedGenres, loadGenres, genreName, searchStudios, lo
   browseToQuery, browseFromQuery, setQueryParams, sortsFor, sortLabel,
   MAX_FILTER_IDS, MAX_BROWSE_PAGE, BROWSE_PAGE_SIZE, RATING_VOTE_FLOOR} from './state.js';
 import {renderGrid, annotateCards, cardSkeleton} from './cards.js';
+import * as hscroll from './hscroll.js';
 
 export const CAROUSELS = [
   {id: 'trending',   label: 'Trending This Week', url: '/api/browse/trending'},
@@ -101,19 +102,12 @@ function wireScrolling(container) {
     if (!btn) return;
     const track = document.getElementById(btn.dataset.track);
     if (!track) return;
-    track.scrollBy({left: Number(btn.dataset.scroll) * Math.max(240, track.clientWidth * 0.8), behavior: 'smooth'});
+    hscroll.page(track, Number(btn.dataset.scroll));
   });
 
   // Vertical wheel over a row scrolls it horizontally — the affordance every
   // desktop user reaches for first.
-  container.addEventListener('wheel', e => {
-    const track = e.target.closest('.carousel-track');
-    if (!track) return;
-    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
-    const before = track.scrollLeft;
-    track.scrollLeft += e.deltaY;
-    if (track.scrollLeft !== before) e.preventDefault();
-  }, {passive: false});
+  hscroll.wireWheel(container, '.carousel-track');
 
   container.addEventListener('keydown', e => {
     const track = e.target.closest('.carousel-track');
@@ -131,14 +125,10 @@ function wireScrolling(container) {
 function updateArrows(track) {
   const section = track.closest('.carousel-section');
   if (!section) return;
-  const max = track.scrollWidth - track.clientWidth - 2;
-  const left = section.querySelector('[data-scroll="-1"]');
-  const right = section.querySelector('[data-scroll="1"]');
-  if (left) left.disabled = track.scrollLeft <= 2;
-  if (right) right.disabled = track.scrollLeft >= max;
-  if (section.querySelector('.carousel-arrows')) {
-    section.querySelector('.carousel-arrows').hidden = max <= 4;
-  }
+  const scrollable = hscroll.syncArrows(track,
+    section.querySelector('[data-scroll="-1"]'), section.querySelector('[data-scroll="1"]'));
+  const arrows = section.querySelector('.carousel-arrows');
+  if (arrows) arrows.hidden = !scrollable;
 }
 
 async function loadCarousel(c) {

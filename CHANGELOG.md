@@ -9,6 +9,31 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Changed
+- **Search is in the header**, so it is on screen from every page and at any scroll depth.
+  Typing from Library, Queue or Calendar opens the results on Home, and Back returns you to
+  where you were. `/` still focuses it.
+- **A calmer look.** Neutral charcoal greys replace the blue-violet tint, the purple-to-cyan
+  gradient is kept for the logo only, and the glows behind buttons, tabs, cards and status
+  dots are gone. Buttons use one indigo accent; every text colour still meets WCAG AA.
+
+### Fixed
+- **The title popup had no way back.** Opening a recommendation inside the popup now shows a
+  Back arrow that returns to the previous title, at the point you had scrolled to. The
+  browser's Back button and a phone's back gesture do the same.
+- **Closing a popup threw away your search.** Closing a title opened from search results now
+  returns to the same results at the same scroll position, instead of the home page.
+- **The popup's recommendation rows could not be scrolled with a mouse.** A mouse wheel now
+  scrolls them sideways, and rows with more titles than fit get arrow buttons.
+- **Closing a popup animated a long scroll down the page.** The page now returns to where you
+  were instantly.
+- Clicking an empty part of the popup no longer draws a focus ring around the whole popup.
+
+### Added
+- `go run ./cmd/webdev` serves the web UI from a working tree while sending every API call
+  to a running JellyFreedom, so UI changes can be checked against real data without a
+  rebuild. Development only; not part of a release.
+
 ## [0.8.0] - 2026-10-31
 
 JellyFreedom now works with **Jellyfin 12**. Every install made since Jellyfin 12.0 shipped on

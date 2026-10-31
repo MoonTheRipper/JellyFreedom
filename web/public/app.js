@@ -31,15 +31,19 @@ async function init() {
   initModal();
 
   router.registerPage('home', () => { document.dispatchEvent(new CustomEvent('jf:layout')); });
-  router.registerPage('library', renderLibraryPage);
-  router.registerPage('queue', () => { pollQueue(); renderQueuePage(); });
-  router.registerPage('calendar', loadCalendar);
+  // Leaving Home leaves its search behind; the header box is cleared so it does
+  // not show a query whose results are no longer on screen. Back restores both.
+  const leaveSearch = () => { el('q').value = ''; clearSearch(); };
+  router.registerPage('library', () => { leaveSearch(); renderLibraryPage(); });
+  router.registerPage('queue', () => { leaveSearch(); pollQueue(); renderQueuePage(); });
+  router.registerPage('calendar', () => { leaveSearch(); loadCalendar(); });
   router.configure({
     openItem,
     modalIsOpen,
     closeModalDOM,
     onHomeReset: () => { el('q').value = ''; clearSearch(); },
     runSearch: routeSearch,
+    modalScrollTop: () => el('modal').scrollTop,
   });
 
   // Top nav + any card anywhere outside a module-owned container.
@@ -107,8 +111,9 @@ function onScrollHeader() {
 function onGlobalKey(e) {
   if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName)) {
     e.preventDefault();
-    if (router.getPage() !== 'home') router.showPage('home');
-    setTimeout(() => el('q').focus(), 60);
+    if (modalIsOpen()) return;          // the header sits behind the modal
+    el('q').focus();
+    el('q').select();
   }
 }
 
