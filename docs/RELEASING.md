@@ -80,7 +80,7 @@ attestation and published checksums of whatever it pointed at before, which is e
 instead, deleting release and tag together so no download URL is left 404ing.
 
 Note that switching **back** to stable does not downgrade you: a nightly is usually newer
-than the latest stable, and `--update` compares versions for equality, so nothing happens
+than the latest stable, and `--update` refuses to install anything older, so nothing happens
 until stable catches up.
 
 Nightlies are exempt from the release-cadence rules above. That is their purpose: merges can

@@ -74,8 +74,9 @@ in-place upgrade from one to the other.
 - On **Jellyfin 12**, if you turned `EnableLegacyAuthorization` back on to keep 0.7.6 working,
   turn it off again after updating.
 - The webhook needs a payload template, which the setup instructions never mentioned; without
-  one, Jellyfin sends a body the orchestrator rejects. See
-  [first-run.md §8](docs/first-run.md#8-optional-the-playback-stopped-webhook).
+  one, Jellyfin sends a body the orchestrator rejects. If you set the webhook up by hand, run
+  `sudo jellyfreedom webhook` once after updating: it fixes your destination and leaves your
+  other webhooks alone. See [first-run.md §8](docs/first-run.md#8-optional-the-playback-stopped-webhook).
 
 ## [0.7.6] - 2026-09-05
 
