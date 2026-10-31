@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>What's new — JellyFreedom</title>
+<meta name="description" content="What changed in the latest JellyFreedom release, how to update, and anything to do afterwards.">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="canonical" href="https://moontheripper.github.io/JellyFreedom/whats-new.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="JellyFreedom">
+<meta property="og:title" content="What's new in JellyFreedom 0.8.0">
+<meta property="og:description" content="Works with Jellyfin 12. Update with one command.">
+<meta property="og:url" content="https://moontheripper.github.io/JellyFreedom/whats-new.html">
+<meta property="og:image" content="https://moontheripper.github.io/JellyFreedom/img/social-card.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@500;600;700&family=Open+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute"><defs>
+  <linearGradient id="jf" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#AA5CC3"/><stop offset="1" stop-color="#00A4DC"/>
+  </linearGradient></defs></svg>
+
+<nav><div class="wrap">
+  <a class="brand" href="./">
+    <svg class="logo" viewBox="0 0 24 24" fill="url(#jf)"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm-2 6.2l6.5 3.8L10 15.8V8.2z"/></svg>
+    Jelly<span class="grad-text">Freedom</span>
+  </a>
+  <span class="nav-links">
+    <a href="./#install">Install</a>
+    <a href="./#features">Features</a>
+    <a href="whats-new.html" aria-current="page" style="color:var(--text)">What&rsquo;s new</a>
+    <a href="https://github.com/MoonTheRipper/JellyFreedom/tree/main/docs#readme" target="_blank" rel="noopener">Docs</a>
+    <a href="https://github.com/MoonTheRipper/JellyFreedom" target="_blank" rel="noopener">GitHub ↗</a>
+  </span>
+</div></nav>
+
+<main class="page"><div class="wrap">
+  <h1>What&rsquo;s <span class="grad-text">new</span></h1>
+  <p class="lead">The latest release, how to update, and anything you need to do afterwards.</p>
+
+  <article class="release" id="v0.8.0">
+    <div class="release-head">
+      <h2>0.8.0</h2>
+      <time datetime="2026-10-31">31 October 2026</time>
+    </div>
+    <p><b>Works with Jellyfin 12.</b> Jellyfin 12 rejected how earlier versions signed in, so on
+    0.7.6 nothing reached Jellyfin: the library never updated and new titles never appeared.
+    Fixed, and Jellyfin 10.11 still works.</p>
+
+    <h3>Also in this release</h3>
+    <ul>
+      <li><b>Stopping playback frees the stream right away</b>, instead of waiting for it to time out.</li>
+      <li><b><code>sudo jellyfreedom webhook</code></b> sets that up in Jellyfin for you, in one step.</li>
+      <li><b>Fewer interruptions:</b> the VPN watchdog no longer restarts the streaming engine while something is playing.</li>
+      <li><b>Updates never go backwards:</b> <code>--update</code> won&rsquo;t replace a newer version with an older one.</li>
+    </ul>
+
+    <h3>Update</h3>
+    <div class="code">
+      <button class="copy" type="button" data-copy-target="update-cmd">Copy</button>
+      <span class="prompt" aria-hidden="true">$</span> <code id="update-cmd">sudo jellyfreedom --update</code>
+    </div>
+
+    <h3>After updating</h3>
+    <ul>
+      <li>If you use the playback-stop webhook, run <code>sudo jellyfreedom webhook</code> once.</li>
+      <li>On Jellyfin 12, if you turned <code>EnableLegacyAuthorization</code> back on to keep 0.7.6 working, turn it off again.</li>
+    </ul>
+  </article>
+
+  <p class="more">
+    <a href="https://github.com/MoonTheRipper/JellyFreedom/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Full changelog</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/MoonTheRipper/JellyFreedom/releases" target="_blank" rel="noopener">All releases</a>
+  </p>
+</div></main>
+
+<footer><div class="wrap">
+  <strong class="brand" style="font-size:16px">Jelly<span class="grad-text">Freedom</span></strong>
+  &nbsp;·&nbsp; <a href="./">Home</a>
+  &nbsp;·&nbsp; <a href="https://github.com/MoonTheRipper/JellyFreedom/tree/main/docs#readme" target="_blank" rel="noopener">Docs</a>
+  &nbsp;·&nbsp; <a href="https://github.com/MoonTheRipper/JellyFreedom" target="_blank" rel="noopener">GitHub</a>
+  &nbsp;·&nbsp; MIT License &nbsp;·&nbsp; © moontheripper
+</div></footer>
+
+<script src="site.js"></script>
+</body>
+</html>
