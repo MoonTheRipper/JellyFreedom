@@ -79,12 +79,24 @@ let lastSignature = null;
    uses) keep a page to about one screen. */
 const PAGE = {shows: 10, movies: 24};
 const pages = {shows: 1, movies: 1};
-let findText = '';               // the title filter; deliberately not persisted
+
+/* FILTERS. Three things narrow the page — the tab (which sections), the find
+   box (which titles) and Mine (whose requests) — and all three are PER VISIT:
+   renderLibraryPage resets them, so the Library always opens showing
+   everything. They were preferences once, and the page remembered a status
+   filter from an earlier visit while "All" sat highlighted: 114 movies and 49
+   shows were off the page with nothing anywhere to say why. The only thing
+   remembered now is the sort, which cannot hide anything. Whatever narrows
+   the page is named on the filter bar (renderFilterBar) with one button that
+   undoes it. */
+let typeFilter = 'all';          // 'all' | 'tv' | 'movie'
+let mineOnly = false;            // only the signed-in user's own requests
+let findText = '';               // the title find box
 let attnAll = false;             // "Show all" on the Needs attention strip
 const ATTN_PREVIEW = 8;
 
-const SORTS = ['attention', 'recent', 'title', 'year'];
-const STATUSES = ['any', 'attention', 'ready'];
+const SORTS = ['recent', 'title', 'year'];
+const TYPES = ['all', 'tv', 'movie'];
 
 function el(id) { return document.getElementById(id); }
 function seasonKey(tmdbId, season) { return `${num(tmdbId)}:${num(season)}`; }
@@ -93,28 +105,25 @@ function pageActive() { const p = el('page-library'); return !!p && p.classList.
 export function initLibrary() {
   const page = el('page-library');
 
-  if (!SORTS.includes(state.prefs.libSort)) state.prefs.libSort = 'attention';
-  if (!STATUSES.includes(state.prefs.libStatus)) state.prefs.libStatus = 'any';
+  // 0.8.1 stored 'attention' here, and a status filter beside it. Anything
+  // that is not a sort this build offers lands on the default, and the save
+  // rewrites the stored prefs without the keys this build no longer reads.
+  if (!SORTS.includes(state.prefs.libSort)) { state.prefs.libSort = 'recent'; savePrefs(); }
   el('lib-sort').value = state.prefs.libSort;
-  el('lib-status').value = state.prefs.libStatus;
 
-  const refilter = () => { pages.shows = 1; pages.movies = 1; paint(true); };
   const findLater = debounce(() => { findText = el('lib-find').value.trim(); refilter(); }, 150);
   el('lib-find').addEventListener('input', findLater);
   el('lib-sort').addEventListener('change', e => {
-    state.prefs.libSort = e.target.value; savePrefs(); refilter();
-  });
-  el('lib-status').addEventListener('change', e => {
-    state.prefs.libStatus = e.target.value; savePrefs(); refilter();
+    state.prefs.libSort = SORTS.includes(e.target.value) ? e.target.value : 'recent';
+    savePrefs();
+    refilter();
   });
 
   page.addEventListener('click', e => {
-    const tab = e.target.closest('.filter-tab');
+    const tab = e.target.closest('.filter-tab[data-filter]');
     if (tab) {
-      state.prefs.libFilter = tab.dataset.filter;
-      savePrefs();
-      pages.shows = 1; pages.movies = 1;
-      renderLibraryPage();
+      typeFilter = TYPES.includes(tab.dataset.filter) ? tab.dataset.filter : 'all';
+      refilter();
       return;
     }
 
@@ -152,8 +161,8 @@ export function initLibrary() {
   on('shape', () => { if (pageActive()) paint(false); });
   on('library', () => { if (pageActive()) paint(false); });
   // Signing in or out changes what this page may offer — the manage buttons,
-  // and the "Mine" filter's whole contents. The username is in the signature,
-  // so this repaints exactly once per change.
+  // and whether Mine exists at all. The username is in the signature, so this
+  // repaints exactly once per change.
   on('auth', () => { if (pageActive()) paint(false); });
   on('queue', () => {
     if (!pageActive()) return;
@@ -190,15 +199,24 @@ function onAction(act) {
     case 'retry-shape': retryShape(tmdbId, act.dataset.season); break;
     case 'retry-load': renderLibraryPage(); break;
     case 'attn-all':   attnAll = !attnAll; paint(true); break;
-    case 'clear-filters':
-      findText = ''; el('lib-find').value = '';
-      state.prefs.libStatus = 'any'; el('lib-status').value = 'any';
-      if (state.prefs.libFilter !== 'mine') state.prefs.libFilter = 'all';
-      savePrefs();
-      pages.shows = 1; pages.movies = 1;
-      paint(true);
-      break;
+    case 'mine':       mineOnly = !mineOnly; refilter(); break;
+    case 'clear-filters': resetFilters(); paint(true); break;
   }
+}
+
+/** refilter repaints from page 1 of each section: a changed filter would
+ *  otherwise leave a page number pointing past the end of a shorter list. */
+function refilter() { pages.shows = 1; pages.movies = 1; paint(true); }
+
+/** resetFilters puts the page back to showing everything. It is what "Show
+ *  everything" does, and what opening the page does. */
+function resetFilters() {
+  typeFilter = 'all';
+  mineOnly = false;
+  findText = '';
+  const find = el('lib-find');
+  if (find) find.value = '';
+  pages.shows = 1; pages.movies = 1;
 }
 
 /** goPage turns a section's page and brings its heading back into view when
@@ -210,12 +228,21 @@ function goPage(key, to) {
   pager.reveal(el(key === 'shows' ? 'lib-sec-shows' : 'lib-sec-movies'));
 }
 
-function syncTabs() {
-  document.querySelectorAll('#page-library .filter-tab').forEach(t => {
-    const on_ = t.dataset.filter === state.prefs.libFilter;
+/** syncControls makes the toolbar say what the model says. The controls are
+ *  never read back as state; the model is the state. */
+function syncControls() {
+  document.querySelectorAll('#page-library .filter-tab[data-filter]').forEach(t => {
+    const on_ = t.dataset.filter === typeFilter;
     t.classList.toggle('active', on_);
     t.setAttribute('aria-pressed', String(on_));
   });
+  const mine = el('lib-mine');
+  if (mine) {
+    mine.classList.toggle('active', mineOnly);
+    mine.setAttribute('aria-pressed', String(mineOnly));
+  }
+  const sort = el('lib-sort');
+  if (sort && sort.value !== state.prefs.libSort) sort.value = state.prefs.libSort;
 }
 
 /* ── Expansion ───────────────────────────────────────────────────────────── */
@@ -265,7 +292,12 @@ function retryShape(tmdbId, season) {
 /* ── Load + paint ────────────────────────────────────────────────────────── */
 
 export async function renderLibraryPage() {
-  syncTabs();
+  // Opening the page starts from everything — see FILTERS above. Coming back
+  // from a title popup does not pass through here (router.js keeps the page
+  // beneath a popup as it was), so a find or a tab survives opening a card.
+  resetFilters();
+  attnAll = false;
+  syncControls();
   const grid = el('library-grid');
   if (!state.myLibrary.length) {
     el('lib-sec-movies').hidden = false;
@@ -276,6 +308,7 @@ export async function renderLibraryPage() {
     await Promise.all([loadMyLibrary(), pollQueue()]);
   } catch (e) {
     el('library-shows').innerHTML = '';
+    el('lib-filterbar').hidden = true;
     el('library-attention').hidden = true;
     el('lib-sec-shows').hidden = true;
     el('lib-sec-movies').hidden = true;
@@ -290,29 +323,27 @@ function paint(force) {
   const grid = el('library-grid');
   const showsHost = el('library-shows');
   if (!grid || !showsHost) return;
-  syncTabs();
 
-  const filter = state.prefs.libFilter;
-  const empty = el('library-empty');
-  if (filter === 'mine' && !state.user) {
-    el('library-attention').hidden = true;
-    el('lib-sec-shows').hidden = true;
-    el('lib-sec-movies').hidden = true;
-    el('lib-total').textContent = '';
-    empty.innerHTML = `<div class="empty-state">${icon('key')}<p>Sign in to see your own requests</p></div>`;
-    lastSignature = null;
-    return;
+  const user = state.user;
+  const allMovies = state.myLibrary.filter(i => i.media_type === 'movie');
+  const allShows = buildShows(state.myLibrary.filter(i => i.media_type === 'tv'));
+  const ownedShows = allShows.length, ownedMovies = allMovies.length;
+
+  // Mine is offered only where it can change something: you are signed in,
+  // and someone else's requests are in the library beside yours. On a box
+  // where everything is yours the button would be a no-op, so it is not
+  // there — and a toggle that is not there cannot be left on.
+  const mineOffered = !!user && state.myLibrary.some(i => i.requested_by !== user.username);
+  if (!mineOffered) mineOnly = false;
+  el('lib-mine-wrap').hidden = !mineOffered;
+  syncControls();
+
+  let movies = allMovies, shows = allShows;
+  if (mineOnly) {
+    movies = movies.filter(i => i.requested_by === user.username);
+    shows = shows.filter(s => s.requesters.has(user.username));
   }
-
-  let movies = state.myLibrary.filter(i => i.media_type === 'movie');
-  let shows = buildShows(state.myLibrary.filter(i => i.media_type === 'tv'));
-  if (filter === 'mine') {
-    movies = movies.filter(i => i.requested_by === state.user.username);
-    shows = shows.filter(s => s.requesters.has(state.user.username));
-  }
-  const ownedShows = shows.length, ownedMovies = movies.length;
-
-  // The title filter narrows everything on the page, the strip included: typing
+  // The find box narrows everything on the page, the strip included: typing
   // a show's name is also how you find its problem.
   const q = fold(findText);
   if (q) {
@@ -320,28 +351,22 @@ function paint(force) {
     shows = shows.filter(x => fold(x.title).includes(q));
   }
   const strip = shows;
+  const sort = state.prefs.libSort;
+  sortShows(shows, sort);
+  sortMovies(movies, sort);
 
-  const status = state.prefs.libStatus;
-  if (status === 'attention') {
-    shows = shows.filter(needsAttention);
-    movies = movies.filter(m => m.status !== 'ready');
-  } else if (status === 'ready') {
-    shows = shows.filter(x => !needsAttention(x));
-    movies = movies.filter(m => m.status === 'ready');
-  }
-  sortShows(shows, state.prefs.libSort);
-  sortMovies(movies, state.prefs.libSort);
-
-  const wantShows = filter === 'all' || filter === 'tv' || filter === 'mine';
-  const wantMovies = filter === 'all' || filter === 'movie' || filter === 'mine';
+  const wantShows = typeFilter !== 'movie';
+  const wantMovies = typeFilter !== 'tv';
   pages.shows = pager.clamp(pages.shows, shows.length, PAGE.shows);
   pages.movies = pager.clamp(pages.movies, movies.length, PAGE.movies);
 
-  const sig = signature(shows, movies, filter) +
-    `#${q}#${status}#${state.prefs.libSort}#${pages.shows}/${pages.movies}#${attnAll}`;
+  const sig = signature(shows, movies) +
+    `#${typeFilter}#${mineOnly}/${mineOffered}#${q}#${sort}#${pages.shows}/${pages.movies}#${attnAll}`;
   if (!force && sig === lastSignature) return;
   lastSignature = sig;
 
+  // The heading always counts the whole library. What the page is showing of
+  // it is the filter bar's and the section counts' job.
   el('lib-total').textContent = [
     ownedShows ? `${ownedShows} show${ownedShows === 1 ? '' : 's'}` : '',
     ownedMovies ? `${ownedMovies} movie${ownedMovies === 1 ? '' : 's'}` : '',
@@ -349,34 +374,93 @@ function paint(force) {
 
   renderAttention(wantShows ? strip : []);
 
+  const narrowed = !!q || mineOnly;
+  const visShows = wantShows ? shows.length : 0;
+  const visMovies = wantMovies ? movies.length : 0;
+  const anything = visShows + visMovies > 0;
+  renderFilterBar({q, narrowed, shows: shows.length, movies: movies.length, ownedShows, ownedMovies,
+    wantShows, wantMovies});
+
+  // A section a find or Mine has emptied STAYS on the page, as "0 of 114"
+  // over a line saying why; it was hidden before, and a page that drops a
+  // section without a word is the page the user reported. A section is left
+  // out only when there is nothing to explain: the other tab is chosen, the
+  // library holds nothing of that kind, or the whole page is empty and the
+  // empty state below speaks for both.
+  const secShows = anything && wantShows && (visShows > 0 || (narrowed && ownedShows > 0));
+  const secMovies = anything && wantMovies && (visMovies > 0 || (narrowed && ownedMovies > 0));
   const showPage = pager.slice(shows, pages.shows, PAGE.shows);
   const moviePage = pager.slice(movies, pages.movies, PAGE.movies);
-  el('lib-sec-shows').hidden = !(wantShows && shows.length);
-  el('lib-sec-movies').hidden = !(wantMovies && movies.length);
-  el('lib-shows-n').textContent = shows.length;
-  el('lib-movies-n').textContent = movies.length;
-  showsHost.innerHTML = wantShows ? showPage.map(renderShow).join('') : '';
-  grid.innerHTML = wantMovies ? moviePage.map(renderLibCard).join('') : '';
+  el('lib-sec-shows').hidden = !secShows;
+  el('lib-sec-movies').hidden = !secMovies;
+  el('lib-shows-n').innerHTML = countLabel(shows.length, ownedShows, narrowed);
+  el('lib-movies-n').innerHTML = countLabel(movies.length, ownedMovies, narrowed);
+  showsHost.innerHTML = !secShows ? '' : showPage.length ? showPage.map(renderShow).join('') : noneLine('shows', q);
+  grid.innerHTML = !secMovies ? '' : moviePage.length ? moviePage.map(renderLibCard).join('') : noneLine('movies', q);
   document.querySelectorAll('#page-library [data-pager]').forEach(p => {
     const key = p.dataset.pager;
     p.innerHTML = pager.html(key, key === 'shows' ? shows.length : movies.length, pages[key],
       PAGE[key], key === 'shows' ? 'shows' : 'movies');
   });
 
+  const empty = el('library-empty');
   empty.innerHTML = '';
-  if (!(wantShows && shows.length) && !(wantMovies && movies.length)) {
-    const narrowed = q || status !== 'any' ||
-      (wantShows && !wantMovies && ownedMovies) || (wantMovies && !wantShows && ownedShows);
-    const nothingAtAll = !ownedShows && !ownedMovies;
-    empty.innerHTML = (narrowed && !nothingAtAll)
-      ? `<div class="empty-state">${icon('filter')}
-          <p>${q ? `Nothing in your library matches “${esc(findText)}”` : 'Nothing matches these filters'}</p>
-          <div class="empty-actions"><button type="button" class="btn primary" data-lib-act="clear-filters">
-            Clear filters</button></div></div>`
-      : `<div class="empty-state">${icon('library')}
-          <p>Nothing here${filter === 'mine' ? " — you haven't requested anything yet" : ''}</p>
-          <p class="sub">Search for a title and request it; it lands here once it resolves.</p></div>`;
+  if (anything) return;
+  if (!ownedShows && !ownedMovies) {
+    empty.innerHTML = `<div class="empty-state">${icon('library')}
+        <p>Nothing here yet</p>
+        <p class="sub">Search for a title and request it; it lands here once it resolves.</p></div>`;
+    return;
   }
+  // The library has things in it; a filter is why none are on the page. Say
+  // which, and offer the way back.
+  const what = typeFilter === 'tv' ? 'shows' : typeFilter === 'movie' ? 'movies' : 'titles';
+  const why = q ? `No ${what} match “${esc(findText)}”`
+    : mineOnly ? `You have not requested any ${what}`
+    : `No ${what} in your library yet`;
+  empty.innerHTML = `<div class="empty-state">${icon('filter')}<p>${why}</p>
+      <div class="empty-actions"><button type="button" class="btn primary" data-lib-act="clear-filters">
+        Show everything</button></div></div>`;
+}
+
+/**
+ * renderFilterBar names everything that is narrowing the page in one line —
+ * the tab, Mine, the find text — with the counts behind it and one button
+ * that undoes all of it. It is on the page exactly when the page is not
+ * showing everything, so "is something filtered?" is never a question.
+ */
+function renderFilterBar({q, narrowed, shows, movies, ownedShows, ownedMovies, wantShows, wantMovies}) {
+  const bar = el('lib-filterbar');
+  if (!bar) return;
+  if (typeFilter === 'all' && !narrowed) { bar.hidden = true; bar.innerHTML = ''; return; }
+
+  const what = [];
+  if (typeFilter === 'tv') what.push('TV only');
+  if (typeFilter === 'movie') what.push('movies only');
+  if (mineOnly) what.push('only your requests');
+  if (q) what.push(`matching <b>“${esc(findText)}”</b>`);
+
+  const n = (have, owned, noun) => `${narrowed ? `${have} of ${owned}` : owned} ${noun}${owned === 1 ? '' : 's'}`;
+  const counts = [];
+  if (wantShows && ownedShows) counts.push(n(shows, ownedShows, 'show'));
+  if (wantMovies && ownedMovies) counts.push(n(movies, ownedMovies, 'movie'));
+
+  bar.hidden = false;
+  bar.innerHTML = `${icon('filter')}<span class="lib-fb-what">Showing ${what.join(', ')}</span>
+    <span class="lib-fb-counts">${counts.join(' · ')}</span>
+    <button type="button" class="lib-fb-reset" data-lib-act="clear-filters">${icon('x')} Show everything</button>`;
+}
+
+/** countLabel is a section heading's count: "114", or "3 of 114" once a find
+ *  or Mine has narrowed it. The tab does not narrow a section, it picks one. */
+function countLabel(have, owned, narrowed) {
+  return narrowed && have !== owned ? `${have} <span class="lib-of">of ${owned}</span>` : String(have);
+}
+
+/** noneLine stands in for a section's rows when a filter left it none. */
+function noneLine(what, q) {
+  const why = q ? `No ${what} match “${esc(findText)}”` : `None of the ${what} were requested by you`;
+  return `<div class="lib-none">${icon('info')} ${why}</div>`;
 }
 
 /** fold lowercases and strips accents, so "pokemon" finds "Pokémon". */
@@ -387,21 +471,23 @@ function fold(s) {
 const byTitle = (a, b) => String(a.title).localeCompare(String(b.title), undefined, {sensitivity: 'base'});
 const yearOf = x => parseInt(x.year, 10) || 0;
 
-/** sortShows: 'attention' keeps buildShows' order (problems first). */
+/* One sort for both sections. 'recent' is the default: a show rises when an
+   episode of it was fetched or expired, a movie when it resolved or expired.
+   There is no "needs attention first" any more — the strip above the sections
+   is the one place problems are surfaced, and a sort that said the same thing
+   under a different name was one of the two things that made this toolbar
+   read as two "needs attention" controls. */
 function sortShows(list, mode) {
-  if (mode === 'recent') list.sort((a, b) => b.updated - a.updated || byTitle(a, b));
-  else if (mode === 'title') list.sort(byTitle);
+  if (mode === 'title') list.sort(byTitle);
   else if (mode === 'year') list.sort((a, b) => yearOf(b) - yearOf(a) || byTitle(a, b));
+  else list.sort((a, b) => b.updated - a.updated || byTitle(a, b));
 }
 
-/** sortMovies: 'attention' puts anything not playable (expired, still
- *  resolving) first, then the most recently touched. */
 function sortMovies(list, mode) {
   const t = m => Date.parse(m.updated) || 0;
   if (mode === 'title') list.sort(byTitle);
   else if (mode === 'year') list.sort((a, b) => yearOf(b) - yearOf(a) || byTitle(a, b));
-  else if (mode === 'recent') list.sort((a, b) => t(b) - t(a) || byTitle(a, b));
-  else list.sort((a, b) => (a.status === 'ready') - (b.status === 'ready') || t(b) - t(a) || byTitle(a, b));
+  else list.sort((a, b) => t(b) - t(a) || byTitle(a, b));
 }
 
 /**
@@ -413,13 +499,12 @@ function sortMovies(list, mode) {
  * 888 raw library rows: the model is what the markup depends on, and it is two
  * orders of magnitude smaller to compare.
  */
-function signature(shows, movies, filter) {
+function signature(shows, movies) {
   const cs = c => `${c.ready}/${c.stale}/${c.processing}/${c.pending}/${c.failed}/${c.missing}/${c.unaired}/${c.total}`;
   const showSig = s => `${s.tmdbId}:${s.roll}:${cs(s.counts)}:${s.shape}:${aggFailed(s.agg)}/${aggActive(s.agg)}` +
     s.seasons.map(x => `|${x.season}:${x.roll}:${cs(x.counts)}:${x.shape}:${x.eps.length}` +
       (shapeError(queueShapeKey(s.tmdbId, x.season)) ? ':qerr' : '')).join('');
   return [
-    filter,
     state.user ? state.user.username : '',
     shows.map(showSig).join(';'),
     movies.map(m => `${m.tmdb_id}:${m.status}:${m.info_hash || ''}`).join(';'),
@@ -471,15 +556,10 @@ function buildShows(tvItems) {
     g.seasons = g.open ? g.seasonNums.map(sn => seasonNode(g, sn)) : [];
     out.push(g);
   }
-  // What needs a human comes first — the same reasoning that puts Failed above
-  // In Progress on the queue page. Sorting by season count alone (what this
-  // page used to do) buried the three shows with problems under twenty-five
-  // that were fine, which is the opposite of what a status page is for.
-  // Within a group the old order stands: most seasons first, then by title.
-  return out.sort((a, b) =>
-    (needsAttention(a) ? attentionRank(a) : 9) - (needsAttention(b) ? attentionRank(b) : 9) ||
-    b.seasonNums.length - a.seasonNums.length ||
-    String(a.title).localeCompare(String(b.title)));
+  // Order is the sort select's business (sortShows). The shows that need a
+  // human are not buried by that: the Needs attention strip above the list
+  // names them, in its own order (attentionRank), whatever the sort says.
+  return out;
 }
 
 function seasonNode(show, sn) {

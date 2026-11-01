@@ -65,7 +65,11 @@ export const state = {
      lives on state rather than inside carousels.js because it is serialised
      into the URL, and the URL is read at boot before any module renders. */
   browse: newBrowse(),
-  prefs: {libFilter: 'all', libSort: 'attention', libStatus: 'any', qCollapsed: ['done', 'cancelled'], qFilterStatus: 'all', qFilterType: 'all', qSort: 'newest',
+  /* The Library remembers only its sort. Its tab, title find and "Mine" are
+     per-visit (library.js): a remembered status filter once hid every movie
+     on the page with nothing to say why. Older builds stored libFilter and
+     libStatus here; restorePrefs ignores keys it does not know. */
+  prefs: {libSort: 'recent', qCollapsed: ['done', 'cancelled'], qFilterStatus: 'all', qFilterType: 'all', qSort: 'newest',
     calView: 'month', searchType: 'all'},
 };
 
