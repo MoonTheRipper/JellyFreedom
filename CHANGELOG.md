@@ -10,6 +10,14 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 ## [Unreleased]
 
 ### Fixed
+- **"Expired" episodes and movies stayed expired, and most of the library was never
+  re-checked.** The background check that decides whether a title can still be found only
+  gets through a few dozen titles per run, and every run started again from the top. On a
+  library of about 1,600 titles that meant the same first 40 were re-checked every half hour
+  and the rest never were: an episode marked expired in June still said so in November, and
+  Needs attention kept naming it. Each run now continues where the last one stopped, so the
+  whole library is cycled through. The check also no longer counts as an "update" for the
+  Library's Recently updated sort.
 - **The Library could open with no movies on it.** The status filter added in 0.8.1 was
   remembered between visits and applied silently: with every movie ready, "Needs attention"
   hid the whole Movies section while "All" stayed highlighted and the heading still said

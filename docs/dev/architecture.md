@@ -146,7 +146,9 @@ availability itself:
 - A background **library health check** (every 30 minutes) is the *only* thing that moves items
   between those two states, and it does so purely from indexer results — it never loads
   TorrServer, because background load is exactly what the bounded-cache design exists to
-  avoid.
+  avoid. Each run checks a bounded batch (a time budget and an item cap) and saves its
+  position, so the next run continues after the last item checked and successive runs cycle
+  through the whole library.
 
 **Finishing a video does not make an item stale.** The playback-stopped webhook drops the
 torrent to free the cache, and the item stays `ready`; `/play` re-adds it on demand next time.
