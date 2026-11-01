@@ -3978,10 +3978,30 @@ func resolvableSeeders(releases []indexer.Release, pc picker.Config, hash, title
 // and leaves the remaining items for the next pass, which is fine: staleness is
 // eventually-consistent by design.
 const (
-	healthCheckBudget    = 12 * time.Minute
-	healthCheckMaxItems  = 60
-	healthCheckItemPause = 250 * time.Millisecond
+	healthCheckBudget   = 12 * time.Minute
+	healthCheckMaxItems = 60
 )
+
+// healthCheckItemPause is a var only so tests can run the loop without the delay.
+var healthCheckItemPause = 250 * time.Millisecond
+
+// healthCheckCursorKey stores the ID of the last item the health check looked at, so
+// each run continues from there instead of from the top.
+const healthCheckCursorKey = "health_check_cursor"
+
+// rotateAfter orders items by ID and starts the list at the first item whose ID is
+// greater than cursor, wrapping around to the beginning. A cursor past the end (or 0)
+// starts from the lowest ID.
+func rotateAfter(items []*store.Item, cursor int64) []*store.Item {
+	sorted := make([]*store.Item, len(items))
+	copy(sorted, items)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	start := sort.Search(len(sorted), func(i int) bool { return sorted[i].ID > cursor })
+	if start == len(sorted) {
+		start = 0
+	}
+	return append(sorted[start:], sorted[:start]...)
+}
 
 func taskLibraryHealthCheck(ctx context.Context, db *store.Store, idxClient *indexer.Client, pickerCfg picker.Config) error {
 	// Fail fast rather than spending the whole budget timing out per item.
@@ -3993,6 +4013,13 @@ func taskLibraryHealthCheck(ctx context.Context, db *store.Store, idxClient *ind
 	if err != nil {
 		return err
 	}
+	// Resume where the previous run stopped. Each run only gets through a few dozen
+	// items, so starting from the top every time meant the same first rows were
+	// re-checked forever and everything after them never was: an expired episode
+	// stayed "expired" for months, and a dead "ready" one never became stale.
+	cursorRaw, _ := db.GetSetting(healthCheckCursorKey)
+	cursor, _ := strconv.ParseInt(cursorRaw, 10, 64)
+	items = rotateAfter(items, cursor)
 
 	ctx, cancel := context.WithTimeout(ctx, healthCheckBudget)
 	defer cancel()
@@ -4010,6 +4037,11 @@ func taskLibraryHealthCheck(ctx context.Context, db *store.Store, idxClient *ind
 			break
 		}
 		checked++
+		// Saved before the search, so an item that always errors cannot pin the
+		// rotation: the next run starts after it either way.
+		if err := db.SetSetting(healthCheckCursorKey, strconv.FormatInt(item.ID, 10)); err != nil {
+			slog.Warn("health check: could not save its position", "err", err)
+		}
 
 		cats := []int{indexer.CatMovies}
 		if item.MediaType == "tv" {
@@ -4032,7 +4064,11 @@ func taskLibraryHealthCheck(ctx context.Context, db *store.Store, idxClient *ind
 				item.StaleSince = nil
 			}
 			item.Seeders = seeders
-			item.Updated = time.Now()
+			// Only a real change moves "updated": the Library's "Recently updated"
+			// sort would otherwise follow this background check around.
+			if wasStale {
+				item.Updated = time.Now()
+			}
 			if err := db.Upsert(item); err != nil {
 				slog.Error("health check: could not update an item", "path", item.StrmPath, "err", err)
 				failed++
