@@ -84,7 +84,7 @@ jobs:
           mv "${tarballs[0]}" "out/jellyfreedom-${JF_VERSION}-linux-${GOARCH}.tar.gz"
           ls -la out
 
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: nightly-bundle-${{ matrix.goarch }}
           path: out/*.tar.gz
