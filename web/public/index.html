@@ -207,37 +207,44 @@
       <h1>My Library</h1>
       <span class="lib-total" id="lib-total" role="status" aria-live="polite"></span>
     </div>
+    <!-- Three controls, in the order of the page: find a title, pick a
+         section (the tabs follow the section order below), sort. Only the
+         sort is remembered between visits; the page always opens on All, so
+         a filter chosen last week cannot make it look empty today. -->
     <div class="lib-controls">
       <div class="lib-find">
         <svg class="ic" aria-hidden="true"><use href="#i-search"></use></svg>
-        <label class="sr-only" for="lib-find">Filter your library by title</label>
-        <input type="search" id="lib-find" placeholder="Filter by title" autocomplete="off">
+        <label class="sr-only" for="lib-find">Find in your library by title</label>
+        <input type="search" id="lib-find" placeholder="Find by title" autocomplete="off">
       </div>
       <div class="filter-tabs" role="group" aria-label="Show">
         <button type="button" class="filter-tab active" data-filter="all" aria-pressed="true">All</button>
-        <button type="button" class="filter-tab" data-filter="movie" aria-pressed="false">Movies</button>
         <button type="button" class="filter-tab" data-filter="tv" aria-pressed="false">TV</button>
-        <button type="button" class="filter-tab" data-filter="mine" aria-pressed="false">Mine</button>
+        <button type="button" class="filter-tab" data-filter="movie" aria-pressed="false">Movies</button>
       </div>
-      <label class="sr-only" for="lib-status">Status</label>
-      <select id="lib-status">
-        <option value="any">Any status</option>
-        <option value="attention">Needs attention</option>
-        <option value="ready">Ready</option>
-      </select>
+      <!-- Only yours. Shown only when it can change anything: you are signed
+           in and someone else's requests are in the library too. -->
+      <div class="filter-tabs" id="lib-mine-wrap" hidden>
+        <button type="button" class="filter-tab" id="lib-mine" data-lib-act="mine" aria-pressed="false"
+                title="Only the titles you requested">Mine</button>
+      </div>
       <label class="sr-only" for="lib-sort">Sort</label>
       <select id="lib-sort">
-        <option value="attention">Needs attention first</option>
         <option value="recent">Recently updated</option>
         <option value="title">Title A–Z</option>
         <option value="year">Year, newest first</option>
       </select>
     </div>
   </div>
-  <!-- Shows that need a human, resolved to the exact episode. Hidden when
-       there are none, so an all-clear library carries no strip at all. -->
+  <!-- Whenever anything narrows the page this says what, with the counts and
+       one button that undoes all of it. The page can be filtered; it can never
+       be filtered silently. -->
+  <div id="lib-filterbar" class="lib-filterbar" role="status" aria-live="polite" hidden></div>
+  <!-- What needs a human: a show resolved to the exact episode, a movie that
+       expired or is still resolving. Hidden when there are none, so an
+       all-clear library carries no strip at all. -->
   <div id="library-attention" class="lib-attention" role="region"
-       aria-label="Shows that need attention" hidden></div>
+       aria-label="Titles that need attention" hidden></div>
   <!-- Two paged sections. A library of a thousand rows used to render as one
        unbroken list of every show followed by every poster. -->
   <section class="lib-section" id="lib-sec-shows" aria-labelledby="lib-shows-h" hidden>

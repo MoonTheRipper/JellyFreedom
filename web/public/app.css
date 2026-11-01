@@ -237,6 +237,29 @@ header.transparent input[type=search]#q{background:rgba(12,13,16,.55);border-col
 .lib-find .ic{position:absolute;left:11px;width:15px;height:15px;color:var(--muted);pointer-events:none}
 .lib-find input{width:200px;padding-left:33px}
 .lib-controls select{min-width:0}
+#lib-mine-wrap[hidden]{display:none}
+
+/* The filter bar: on the page exactly while something narrows it (a tab, the
+   find box, Mine), naming what, with the counts and the one way back. */
+.lib-filterbar{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin:-6px 0 18px;
+  padding:8px 12px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);
+  font-size:12px;color:var(--muted2)}
+#lib-filterbar[hidden]{display:none}
+/* The icon is inside the sentence, so on a narrow screen the two wrap as one
+   run of text rather than the icon sitting alone on its own line. */
+.lib-fb-what .ic{width:14px;height:14px;color:var(--accent);vertical-align:-3px;margin-right:5px}
+.lib-filterbar b{color:var(--text);font-weight:600}
+.lib-fb-counts{color:var(--muted);font-variant-numeric:tabular-nums}
+.lib-fb-reset{margin-left:auto;display:inline-flex;align-items:center;gap:4px;background:none;border:none;
+  color:var(--accent);font-size:12px;font-weight:700;padding:2px 4px;border-radius:4px}
+.lib-fb-reset:hover{text-decoration:underline}
+.lib-fb-reset .ic{width:13px;height:13px}
+.lib-of{color:var(--muted);font-weight:500}
+/* A section a filter emptied says so where its rows were, so "0 of 114" never
+   stands over a blank. In the poster grid the line must span every column. */
+.lib-none{display:flex;align-items:center;gap:8px;padding:8px 0 4px;color:var(--muted);font-size:13px}
+.lib-none .ic{width:15px;height:15px;flex-shrink:0}
+.library-grid > .lib-none{grid-column:1/-1}
 
 /* Sections: a heading with its count and a pager, the content, the pager again. */
 .lib-section{margin-bottom:34px}
@@ -736,7 +759,12 @@ select.lib-picker{flex:1}
   .lib-find input{width:100%;font-size:16px}
   .lib-controls .filter-tabs{flex:1 1 100%}
   .lib-controls .filter-tab{flex:1}
+  /* Mine shares the last row with the sort; the sort takes the row alone
+     when Mine is not offered. */
+  .lib-controls #lib-mine-wrap{flex:0 0 auto}
   .lib-controls select{flex:1 1 0;min-width:0}
+  .lib-filterbar{margin-top:-4px}
+  .lib-fb-reset{margin-left:0;flex:1 1 100%;justify-content:flex-start;padding-left:0}
   .lib-section-head .lib-pager{display:none}
   .cal-list-section .cal-entry-poster{width:36px;height:54px}
 

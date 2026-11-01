@@ -65,7 +65,11 @@ export const state = {
      lives on state rather than inside carousels.js because it is serialised
      into the URL, and the URL is read at boot before any module renders. */
   browse: newBrowse(),
-  prefs: {libFilter: 'all', libSort: 'attention', libStatus: 'any', qCollapsed: ['done', 'cancelled'], qFilterStatus: 'all', qFilterType: 'all', qSort: 'newest',
+  /* The Library remembers only its sort. Its tab, title find and "Mine" are
+     per-visit (library.js): a remembered status filter once hid every movie
+     on the page with nothing to say why. Older builds stored libFilter and
+     libStatus here; restorePrefs drops keys it does not know. */
+  prefs: {libSort: 'recent', qCollapsed: ['done', 'cancelled'], qFilterStatus: 'all', qFilterType: 'all', qSort: 'newest',
     calView: 'month', searchType: 'all'},
 };
 
@@ -74,7 +78,13 @@ const PREF_KEY = 'jf_prefs';
 export function restorePrefs() {
   try {
     const p = JSON.parse(localStorage.getItem(PREF_KEY) || '{}');
-    for (const k of Object.keys(state.prefs)) if (p[k]) state.prefs[k] = p[k];
+    let stale = false;
+    for (const k of Object.keys(p)) {
+      if (Object.hasOwn(state.prefs, k)) { if (p[k]) state.prefs[k] = p[k]; } else stale = true;
+    }
+    // A key an older build wrote and this one does not read (0.8.1's
+    // libFilter and libStatus) is dropped by rewriting the prefs without it.
+    if (stale) savePrefs();
   } catch (_) { /* private mode / blocked storage: defaults are fine */ }
 }
 export function savePrefs() {
