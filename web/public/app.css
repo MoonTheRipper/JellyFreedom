@@ -245,7 +245,9 @@ header.transparent input[type=search]#q{background:rgba(12,13,16,.55);border-col
   padding:8px 12px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface);
   font-size:12px;color:var(--muted2)}
 #lib-filterbar[hidden]{display:none}
-.lib-filterbar > .ic{width:14px;height:14px;color:var(--accent);flex-shrink:0}
+/* The icon is inside the sentence, so on a narrow screen the two wrap as one
+   run of text rather than the icon sitting alone on its own line. */
+.lib-fb-what .ic{width:14px;height:14px;color:var(--accent);vertical-align:-3px;margin-right:5px}
 .lib-filterbar b{color:var(--text);font-weight:600}
 .lib-fb-counts{color:var(--muted);font-variant-numeric:tabular-nums}
 .lib-fb-reset{margin-left:auto;display:inline-flex;align-items:center;gap:4px;background:none;border:none;

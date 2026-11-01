@@ -15,15 +15,21 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
   hid the whole Movies section while "All" stayed highlighted and the heading still said
   "114 movies". A remembered TV tab did the same. The Library now always opens showing
   everything, and nothing can narrow the page without saying so (below).
+- **Signing in or out now refreshes the library at once.** A visitor who signed in on the
+  Library page kept the anonymous view ("Nothing here yet") until the next refresh a minute
+  later, and signing out left the whole library on screen.
+- **Opening the Library no longer flashes "Nothing here yet"** before the library has loaded.
 
 ### Changed
 - **A simpler Library toolbar: find, All / TV / Movies, sort.** The status filter and the
   "Needs attention first" sort are gone — the Needs attention strip is the one place problems
-  are surfaced, and it follows the find box. Whenever the page is narrowed, a line under the
-  toolbar says what is narrowing it, with the counts ("Showing TV only, matching “bat” ·
-  1 of 51 shows") and a **Show everything** button. Section counts read "3 of 114" while
-  narrowed, and a section the find box has emptied says "No movies match" instead of
-  disappearing. Only the sort is remembered; it defaults to Recently updated.
+  are surfaced, expired or still-resolving movies included, and it follows the find box.
+  Whenever the page is narrowed, a line under the toolbar says what is narrowing it, with the
+  counts ("TV shows matching “bat” · 1 of 51 shows") and a **Show everything** button.
+  Section counts read "3 of 114" while narrowed, and a section the find box has emptied says
+  "No movies match" instead of disappearing. Only the sort is remembered; it defaults to
+  Recently updated, and the background refresh never reorders what is on screen — the order
+  changes only when you touch the controls or open the page.
 - **"Mine" is a toggle beside the tabs, and only appears when it can do something**: you are
   signed in and someone else's requests are in the library too. On a single-user box it is
   not shown.

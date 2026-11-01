@@ -5,7 +5,7 @@
 
 import {setUnauthorizedHandler, visibleInterval, esc} from './shared/api.js';
 import './shared/icons.js';
-import {state, restorePrefs, loadLibraries, loadMyLibrary, loadSubscriptions, on} from './modules/state.js';
+import {state, restorePrefs, loadLibraries, loadMyLibrary, loadSubscriptions, on, emit} from './modules/state.js';
 import * as router from './modules/router.js';
 import {initAuth, updateAuthUI, refreshAuth, onUnauthorized} from './modules/auth.js';
 import {initHealthUI, refreshConfigured, refreshHealth} from './modules/health.js';
@@ -93,7 +93,21 @@ async function init() {
   onScrollHeader();
 
   document.addEventListener('keydown', onGlobalKey);
-  on('auth', () => updateAuthUI());
+  on('auth', () => {
+    updateAuthUI();
+    // Who you are decides what the library, the library list and the
+    // subscriptions answer with — an anonymous caller may be told nothing at
+    // all — so all three are fetched again on every change of identity. A
+    // visitor who signed in on the Library page used to keep its anonymous
+    // answer ("Nothing here yet") until the next 60-second poll, and signing
+    // out kept the whole library on screen. On sign-out the library is
+    // cleared first, so the old answer is not shown for even one fetch.
+    // (The boot-time probe fires before this is registered: no double fetch.)
+    if (!state.user) { state.myLibrary = []; state.libraryStatus = {}; emit('library'); }
+    loadMyLibrary().catch(() => {});
+    loadLibraries();
+    loadSubscriptions();
+  });
 
   router.start();
 }
