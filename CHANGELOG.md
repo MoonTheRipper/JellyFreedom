@@ -9,6 +9,8 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-02
+
 ### Fixed
 - **"Expired" episodes and movies stayed expired, and most of the library was never
   re-checked.** The background check that decides whether a title can still be found only
@@ -979,7 +981,8 @@ First public release.
   keys, and WireGuard configuration upload.
 - MIT licence.
 
-[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.6...v0.8.0
 [0.7.6]: https://github.com/MoonTheRipper/JellyFreedom/compare/v0.7.5...v0.7.6
