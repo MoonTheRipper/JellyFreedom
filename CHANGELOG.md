@@ -9,6 +9,11 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Changed
+- **The project website moved to <https://jellyfreedom.rippermoon.site>.** The old
+  `moontheripper.github.io/JellyFreedom` address redirects there, so existing links keep
+  working.
+
 ## [0.8.2] - 2026-11-02
 
 ### Fixed
