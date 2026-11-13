@@ -164,7 +164,7 @@ finds another one next time.
 | [Decisions](docs/dev/decisions.md) | The reasoning behind the major choices |
 | [Operations](docs/dev/operations.md) | VPN details, buffer tuning, Jellyfin and Apple TV setup |
 | [Roadmap](docs/dev/roadmap.md) | What is genuinely still open |
-| [Project website](https://moontheripper.github.io/JellyFreedom/) | Overview |
+| [Project website](https://jellyfreedom.rippermoon.site/) | Overview |
 | [Discord](https://discord.gg/DkXgr22Aan) | Help, setups, ideas &mdash; come say hi |
 
 ## Your files, your responsibility

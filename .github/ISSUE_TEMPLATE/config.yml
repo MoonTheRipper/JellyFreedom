@@ -4,7 +4,7 @@ contact_links:
     url: https://github.com/MoonTheRipper/JellyFreedom/blob/main/SECURITY.md
     about: Do not open a public issue. Report privately — see SECURITY.md.
   - name: Project website
-    url: https://moontheripper.github.io/JellyFreedom/
+    url: https://jellyfreedom.rippermoon.site/
     about: What JellyFreedom is and how it fits together.
   - name: Installation guide
     url: https://github.com/MoonTheRipper/JellyFreedom/blob/main/docs/install.md

@@ -267,7 +267,7 @@ sudo JELLYFREEDOM_ALLOW_DOWNGRADE=1 jellyfreedom --update
 ### After updating
 
 Most updates need nothing more. When one does, it is listed here and on the
-[What's new](https://moontheripper.github.io/JellyFreedom/whats-new.html) page.
+[What's new](https://jellyfreedom.rippermoon.site/whats-new.html) page.
 
 **From 0.7.x to 0.8.0:**
 
