@@ -170,7 +170,7 @@ jobs:
             arm64) echo "$info" | grep -q 'aarch64' || { echo "::error::not an aarch64 binary"; exit 1; } ;;
           esac
 
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: bundle-${{ matrix.goarch }}
           path: out/*.tar.gz
