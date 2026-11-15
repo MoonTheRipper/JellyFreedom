@@ -214,6 +214,10 @@ guard. Each run:
    seconds apart escalate: bounce the tunnel via the helper (TorrServer stays up) → rebuild the
    whole namespace (and restart the port-forward keeper, which the rebuild orphaned) →
    persistent failure writes `down: needs new wireguard config` to `/run/vpntorrent-status`.
+   **No config activated yet is not an outage:** when the helper's `vpn-up` reports it (exit 3),
+   the run writes `unconfigured`, logs it once, and stops there. The namespace already fails
+   closed, and rebuilding it every minute only restarted TorrServer and — through `BindsTo=` —
+   `jf-netnsproxy`, until systemd's start limit left the proxy failed for good.
 4. **Asserts anonymity, not just reachability.** A run is only allowed to write `ok` once the
    namespace's default route still leaves via `wg0-*` **and** the address it actually came out
    on is not this machine's own public address. On positive evidence of a leak it stops
