@@ -145,6 +145,25 @@ The **first** start downloads a matching chromedriver and can take up to 90 seco
 that, check the log. If the service is restart-looping, the usual causes are a destroyed
 bundle (below) or a stale chromedriver cache.
 
+### The installer says FlareSolverr is "working, but running as root"
+
+On 0.8.2 and earlier this is what a stock Ubuntu 24.04 server ended with. The bundled Chrome
+needs about ten desktop libraries that a server image does not ship, so it could not even
+start; every browser the installer tried failed, and its last resort was to run FlareSolverr
+as root. The journal shows it plainly:
+
+```
+chrome: error while loading shared libraries: libwayland-server.so.0: cannot open shared object file
+```
+
+Update (`sudo jellyfreedom --update`). The installer now installs those libraries, removes the
+run-as-root override, and retests under the `flaresolverr` account. Check the result:
+
+```bash
+systemctl show -p User --value flaresolverr     # must print: flaresolverr
+ls /etc/systemd/system/flaresolverr.service.d/  # must not contain 10-run-as-root.conf
+```
+
 ### "Bundled Chrome crashes on this kernel" — this is a myth, don't act on it
 
 The bundled Chromium 142 runs fine on modern kernels. What actually happens without

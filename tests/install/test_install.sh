@@ -269,6 +269,55 @@ describe "REGRESSION: never install the transitional chromium-browser package"
 assert_not_ran 'apt-get install -y -qq chromium-browser'
 assert_not_ran 'snap install chromium'
 
+describe "REGRESSION: the bundled Chrome's libraries are installed (stock 24.04 fell back to root)"
+# On a stock Ubuntu 24.04 server the bundled Chrome is missing ten libraries and cannot even
+# load, so every browser rung failed and FlareSolverr was switched to run as ROOT. The
+# *t64 names are the real packages there; the old names are virtual and apt refuses them.
+assert_ran_re 'apt-get install -y -qq --no-install-recommends libxcomposite1 libxdamage1 libxfixes3 .*libwayland-server0 libnss3'
+assert_ran_re 'apt-get install .*--no-install-recommends .*libasound2t64 libatk1\.0-0t64 libatk-bridge2\.0-0t64 libatspi2\.0-0t64 libcups2t64'
+assert_output 'libraries the bundled Chrome needs'
+
+sandbox_new chrome-libs-pre-t64
+# Debian 12 and Ubuntu 22.04 have no *t64 packages: the plain names must be chosen there.
+mock_standard
+mock_script apt-cache 'case "${2:-}" in *t64) exit 100 ;; *) exit 0 ;; esac'
+run_installer
+assert_exit 0
+assert_ran_re 'apt-get install .*--no-install-recommends .* libasound2 libatk1\.0-0 libatk-bridge2\.0-0 libatspi2\.0-0 libcups2$'
+_check; grep -E '^apt-get install' "$LOG" | grep -q 'libasound2t64' \
+  && _fail "no *t64 package is installed where none exists" "apt-get was asked for libasound2t64" \
+  || _pass "no *t64 package is installed where none exists"
+
+describe "REGRESSION: a Chrome swapped for a symlink is restored to the bundled one"
+# Rung 2 points chrome at Google Chrome via a symlink. fs_is_elf follows links, so the old
+# check saw an ELF and never restored the bundle — even after its libraries were installed.
+_check
+fsu_dir=$(mktemp -d)
+(
+  # FS_HOME is read by the eval'd fs_purge_driver_cache, which shellcheck cannot see.
+  CHROME_DIR="$fsu_dir/chrome"
+  # shellcheck disable=SC2034
+  FS_HOME="$fsu_dir/home"
+  mkdir -p "$CHROME_DIR" "$fsu_dir/opt"
+  printf '\177ELFgoogle\n' > "$fsu_dir/opt/google-chrome"
+  printf '\177ELFbundled\n' > "$CHROME_DIR/chrome.real"
+  ln -s "$fsu_dir/opt/google-chrome" "$CHROME_DIR/chrome"
+  eval "$(sed -n '/^fs_purge_driver_cache(){/,/^}/p; /^fs_is_elf(){/p; /^fs_use_bundled(){/,/^}/p' "$REPO_ROOT/release/install.sh")"
+  fs_use_bundled >/dev/null
+  [ ! -L "$CHROME_DIR/chrome" ] && grep -q bundled "$CHROME_DIR/chrome" && [ ! -e "$CHROME_DIR/chrome.real" ]
+) && _pass "symlinked chrome is replaced by the bundled binary" \
+  || _fail "symlinked chrome is replaced by the bundled binary" "the symlink to another browser was kept"
+rm -rf "$fsu_dir"
+
+describe "REGRESSION: an earlier root fallback is retested, not kept forever"
+# With the run-as-root drop-in left in place every probe rung runs as root and passes, so a
+# box that fell back once would report "works" and stay on root through every update.
+_check
+awk '/retesting under the/{seen=1} /for rung in 0 1 2 3/{ if (seen) ok=1; exit } END{ exit !ok }' "$REPO_ROOT/release/install.sh" \
+  && grep -q 'rm -f "$UNIT_DIR/flaresolverr.service.d/10-run-as-root.conf"' "$REPO_ROOT/release/install.sh" \
+  && _pass "the root drop-in is removed before the browser rungs are probed" \
+  || _fail "the root drop-in is removed before the browser rungs are probed" "probing would run as root"
+
 describe "REGRESSION: FlareSolverr gets GPU device group access"
 # Moving FlareSolverr off root removed its incidental access to /dev/dri, and Chrome's GPU
 # process then dies taking the renderer with it. The failure surfaces only as

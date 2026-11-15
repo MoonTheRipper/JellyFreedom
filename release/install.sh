@@ -601,12 +601,38 @@ fs_use_bundled(){
   # Heal a bundle a previous installer destroyed, then use it untouched. Upstream already
   # passes --no-sandbox/--disable-dev-shm-usage/--no-zygote itself, so a wrapper adding them
   # was always redundant and only hid which binary really ran.
-  if ! fs_is_elf "$CHROME_DIR/chrome" && fs_is_elf "$CHROME_DIR/chrome.real"; then
+  # A symlink counts as replaced even when it resolves to an ELF: rung 2 points `chrome` at
+  # Google Chrome, and fs_is_elf follows the link, so that box would otherwise never get its
+  # bundled Chrome back — even once the libraries it was missing are installed.
+  if { [ -L "$CHROME_DIR/chrome" ] || ! fs_is_elf "$CHROME_DIR/chrome"; } && fs_is_elf "$CHROME_DIR/chrome.real"; then
     rm -f "$CHROME_DIR/chrome"; mv "$CHROME_DIR/chrome.real" "$CHROME_DIR/chrome"
     fs_purge_driver_cache; echo "restored the bundled Chrome a previous install had replaced"; return 0
   fi
   fs_is_elf "$CHROME_DIR/chrome" && { echo "bundled Chrome"; return 0; }
   return 1
+}
+# The bundled Chrome is a desktop build and links libraries a server image does not have. On
+# a stock Ubuntu 24.04 server ten are missing (libXcomposite, libXdamage, libXfixes, ALSA,
+# ATK, AT-SPI, cairo, CUPS, pango, and libwayland-server via libgbm), so it cannot even
+# load: every rung of the probe failed and the installer fell back to running FlareSolverr
+# as ROOT. FlareSolverr's own container image installs the same set.
+# Names differ by release: Ubuntu 24.04 renamed several to *t64 and keeps the old name only
+# as a virtual package, which `apt-get install` refuses — so pick whichever really exists.
+fs_pkg_pick(){
+  local p
+  for p in "$@"; do apt-cache show "$p" >/dev/null 2>&1 && { echo "$p"; return 0; }; done
+  return 1
+}
+fs_install_chrome_libs(){
+  local pkgs="libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxkbcommon0 libcairo2 libpango-1.0-0 libgbm1 libwayland-server0 libnss3"
+  local alts p
+  for alts in "libasound2t64 libasound2" "libatk1.0-0t64 libatk1.0-0" "libatk-bridge2.0-0t64 libatk-bridge2.0-0" \
+              "libatspi2.0-0t64 libatspi2.0-0" "libcups2t64 libcups2"; do
+    # shellcheck disable=SC2086  # word-splitting the alternatives is the point
+    p=$(fs_pkg_pick $alts) && pkgs="$pkgs $p"
+  done
+  # shellcheck disable=SC2086
+  apt_install --no-install-recommends $pkgs
 }
 fs_use_system_elf(){
   # A real distro browser. Skips /usr/bin/chromium-browser on Ubuntu, which is a SHELL SHIM
@@ -727,6 +753,11 @@ else
 
   if [ -x "$FS_DIR/flaresolverr" ]; then
     xchown -R "$FS_USER":"$FS_USER" "$FS_DIR" 2>/dev/null || true
+
+    # Every run, not only on first install: boxes installed before this existed are missing
+    # them, and that is what pushed them onto a system browser or root.
+    if fs_install_chrome_libs >/dev/null 2>&1; then ok "libraries the bundled Chrome needs"
+    else warn "could not install every library the bundled Chrome needs — fallback browsers will be tried"; fi
 
     # Always rewrite the unit — skipping it when present made a unit from a failed first
     # attempt permanent.
@@ -1283,6 +1314,15 @@ fi
 #   POST /v1 -> a real HTTPS page was fetched. ONLY this proves the component works.
 if [ -x "$FS_DIR/flaresolverr" ]; then
   say "Verifying FlareSolverr (first run downloads a chromedriver; allow ~90s per attempt)"
+  if [ -f "$UNIT_DIR/flaresolverr.service.d/10-run-as-root.conf" ]; then
+    # A previous install fell back to root — usually because the bundled Chrome could not
+    # load its libraries, which this run has now installed. Left in place, every rung below
+    # would run as root and "pass", so the box would stay on root forever. Retest under the
+    # service account; the last resort below re-adds the override only if all of them fail.
+    say "  retesting under the '$FS_USER' account (a previous install fell back to root)"
+    rm -f "$UNIT_DIR/flaresolverr.service.d/10-run-as-root.conf"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
   fs_done=0
   fs_tried=""   # browsers already proven not to work, so a later rung never repeats one
   for rung in 0 1 2 3; do

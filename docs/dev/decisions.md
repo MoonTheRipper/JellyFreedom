@@ -298,6 +298,13 @@ which binary really ran.
 **Consequence:** the browser runs with reduced isolation. Do not point FlareSolverr at untrusted
 URLs.
 
+**Also:** the bundle is a desktop build. A server image lacks about ten of the libraries it
+links (X11 composite/damage/fixes, ALSA, ATK, AT-SPI, cairo, CUPS, pango, and
+`libwayland-server` through `libgbm`), and without them it cannot even load — which on a stock
+Ubuntu 24.04 server sent every install to the run-as-root fallback. The installer installs
+them, choosing the `*t64` package names where they exist (Ubuntu 24.04) because the old names
+are virtual there and `apt-get install` refuses them.
+
 **Note:** FlareSolverr publishes x64 binaries only, so it is skipped on arm64 with an explicit
 message rather than installing a binary that cannot exec. Running it from source against a
 distribution `chromium` is the arm64 path — that is what the official multi-arch container does

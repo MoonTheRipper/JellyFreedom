@@ -21,6 +21,14 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
   day, `sudo jellyfreedom --update` fixes it: an installed TorrServer that cannot run under
   JellyFreedom is now replaced (the old one is kept as `torrserver.incompatible`) instead
   of being left alone.
+- **FlareSolverr ran as root on every new Ubuntu 24.04 server.** The browser FlareSolverr
+  ships with needs about ten libraries that a server install of Ubuntu does not include, so
+  it could not start at all. The installer then tried other browsers, all failed the same
+  way, and its last resort was to run FlareSolverr as root — which it reported as
+  "working, but running as root". The installer now installs those libraries, so the
+  browser FlareSolverr ships with works under its own account. Updating also removes an
+  earlier run-as-root setting and tests again without it, and switches a FlareSolverr that
+  an earlier install had moved onto another browser back to its own.
 
 ### Changed
 - **The project website moved to <https://jellyfreedom.rippermoon.site>.** The old

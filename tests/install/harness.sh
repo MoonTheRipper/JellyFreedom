@@ -103,7 +103,8 @@ mock_script() {
 # mock_standard — the default mock set: everything privileged or networked succeeds.
 mock_standard() {
   local c
-  for c in apt-get useradd groupadd usermod systemctl visudo apparmor_parser \
+  # apt-cache answers "exists" for every name, so fs_pkg_pick takes its first choice.
+  for c in apt-get apt-cache useradd groupadd usermod systemctl visudo apparmor_parser \
            snap update-rc.d ldconfig setcap; do
     mock_cmd "$c" 0
   done
