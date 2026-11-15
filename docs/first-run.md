@@ -9,9 +9,18 @@ Check the install first:
 sudo jellyfreedom doctor
 ```
 
-On a brand-new install you should expect exactly two complaints: the connection settings are
-not configured yet, and **no WireGuard tunnel is up**. Both are fixed below. The VPN warning
-is not a fault — until you activate a config, torrent traffic is blocked rather than leaked.
+On a brand-new install, expect complaints in exactly three groups, and nothing else:
+
+- **Connections not configured** — `tmdb`, `prowlarr` and `jellyfin` are "NOT configured",
+  and Jellyfin "refuses the orchestrator" because it has no API key yet. Fixed in step 5.
+- **Indexers cannot be counted** — doctor cannot ask Prowlarr until its key is set. Steps 3
+  and 5.
+- **No WireGuard tunnel is up**, and the VPN proxy "did not reach the internet". Fixed in
+  step 6. This is not a fault: until you activate a config, torrent and pasted-link traffic
+  is blocked rather than leaked.
+
+Anything else — a service that is not active, TorrServer not answering, FlareSolverr running
+as root — is a real problem; see [troubleshooting.md](troubleshooting.md).
 
 ---
 
