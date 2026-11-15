@@ -496,6 +496,11 @@ The installer runs it as a dedicated **`flaresolverr` system user** bound to
 > **Fixed:** it previously ran **as root on `0.0.0.0`**, publishing an unauthenticated
 > URL-fetching proxy to the entire LAN, as root.
 
+> **Fixed:** on a stock Ubuntu 24.04 server the bundled Chrome could not load (about ten
+> desktop libraries missing), so the installer's last resort put FlareSolverr back on **root**
+> on every such install. The libraries are now installed, and an existing run-as-root
+> override is removed and retested under the service account on update.
+
 The installer no longer replaces or truncates FlareSolverr's bundled Chrome, and no longer
 installs a system Chromium unconditionally; it uses the bundle as shipped and repairs a
 bundle a previous installer had damaged. The `--no-sandbox` flag is passed by FlareSolverr

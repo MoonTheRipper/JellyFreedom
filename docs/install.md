@@ -138,8 +138,10 @@ configured cache size, port conflicts on 1990/8090/8096/8191/8192/9696, and it w
 minutes) for `unattended-upgrades` to release the dpkg lock instead of dying at step one.
 
 **2. apt packages** — `wireguard-tools natpmpc iproute2 iptables jq curl ca-certificates tar
-xvfb`. (`xvfb` is required by FlareSolverr, which starts its own X server and does not bundle
-one.)
+xvfb python3`. (`xvfb` is required by FlareSolverr, which starts its own X server and does not
+bundle one.) On x86_64 it also installs the libraries FlareSolverr's bundled Chrome needs and
+a server image lacks — X11, ALSA, ATK/AT-SPI, cairo, CUPS and pango libraries, about 15 small
+packages. Without them the browser cannot start at all.
 
 **3. Service users** — system accounts with no home and no shell: `jellyfreedom`,
 `torrserver`, `flaresolverr`, and `prowlarr` if Prowlarr is installed.
