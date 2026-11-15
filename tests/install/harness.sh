@@ -108,10 +108,30 @@ mock_standard() {
     mock_cmd "$c" 0
   done
   # curl: pretend a successful download by creating the -o target.
+  # TorrServer is special: the installer runs the download with --help and only accepts a
+  # binary that offers --port, so the stub prints MatriX-style usage — unless the tag is
+  # listed in $SANDBOX/ts-noport, in which case it prints Silo-style usage (only -c).
+  # The TorrServer release-list API returns $SANDBOX/ts-releases.json when present.
   mock_script curl '
-    out=""; prev=""
-    for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
-    if [ -n "$out" ]; then mkdir -p "$(dirname "$out")"; printf "mock-artifact\n" > "$out"; fi
+    out=""; prev=""; url=""
+    for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; case "$a" in http*) url="$a" ;; esac; prev="$a"; done
+    case "$url" in
+      *api.github.com/repos/YouROK/TorrServer/releases*)
+        [ -f "$SANDBOX/ts-releases.json" ] && cat "$SANDBOX/ts-releases.json"; exit 0 ;;
+    esac
+    if [ -n "$out" ]; then
+      mkdir -p "$(dirname "$out")"
+      case "$out" in
+        */torrserver.new)
+          tag=$(basename "$(dirname "$url")")
+          if [ -f "$SANDBOX/ts-noport" ] && grep -qxF "$tag" "$SANDBOX/ts-noport"; then
+            printf "#!/bin/sh\necho \"Usage of torrserver:\"\necho \"  -c string\"\n" > "$out"
+          else
+            printf "#!/bin/sh\necho \"Usage: torrserver [--port PORT] [--path PATH]\"\n" > "$out"
+          fi ;;
+        *) printf "mock-artifact\n" > "$out" ;;
+      esac
+    fi
     exit 0'
   # tar: pretend an extraction by creating a plausible payload.
   mock_script tar '

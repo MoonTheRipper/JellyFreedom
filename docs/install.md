@@ -169,9 +169,16 @@ one.)
 | Jellyfin | via the official upstream apt installer | 8096 |
 | Prowlarr | `/opt/Prowlarr`, data in `/var/lib/prowlarr` | 9696 |
 
-TorrServer's version is resolved from the upstream "latest release" API rather than a pin,
-because a pinned tag was removed upstream once and every fresh install silently ended up with
-no streaming engine.
+TorrServer is the newest release in upstream's **MatriX** line, looked up at install time.
+Neither simpler choice works: a fixed version was once deleted upstream, and upstream's
+"latest" is now **Silo**, a new line that is started differently and cannot run under
+JellyFreedom's service. Before installing a download, the installer checks that it accepts
+the options it will be started with; if it does not, it falls back to a known-good MatriX
+release rather than leave you with a service that restarts forever.
+
+An existing TorrServer is left alone as long as it accepts those options. One that does not
+— a Silo release, for instance — is replaced, and the old binary is kept beside it as
+`/usr/local/bin/torrserver.incompatible`.
 
 yt-dlp is the only **optional** one: nothing else depends on it, so a failed download is a
 warning and the install still completes. A box without it simply has the dashboard's Links

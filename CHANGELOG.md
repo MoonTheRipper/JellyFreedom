@@ -9,6 +9,19 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **New installs could not stream anything.** On 14 November TorrServer published Silo.2,
+  the first release of a new line that is started with a config file and refuses the
+  options JellyFreedom starts it with. The installer always took TorrServer's newest
+  release, so every install from that day on got a TorrServer that crashed and restarted
+  forever, and nothing could play. The installer now takes the newest release of the line
+  JellyFreedom works with (MatriX), checks that a download accepts the options it will be
+  started with before installing it, and otherwise falls back to a known-good release.
+  Installs from before 14 November were not affected. If you installed on or after that
+  day, `sudo jellyfreedom --update` fixes it: an installed TorrServer that cannot run under
+  JellyFreedom is now replaced (the old one is kept as `torrserver.incompatible`) instead
+  of being left alone.
+
 ### Changed
 - **The project website moved to <https://jellyfreedom.rippermoon.site>.** The old
   `moontheripper.github.io/JellyFreedom` address redirects there, so existing links keep
