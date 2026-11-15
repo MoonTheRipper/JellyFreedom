@@ -29,6 +29,12 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
   browser FlareSolverr ships with works under its own account. Updating also removes an
   earlier run-as-root setting and tests again without it, and switches a FlareSolverr that
   an earlier install had moved onto another browser back to its own.
+- **Pasted links could stay broken after you set up the VPN.** Until a WireGuard config is
+  activated, the VPN watchdog treated "no config yet" as a broken tunnel and rebuilt the
+  VPN namespace every minute. Each rebuild restarted the service that pasted links stream
+  through, until the system stopped restarting it — and activating a config later did not
+  start it again. The watchdog now recognises a box that simply has no config yet and
+  leaves it alone; the namespace stays blocked, as before, until you activate one.
 
 ### Changed
 - **The project website moved to <https://jellyfreedom.rippermoon.site>.** The old

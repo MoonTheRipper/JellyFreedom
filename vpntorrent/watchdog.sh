@@ -18,9 +18,12 @@ set -uo pipefail
 NETNS=vpntorrent
 ORCH=http://127.0.0.1:1990
 HC_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-STATUS=/run/vpntorrent-status
-TS_STRIKES=/run/vpntorrent-ts-strikes
-RUN_DIR=/run/vpntorrent
+# Every piece of state lives under one directory. systemd starts this with a clean
+# environment, so in production it is always /run; the override exists for the tests.
+RUN_STATE="${VPNTORRENT_RUN_STATE:-/run}"
+STATUS="$RUN_STATE/vpntorrent-status"
+TS_STRIKES="$RUN_STATE/vpntorrent-ts-strikes"
+RUN_DIR="$RUN_STATE/vpntorrent"
 
 # The veth addressing is decided once, by setup-netns.sh, and published here. Fall back to the
 # shipped defaults if the namespace has never been built (nothing to watch in that case anyway).
@@ -45,7 +48,7 @@ playback_active(){ curl -s --max-time 4 "$ORCH/api/playback/active" 2>/dev/null 
 # that away with -o /dev/null and asked only "did bytes come back", which a leaking setup
 # answers just as cheerfully as a tunnelled one.
 NS_EXIT_IP=""
-HOST_IP_CACHE=/run/vpntorrent-host-ip
+HOST_IP_CACHE="$RUN_STATE/vpntorrent-host-ip"
 
 probe(){
   local body url
@@ -157,15 +160,31 @@ if probe; then
   echo "ok" > "$STATUS"; exit 0
 fi
 
-logger -t vpntorrent-watchdog "tunnel has no data path; bouncing WireGuard"
-echo "down: bouncing wg" > "$STATUS"
 if [ -x "$HELPER" ]; then
   # vpn-up re-sanitises the active config, re-pins the endpoint route and refreshes the
   # handshake firewall rule — so a bounce also picks up a config the user just activated
   # in the dashboard, including one pointing at a different VPN server.
-  "$HELPER" vpn-down 2>&1 | logger -t vpntorrent-watchdog
-  "$HELPER" vpn-up   2>&1 | logger -t vpntorrent-watchdog
+  down_out="$("$HELPER" vpn-down 2>&1)"
+  up_out="$("$HELPER" vpn-up 2>&1)"; up_rc=$?
+  if [ "$up_rc" -eq 3 ]; then
+    # Not an outage: no WireGuard config has been activated yet, which is what every fresh
+    # install looks like until the user uploads one. The namespace already fails closed, so
+    # there is nothing to recover. Rebuilding it anyway — every minute — restarted TorrServer
+    # and, through BindsTo=, jf-netnsproxy, until systemd's start limit left the proxy failed;
+    # VPN activation never restarts it, so pasted links stayed broken after setup.
+    if [ "$(cat "$STATUS" 2>/dev/null)" != "unconfigured" ]; then
+      logger -t vpntorrent-watchdog "no WireGuard config activated yet — the namespace stays fail-closed; nothing to recover until one is activated"
+    fi
+    echo "unconfigured" > "$STATUS"
+    exit 0
+  fi
+  logger -t vpntorrent-watchdog "tunnel has no data path; bouncing WireGuard"
+  echo "down: bouncing wg" > "$STATUS"
+  [ -n "$down_out" ] && printf '%s\n' "$down_out" | logger -t vpntorrent-watchdog
+  [ -n "$up_out" ] && printf '%s\n' "$up_out" | logger -t vpntorrent-watchdog
 else
+  logger -t vpntorrent-watchdog "tunnel has no data path; bouncing WireGuard"
+  echo "down: bouncing wg" > "$STATUS"
   logger -t vpntorrent-watchdog "privileged helper missing at $HELPER — cannot bounce the tunnel; reinstall JellyFreedom"
 fi
 sleep 8
