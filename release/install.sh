@@ -65,11 +65,17 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 IN_PLACE=0
 if [ -d "$SRC" ] && [ -d "$APP_DIR" ] && [ "$SRC" -ef "$APP_DIR" ]; then IN_PLACE=1; fi
 
-# Pinned versions. TorrServer is resolved at runtime because upstream has retagged before:
-# the previously pinned MatriX.141.2 now 404s, which silently left installs with no
-# streaming engine at all.
+# Pinned versions. TorrServer is resolved at runtime, but only within the MatriX line.
+# Both simpler choices have already broken every fresh install:
+#   - a fixed pin: MatriX.141.2 was later removed upstream and 404'd;
+#   - "latest": on 2026-11-14 upstream published Silo.2, a new line whose CLI takes only
+#     `-c config.yaml` and rejects the `--port`/`--path` our unit runs it with, so
+#     torrserver-netns crash-looped forever and nothing could stream.
+# TS_VERSION_FALLBACK must be a MatriX tag that still exists and accepts --port.
 FS_VERSION="v3.5.0"
-TS_VERSION_FALLBACK="MatriX.143"
+TS_LINE="MatriX"
+TS_VERSION_FALLBACK="MatriX.150"
+TS_REPLACED=0   # set when an existing TorrServer binary is swapped for a new one
 
 LOGFILE="$D/var/log/jellyfreedom-install.log"
 
@@ -459,31 +465,70 @@ fi
 # ==========================================================================================
 if want torrserver; then
 say "TorrServer"
-if [ -x "$TS_BIN" ] && ! repairing torrserver; then
+# Does this binary speak the CLI torrserver-netns.service starts it with? Captured, not
+# piped into grep -q: under pipefail an early-exiting grep can SIGPIPE the writer and fail
+# a pipeline whose output did match.
+ts_accepts_port() {
+  local h; h=$(timeout 10 "$1" --help 2>&1 || true)
+  case "$h" in *--port*) return 0 ;; *) return 1 ;; esac
+}
+if [ -x "$TS_BIN" ] && ! repairing torrserver && ts_accepts_port "$TS_BIN"; then
   ok "present at ${TS_BIN#"$D"} — left alone"
   mark torrserver ok
 else
-  # Resolve the current release rather than trusting a pin: the previously hardcoded
-  # MatriX.141.2 tag was removed upstream, so every fresh install silently ended up with
-  # no streaming engine while the installer still printed "Installed."
+  if [ -x "$TS_BIN" ] && ! repairing torrserver; then
+    # Installs made from 2026-11-14 got Silo.2, which rejects --port and crash-loops under
+    # the unit. "Left alone" would leave them broken through every update and repair, so an
+    # installed TorrServer that cannot run here is replaced — and kept beside the new one.
+    warn "the installed TorrServer does not accept --port (a Silo release?) — replacing it"
+    cp -f "$TS_BIN" "$TS_BIN.incompatible" 2>/dev/null || true
+    hint "the old binary is kept at ${TS_BIN#"$D"}.incompatible"
+  fi
+  [ -x "$TS_BIN" ] && TS_REPLACED=1
+  # Resolve the newest stable MatriX release rather than trusting a pin or "latest" — see
+  # TS_LINE above for the two ways each of those broke every fresh install.
   ts_ver=""
   if command -v curl >/dev/null; then
-    ts_ver=$(curl -4 -fsSL --max-time 20 https://api.github.com/repos/YouROK/TorrServer/releases/latest 2>/dev/null \
-             | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+    ts_rel=$(curl -4 -fsSL --max-time 20 "https://api.github.com/repos/YouROK/TorrServer/releases?per_page=40" 2>/dev/null || true)
+    if command -v jq >/dev/null; then
+      ts_ver=$(printf '%s' "$ts_rel" | jq -r --arg line "$TS_LINE." \
+        '[.[] | select((.draft or .prerelease) | not) | select(.tag_name | startswith($line))][0].tag_name // empty' 2>/dev/null || true)
+    else
+      ts_ver=$(printf '%s' "$ts_rel" | sed -n 's/.*"tag_name": *"\('"$TS_LINE"'\.[^"]*\)".*/\1/p' | head -1)
+    fi
   fi
   [ -n "$ts_ver" ] || ts_ver="$TS_VERSION_FALLBACK"
+
+  # Download one tag; accept it only if it speaks the CLI our unit uses. A binary that
+  # rejects --port would crash-loop under systemd while this installer printed a tick.
+  ts_fetch() {
+    curl -4 -fsSL --retry 3 --max-time 300 \
+      "https://github.com/YouROK/TorrServer/releases/download/$1/TorrServer-linux-$TS_ARCH" \
+      -o "$TS_BIN.new" || return 1
+    chmod +x "$TS_BIN.new"
+    ts_accepts_port "$TS_BIN.new" || return 2
+  }
   say "  fetching TorrServer $ts_ver ($TS_ARCH)"
-  if curl -4 -fsSL --retry 3 --max-time 300 \
-       "https://github.com/YouROK/TorrServer/releases/download/$ts_ver/TorrServer-linux-$TS_ARCH" \
-       -o "$TS_BIN.new"; then
-    chmod +x "$TS_BIN.new"; mv -f "$TS_BIN.new" "$TS_BIN"
+  ts_fetch "$ts_ver"; ts_rc=$?
+  if [ "$ts_rc" -eq 2 ] && [ "$ts_ver" != "$TS_VERSION_FALLBACK" ]; then
+    warn "TorrServer $ts_ver does not accept --port — falling back to $TS_VERSION_FALLBACK"
+    ts_ver="$TS_VERSION_FALLBACK"; ts_fetch "$ts_ver"; ts_rc=$?
+  fi
+  if [ "$ts_rc" -eq 0 ]; then
+    mv -f "$TS_BIN.new" "$TS_BIN"
     ok "TorrServer $ts_ver"
     mark torrserver ok
   else
     rm -f "$TS_BIN.new"
-    err "could not download TorrServer $ts_ver for $TS_ARCH"
-    hint "check network access to github.com, then re-run. Nothing will stream until this succeeds."
-    mark torrserver "download failed"
+    if [ "$ts_rc" -eq 2 ]; then
+      err "TorrServer $ts_ver does not accept the --port option this installer runs it with"
+      hint "report this at https://github.com/MoonTheRipper/JellyFreedom/issues — nothing will stream until it is fixed."
+      mark torrserver "incompatible release"
+    else
+      err "could not download TorrServer $ts_ver for $TS_ARCH"
+      hint "check network access to github.com, then re-run. Nothing will stream until this succeeds."
+      mark torrserver "download failed"
+    fi
   fi
 fi
 fi
@@ -1142,6 +1187,7 @@ if [ -n "$D" ]; then
   systemctl daemon-reload
   systemctl enable --now vpntorrent-netns.service
   if [ -x "$TS_BIN" ]; then systemctl enable --now torrserver-netns.service; else warn "skipping torrserver-netns — no TorrServer binary"; fi
+  if [ "$TS_REPLACED" = 1 ]; then systemctl reset-failed torrserver-netns.service; systemctl restart torrserver-netns.service; fi
   if [ -x "$FS_DIR/flaresolverr" ]; then systemctl enable --now flaresolverr.service; fi
   systemctl enable --now vpntorrent-portforward.service vpntorrent-watchdog.timer jf-tmpreaper.timer
   if [ -x "$YTDLP_BIN" ]; then systemctl enable --now jf-netnsproxy.service; fi
@@ -1153,7 +1199,14 @@ else
     else err "$1 failed to start"; hint "journalctl -u ${1%.service} -n 50 --no-pager"; return 1; fi
   }
   start_unit vpntorrent-netns.service || mark vpn "netns failed to start"
-  if [ -x "$TS_BIN" ]; then start_unit torrserver-netns.service || mark torrserver "failed to start"
+  if [ -x "$TS_BIN" ]; then
+    start_unit torrserver-netns.service || mark torrserver "failed to start"
+    # enable --now leaves an already-running (or crash-looping) unit on the binary it was
+    # started with, so a replaced TorrServer needs a real restart to be the one that runs.
+    if [ "$TS_REPLACED" = 1 ]; then
+      systemctl reset-failed torrserver-netns.service >/dev/null 2>&1 || true
+      systemctl restart torrserver-netns.service >/dev/null 2>&1 || true
+    fi
   else warn "skipping torrserver-netns — no TorrServer binary"; fi
   if [ -x "$FS_DIR/flaresolverr" ]; then start_unit flaresolverr.service || mark flaresolverr "failed to start"; fi
   start_unit vpntorrent-portforward.service || true

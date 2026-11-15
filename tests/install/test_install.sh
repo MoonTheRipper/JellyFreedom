@@ -218,11 +218,15 @@ sandbox_new preexisting
 mock_standard
 mkdir -p "$DEST/opt/flaresolverr" "$DEST/usr/local/bin"
 printf 'THEIR-BINARY\n' > "$DEST/opt/flaresolverr/flaresolverr"; chmod +x "$DEST/opt/flaresolverr/flaresolverr"
-printf 'THEIR-TORRSERVER\n' > "$DEST/usr/local/bin/torrserver"; chmod +x "$DEST/usr/local/bin/torrserver"
+# A working TorrServer: it offers the --port option the unit starts it with.
+their_ts=$'#!/bin/sh\n# THEIR-TORRSERVER\necho "Usage: torrserver [--port PORT] [--path PATH]"'
+printf '%s\n' "$their_ts" > "$DEST/usr/local/bin/torrserver"; chmod +x "$DEST/usr/local/bin/torrserver"
 run_installer
 assert_exit 0
 assert_unchanged "$DEST/opt/flaresolverr/flaresolverr" 'THEIR-BINARY'
-assert_unchanged "$DEST/usr/local/bin/torrserver" 'THEIR-TORRSERVER'
+assert_unchanged "$DEST/usr/local/bin/torrserver" "$their_ts"
+assert_not_ran 'releases/download/MatriX'
+assert_not_ran 'systemctl restart torrserver-netns.service'
 
 # ---------------------------------------------------------------- uninstall reachable
 describe "REGRESSION: uninstall must be reachable after a curl|bash install"
@@ -300,9 +304,70 @@ describe "REGRESSION: TorrServer version is resolved, not pinned to a dead tag"
 _check; sed 's/[[:space:]]*#.*//' "$REPO_ROOT/release/install.sh" | grep -c 'MatriX.141.2' >/dev/null \
   && _fail "no dead TorrServer pin" "MatriX.141.2 is still used in code" \
   || _pass "no dead TorrServer pin"
-_check; grep -q 'releases/latest' "$REPO_ROOT/release/install.sh" \
+_check; grep -q 'api.github.com/repos/YouROK/TorrServer/releases' "$REPO_ROOT/release/install.sh" \
   && _pass "TorrServer release is resolved at runtime" \
-  || _fail "TorrServer release is resolved at runtime" "no latest-release lookup found"
+  || _fail "TorrServer release is resolved at runtime" "no release lookup found"
+
+describe "REGRESSION: TorrServer stays on the MatriX line — Silo.2 rejects --port"
+# On 2026-11-14 upstream's "latest" became Silo.2, a new line whose CLI takes only
+# `-c config.yaml`. The installer took "latest", the unit runs `--port 8090`, and every
+# fresh install got a TorrServer that crash-looped forever: nothing could stream.
+_check; sed 's/[[:space:]]*#.*//' "$REPO_ROOT/release/install.sh" | grep -c 'YouROK/TorrServer/releases/latest' >/dev/null \
+  && _fail "TorrServer is not taken from releases/latest" "still queries releases/latest" \
+  || _pass "TorrServer is not taken from releases/latest"
+ts_releases() {  # pretty-printed like the real API: one key per line
+  local t; printf '[\n'
+  for t in "$@"; do printf '  {\n    "tag_name": "%s",\n    "draft": false,\n    "prerelease": false\n  },\n' "$t"; done
+  printf '  {\n    "tag_name": "MatriX.1",\n    "draft": false,\n    "prerelease": false\n  }\n]\n'
+}
+
+sandbox_new ts-skips-silo
+mock_standard
+ts_releases Silo.2 MatriX.150 MatriX.149 > "$SANDBOX/ts-releases.json"
+run_installer
+assert_exit 0
+assert_ran_re 'releases/download/MatriX\.150/TorrServer-linux-'
+assert_not_ran 'releases/download/Silo'
+assert_exec "$DEST/usr/local/bin/torrserver"
+assert_output 'TorrServer MatriX.150'
+
+sandbox_new ts-incompatible-matrix-falls-back
+mock_standard
+ts_releases MatriX.151 MatriX.150 > "$SANDBOX/ts-releases.json"
+printf 'MatriX.151\n' > "$SANDBOX/ts-noport"
+run_installer
+assert_exit 0
+assert_ran_re 'releases/download/MatriX\.151/'
+assert_output 'does not accept --port — falling back'
+assert_exec "$DEST/usr/local/bin/torrserver"
+assert_contains "$DEST/usr/local/bin/torrserver" '--port'
+
+sandbox_new ts-nothing-compatible
+mock_standard
+ts_releases MatriX.151 > "$SANDBOX/ts-releases.json"
+printf 'MatriX.151\nMatriX.150\n' > "$SANDBOX/ts-noport"
+run_installer
+assert_no_file "$DEST/usr/local/bin/torrserver"
+assert_no_file "$DEST/usr/local/bin/torrserver.new"
+assert_output 'does not accept the --port option'
+assert_output 'incompatible release'
+
+sandbox_new ts-installed-silo-is-healed
+# The machines that installed from 2026-11-14 already HAVE a TorrServer — Silo.2. If it
+# were "left alone" like any other installed component, no update or repair would ever fix
+# them. It must be replaced, the old binary kept, and the unit actually restarted.
+mock_standard
+mkdir -p "$DEST/usr/local/bin"
+printf '#!/bin/sh\necho "Usage of torrserver:"\necho "  -c string"\n' > "$DEST/usr/local/bin/torrserver"
+chmod +x "$DEST/usr/local/bin/torrserver"
+ts_releases Silo.2 MatriX.150 > "$SANDBOX/ts-releases.json"
+run_installer
+assert_exit 0
+assert_output 'does not accept --port (a Silo release?) — replacing it'
+assert_ran_re 'releases/download/MatriX\.150/TorrServer-linux-'
+assert_contains "$DEST/usr/local/bin/torrserver" '--port'
+assert_contains "$DEST/usr/local/bin/torrserver.incompatible" '-c string'
+assert_ran 'systemctl restart torrserver-netns.service'
 
 # ---------------------------------------------------------------- jellyfin
 describe "REGRESSION: Jellyfin installer cannot block on a tty prompt"
