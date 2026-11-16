@@ -13,8 +13,8 @@ On a brand-new install, expect complaints in exactly three groups, and nothing e
 
 - **Connections not configured** — `tmdb`, `prowlarr` and `jellyfin` are "NOT configured",
   and Jellyfin "refuses the orchestrator" because it has no API key yet. Fixed in step 5.
-- **Indexers cannot be counted** — doctor cannot ask Prowlarr until its key is set. Steps 3
-  and 5.
+- **No indexers yet** — "Prowlarr has ZERO indexers configured", or "could not determine how
+  many indexers are configured" while Prowlarr's key is not set. Steps 3 and 5.
 - **No WireGuard tunnel is up**, and the VPN proxy "did not reach the internet". Fixed in
   step 6. This is not a fault: until you activate a config, torrent and pasted-link traffic
   is blocked rather than leaked.
