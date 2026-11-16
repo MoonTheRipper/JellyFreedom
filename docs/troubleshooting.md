@@ -54,7 +54,7 @@ sudo jellyfreedom repair
 |---|---|---|
 | 1990 | Orchestrator (media UI + dashboard) | all interfaces |
 | 8096 | Jellyfin | all interfaces |
-| 9696 | Prowlarr | localhost |
+| 9696 | Prowlarr | all interfaces, login required (localhost if it could not be given a login) |
 | 8191 | FlareSolverr | localhost |
 | 8090 | TorrServer | inside the VPN namespace; reachable from the host at `10.42.0.2:8090` |
 
@@ -239,6 +239,16 @@ journalctl -u prowlarr -n 50 --no-pager
   press **Test**.
 - **Answering, key valid, still no results:** you have no indexers, or they are all failing.
   Test each one in Prowlarr's UI.
+- **It asks for a login you never set:** the installer gave it one, because without a login
+  anyone on your network could read Prowlarr's API key. Read it with
+  `sudo cat /etc/jellyfreedom/prowlarr-login`. That file is not updated if you change the
+  password in Prowlarr later.
+- **It does not open from another machine:** Prowlarr is bound to `127.0.0.1`. That happens
+  when the installer could not give it a login, or on a box set up by 0.7.1–0.8.3, which
+  bound it to localhost instead. Either reach it over SSH —
+  `ssh -L 9696:127.0.0.1:9696 <you>@<server>`, then open `http://localhost:9696` — or, once it
+  has a login, set `<BindAddress>*</BindAddress>` in `/var/lib/prowlarr/config.xml` and
+  `sudo systemctl restart prowlarr`.
 
 ---
 

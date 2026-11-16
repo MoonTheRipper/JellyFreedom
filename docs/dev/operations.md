@@ -14,7 +14,7 @@ Everything here is native — systemd units and binaries, no containers.
 |---|---|---|---|
 | Orchestrator | `jellyfreedom` | 1990, all interfaces | `jellyfreedom` |
 | Jellyfin | `jellyfin` | 8096, all interfaces | `jellyfin` |
-| Prowlarr | `prowlarr` | 9696, localhost | `prowlarr` |
+| Prowlarr | `prowlarr` | 9696, all interfaces, login required | `prowlarr` |
 | FlareSolverr | `flaresolverr` | 8191, localhost | `flaresolverr` |
 | TorrServer | `torrserver-netns` | 8090, **inside the `vpntorrent` namespace** | `torrserver` |
 | VPN proxy (web sources) | `jf-netnsproxy` | 1080, **inside the `vpntorrent` namespace** | `jellyfreedom` |

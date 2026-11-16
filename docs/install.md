@@ -203,6 +203,13 @@ the orchestrator's `/healthz`, TorrServer, Jellyfin, Prowlarr, and FlareSolverr 
 stages (up → browser launches → a real HTTPS page was actually fetched). Anything that cannot
 be proved working is printed as `degraded`, not `ready`.
 
+**10. A Prowlarr login**, when Prowlarr has none. Out of the box Prowlarr answers on every
+interface with no login, so anyone on your network could read its API key — and with it every
+indexer's credentials. The installer creates a login through Prowlarr's own API, requires it
+for every address, and saves it root-only to `/etc/jellyfreedom/prowlarr-login`. A login you
+already set is left alone, and only made required for every address. If Prowlarr refuses the
+change, the installer binds it to `127.0.0.1` instead and says how to reach it over SSH.
+
 ### What it deliberately does not do
 
 - It does not add any indexer to Prowlarr.

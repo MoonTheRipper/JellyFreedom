@@ -308,11 +308,14 @@ if section prowlarr "Prowlarr"; then
     if [ -n "$CONFIGURED" ]; then
       n="$(printf '%s' "$CONFIGURED" | sed -n 's/.*"indexer_count":\([-0-9]*\).*/\1/p')"
     fi
+    # The installer gives a login-less Prowlarr a login of its own; say where it is.
+    pl_login=""
+    [ -f "$CONF_DIR/prowlarr-login" ] && pl_login=" (login: sudo cat $CONF_DIR/prowlarr-login)"
     case "$n" in
       ""|-1) warn "could not determine how many indexers are configured" \
-                  "open http://127.0.0.1:9696 → Indexers, and confirm at least one is added and testing green" ;;
+                  "open http://<this-host>:9696${pl_login} → Indexers, and confirm at least one is added and testing green" ;;
       0)  fail "Prowlarr has ZERO indexers configured" \
-               "open http://127.0.0.1:9696 → Indexers → Add. Without one, every search returns nothing and the UI cannot tell you why." ;;
+               "open http://<this-host>:9696${pl_login} → Indexers → Add. Without one, every search returns nothing and the UI cannot tell you why." ;;
       *)  pass "$n indexer(s) configured" ;;
     esac
   else
