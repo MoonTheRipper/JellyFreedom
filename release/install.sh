@@ -170,12 +170,16 @@ summary(){
   if [ "$bad" = 1 ]; then
     printf '\n\033[1;33mInstalled, with problems.\033[0m Diagnose with:  sudo jellyfreedom doctor\n'
   fi
+  # Only when this installer created the Prowlarr login; an operator's own login is theirs.
+  local pl_login=""
+  [ -n "${PROWLARR_LOGIN_FILE:-}" ] && [ -f "$PROWLARR_LOGIN_FILE" ] && \
+    pl_login=$'\n'"     Prowlarr's login:  sudo cat ${PROWLARR_LOGIN_FILE#"$D"}"
   cat <<BANNER
 
 Next steps:
   1. Open the dashboard:  http://<this-host>:1990/dashboard/  — create the admin account.
   2. Settings → Connections: set your TMDB key, and the Prowlarr / Jellyfin URLs + keys.
-  3. IMPORTANT: open Prowlarr at http://<this-host>:9696 and add at least one indexer.
+  3. IMPORTANT: open Prowlarr at http://<this-host>:9696 and add at least one indexer.${pl_login}
      With zero indexers every search returns nothing and no error explains why.
   4. VPN → upload a WireGuard .conf from any provider (pick a P2P-friendly server) → Activate.
   5. In Jellyfin, add these as libraries:  ${LIB_ROOT#"$D"}/movies  and  ${LIB_ROOT#"$D"}/tv
@@ -1418,39 +1422,118 @@ fi
 #     indexers. Without that, installing FlareSolverr accomplishes precisely nothing:
 #     Cloudflare-protected indexers keep failing exactly as before.
 # ==========================================================================================
-# harden_prowlarr closes an exposure this installer creates and then documents away.
+# harden_prowlarr closes an exposure this installer used to create and then document away.
 #
-# Prowlarr ships BindAddress=* with AuthenticationRequired=DisabledForLocalAddresses, and
-# this installer never touched that file — it only read the API key out of it. So on a stock
-# install ANY host on the LAN could fetch
+# Prowlarr ships BindAddress=* with no login, so on a stock install ANY host on the LAN
+# could fetch
 #
 #     GET http://<box>:9696/initialize.json
 #
 # and receive the API key in cleartext, with no authentication at all. That key then lists
 # every indexer definition, including private-tracker credentials and cookies. Verified on a
 # live box: the key returned by that request matched the one JellyFreedom had stored.
-# Meanwhile docs/security.md told the reader "Keep on localhost: Prowlarr (9696)".
 #
-# What to change depends on whether a login exists, because getting this wrong locks the
-# operator out of their own indexer manager:
+# The first fix bound a login-less Prowlarr to localhost. That closed the leak, but it broke
+# first-run step 3 on every headless server: "open Prowlarr at http://<server>:9696 and add an
+# indexer" cannot be done from another machine, and with zero indexers nothing ever plays.
+# So now (docs/dev/decisions.md D24):
 #
+#   * No login at all        -> create one through Prowlarr's own API, save it root-only to
+#     $PROWLARR_LOGIN_FILE, and require it for every address. Prowlarr stays reachable on
+#     the LAN, like Jellyfin and the dashboard. If the API refuses, bind to localhost as
+#     before, and say how to reach it through an SSH tunnel.
 #   * A login is configured  -> require it for every address. Reachability is unchanged, so
 #     a remote/Tailscale user keeps their UI and simply signs in.
-#   * No login at all        -> requiring one would lock them out, so bind to localhost
-#     instead. That removes the LAN exposure without inventing credentials.
+#   * External (a reverse proxy authenticates) -> nothing to enforce here; close it by
+#     reachability, as before.
+#
+# A bind that is already narrowed to localhost — by the operator, or by an earlier version of
+# this installer — is never widened. That is the operator's call, and the hint says how.
+PROWLARR_API="http://127.0.0.1:9696/api/v1"
+PROWLARR_LOGIN_FILE="$CONF_DIR/prowlarr-login"
+
+# prowlarr_wait_up [seconds] — Prowlarr needs a few seconds after a restart before it answers.
+# The fixed `sleep 3` this replaced lost that race on every fresh install: the FlareSolverr
+# tag request that followed found nothing listening, so the proxy was never registered.
+prowlarr_wait_up(){
+  local i=0
+  while [ "$i" -lt "${1:-60}" ]; do
+    [ "$(probe http://127.0.0.1:9696/ping 2)" = "200" ] && return 0
+    sleep 1; i=$((i + 1))
+  done
+  return 1
+}
+
+# prowlarr_create_login <config.xml> <api key> — give a login-less Prowlarr a forms login,
+# required for every address. The password never appears on a command line or in the log:
+# it lives only in root-only files, and reaches Prowlarr in a request body read from one.
+prowlarr_create_login(){
+  local cfg="$1" key="$2" user=jellyfreedom pw t code
+  [ -n "$key" ] || return 1
+  prowlarr_wait_up 60 || return 1
+  t="$(umask 077 && mktemp -d)" || return 1
+  pw="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)"
+  [ "${#pw}" -eq 24 ] || { rm -rf "$t"; return 1; }
+  printf '%s' "$pw" > "$t/pw"
+  if ! curl -4 -fsS --max-time 10 -H "X-Api-Key: $key" -o "$t/host.json" "$PROWLARR_API/config/host" 2>/dev/null \
+     || ! python3 - "$t/host.json" "$t/pw" "$user" > "$t/put.json" 2>/dev/null <<'PYEOF'
+import json, sys
+host, pwfile, user = sys.argv[1], sys.argv[2], sys.argv[3]
+d = json.load(open(host))
+pw = open(pwfile).read()
+d.update(authenticationMethod="forms", authenticationRequired="enabled",
+         username=user, password=pw, passwordConfirmation=pw)
+print(json.dumps(d))
+PYEOF
+  then
+    rm -rf "$t"; return 1
+  fi
+  # Written before Prowlarr is told, so a full disk cannot leave a login nobody knows.
+  (umask 077 && printf 'Prowlarr login, created by the JellyFreedom installer\nusername: %s\npassword: %s\n' \
+     "$user" "$pw" > "$PROWLARR_LOGIN_FILE") || { rm -rf "$t"; return 1; }
+  code="$(curl -4 -s -o /dev/null -w '%{http_code}' --max-time 15 -X PUT -H "X-Api-Key: $key" \
+          -H 'Content-Type: application/json' --data-binary @"$t/put.json" "$PROWLARR_API/config/host" 2>/dev/null)"
+  rm -rf "$t"
+  # Prowlarr rewrites config.xml when it accepts the change; trust that, not the status alone.
+  case "$code" in
+    2??) for _ in 1 2 3 4 5; do
+           grep -q '<AuthenticationMethod>Forms</AuthenticationMethod>' "$cfg" && return 0
+           sleep 1
+         done ;;
+  esac
+  rm -f "$PROWLARR_LOGIN_FILE"
+  return 1
+}
+
 harden_prowlarr(){
-  local cfg="$1" changed=0 method required bind
+  local cfg="$1" key="${2:-}" changed=0 method required bind
   method="$(sed -n 's:.*<AuthenticationMethod>\([^<]*\)</AuthenticationMethod>.*:\1:p' "$cfg" | head -1)"
   required="$(sed -n 's:.*<AuthenticationRequired>\([^<]*\)</AuthenticationRequired>.*:\1:p' "$cfg" | head -1)"
   bind="$(sed -n 's:.*<BindAddress>\([^<]*\)</BindAddress>.*:\1:p' "$cfg" | head -1)"
 
   case "$method" in
-    ""|None|none|External|external)
-      # No credentials to enforce. Close it by reachability instead.
+    ""|None|none)
+      if prowlarr_create_login "$cfg" "$key"; then
+        changed=1
+        ok "Prowlarr had no login — created one, required on every address"
+        hint "sign in with:  sudo cat ${PROWLARR_LOGIN_FILE#"$D"}"
+        if [ "$bind" = "127.0.0.1" ]; then
+          hint "Prowlarr still answers only on this machine. To open it from others, set"
+          hint "<BindAddress>*</BindAddress> in $cfg and restart prowlarr — it now requires the login"
+        fi
+      elif [ "$bind" = "*" ]; then
+        sed -i 's:<BindAddress>\*</BindAddress>:<BindAddress>127.0.0.1</BindAddress>:' "$cfg" && changed=1
+        warn "Prowlarr has no login and could not be given one — bound it to localhost"
+        hint "reach it through an SSH tunnel:  ssh -L 9696:127.0.0.1:9696 <you>@<this-host>"
+        hint "then open http://localhost:9696 and set a login under Settings → General"
+      fi
+      ;;
+    External|external)
+      # A reverse proxy is meant to authenticate. Nothing to enforce here; close it by
+      # reachability so the proxy is the only way in.
       if [ "$bind" = "*" ]; then
         sed -i 's:<BindAddress>\*</BindAddress>:<BindAddress>127.0.0.1</BindAddress>:' "$cfg" && changed=1
-        warn "Prowlarr had no login and answered on every interface — bound it to localhost"
-        hint "set a Prowlarr login, then widen BindAddress again if you need it remotely"
+        warn "Prowlarr leaves its login to a reverse proxy but answered on every interface — bound it to localhost"
       fi
       ;;
     *)
@@ -1467,7 +1550,7 @@ harden_prowlarr(){
 
   if [ "$changed" = 1 ]; then
     systemctl restart prowlarr.service >/dev/null 2>&1 || true
-    sleep 3
+    prowlarr_wait_up 60 || warn "Prowlarr did not answer within 60s of being restarted"
   fi
 }
 
@@ -1481,8 +1564,8 @@ autowire(){
     sleep 2; waited=$((waited + 2))
   done
   [ -f "$pw_cfg" ] || return 0
-  harden_prowlarr "$pw_cfg"
   pw_key="$(sed -n 's:.*<ApiKey>\([^<]*\)</ApiKey>.*:\1:p' "$pw_cfg" | head -1)"
+  harden_prowlarr "$pw_cfg" "$pw_key"
   [ -n "$pw_key" ] || return 0
 
   # Pre-fill the orchestrator's config only where the user has not already set something.
@@ -1507,21 +1590,35 @@ PYEOF
   if [ "${STATUS[flaresolverr]:-}" != "ok" ]; then
     return 0
   fi
-  local api="http://127.0.0.1:9696/api/v1" hdr="X-Api-Key: $pw_key"
-  if curl -4 -fsS --max-time 10 -H "$hdr" "$api/indexerproxy" 2>/dev/null | grep -q '"implementation":"FlareSolverr"'; then
+  prowlarr_register_flaresolverr "$pw_key"
+}
+
+# prowlarr_register_flaresolverr <api key> — add FlareSolverr as an indexer proxy behind a
+# `flaresolverr` tag. Prowlarr's replies are pretty-printed ("id": 1, spread over lines), and
+# the sed patterns this used never matched them: the tag was created but its id never read,
+# so every install warned "could not create a Prowlarr tag" and the proxy was never added.
+# The JSON is parsed as JSON now.
+prowlarr_register_flaresolverr(){
+  local hdr="X-Api-Key: $1" tag_id
+  if curl -4 -fsS --max-time 10 -H "$hdr" "$PROWLARR_API/indexerproxy" 2>/dev/null | python3 -c '
+import json, sys
+sys.exit(0 if any(p.get("implementation") == "FlareSolverr" for p in json.load(sys.stdin)) else 1)' 2>/dev/null; then
     ok "Prowlarr already has a FlareSolverr proxy"
     return 0
   fi
-  local tag_id
-  tag_id="$(curl -4 -fsS --max-time 10 -H "$hdr" "$api/tag" 2>/dev/null \
-            | sed -n 's/.*{"id":\([0-9]*\),"label":"flaresolverr"}.*/\1/p' | head -1)"
+  tag_id="$(curl -4 -fsS --max-time 10 -H "$hdr" "$PROWLARR_API/tag" 2>/dev/null | python3 -c '
+import json, sys
+print(next((t["id"] for t in json.load(sys.stdin) if t.get("label") == "flaresolverr"), ""))' 2>/dev/null)"
   if [ -z "$tag_id" ]; then
     tag_id="$(curl -4 -fsS --max-time 10 -H "$hdr" -H 'Content-Type: application/json' \
-              -d '{"label":"flaresolverr"}' "$api/tag" 2>/dev/null \
-              | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1)"
+              -d '{"label":"flaresolverr"}' "$PROWLARR_API/tag" 2>/dev/null | python3 -c '
+import json, sys
+print(json.load(sys.stdin).get("id", ""))' 2>/dev/null)"
   fi
-  [ -n "$tag_id" ] || { warn "could not create a Prowlarr tag for FlareSolverr"; return 0; }
-  if curl -4 -fsS --max-time 15 -H "$hdr" -H 'Content-Type: application/json' -X POST "$api/indexerproxy" \
+  case "$tag_id" in
+    ""|*[!0-9]*) warn "could not create a Prowlarr tag for FlareSolverr"; return 0 ;;
+  esac
+  if curl -4 -fsS --max-time 15 -H "$hdr" -H 'Content-Type: application/json' -X POST "$PROWLARR_API/indexerproxy" \
        -d "{\"name\":\"FlareSolverr\",\"implementation\":\"FlareSolverr\",\"configContract\":\"FlareSolverrSettings\",\"tags\":[$tag_id],\"fields\":[{\"name\":\"host\",\"value\":\"http://127.0.0.1:8191/\"},{\"name\":\"requestTimeout\",\"value\":60}]}" \
        >/dev/null 2>&1; then
     ok "registered FlareSolverr as a Prowlarr indexer proxy (tag: flaresolverr)"

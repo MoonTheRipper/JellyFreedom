@@ -62,7 +62,17 @@ works; fixing it now avoids the confusion.
 
 ## 3. Add indexers to Prowlarr — the required step that reports nothing
 
-Open Prowlarr at `http://<your-server>:9696`.
+Open Prowlarr at `http://<your-server>:9696`. It asks for a login: on a fresh install the
+installer created one for it, so Prowlarr is never open to your whole network without one.
+Read it on the server with:
+
+```bash
+sudo cat /etc/jellyfreedom/prowlarr-login
+```
+
+You can change the password in Prowlarr under **Settings → General → Authentication**; the
+file is not updated when you do. If you set up Prowlarr's login yourself before installing,
+that file does not exist and your own login is unchanged.
 
 JellyFreedom ships **no indexers**. A Prowlarr with a perfectly valid API key and **zero
 indexers returns empty results forever**, with no error anywhere explaining why. It is the

@@ -121,7 +121,7 @@ release download when **you** run `jellyfreedom --update`.
 |---|---|---|
 | 1990 | Media UI and admin dashboard | your LAN |
 | 8096 | Jellyfin | your LAN |
-| 9696 | Prowlarr | localhost only |
+| 9696 | Prowlarr | your LAN, behind its login |
 | 8191 | FlareSolverr | localhost only |
 | 8090 | TorrServer | inside the VPN namespace only |
 

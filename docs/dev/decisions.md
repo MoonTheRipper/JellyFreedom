@@ -404,3 +404,28 @@ stream on the fly, which is a real feature and not a small one.
 
 **What would change my mind:** enough sites going adaptive-only that the feature stops being
 useful. That is a measurement, not a guess.
+
+## D24 — The installer gives a login-less Prowlarr a login, rather than hiding it on localhost
+
+**Decision:** When Prowlarr has no login, the installer creates one through Prowlarr's own API
+(`PUT /api/v1/config/host`: forms login, required for every address), saves it root-only to
+`/etc/jellyfreedom/prowlarr-login`, and leaves Prowlarr reachable on the LAN. Only if that
+fails does it fall back to binding Prowlarr to `127.0.0.1`. A login the operator set is never
+replaced, and a bind already narrowed to localhost is never widened.
+
+**Why:** stock Prowlarr answers on every interface with no login, so any host on the network
+could read the API key from `/initialize.json`, and with it every indexer's credentials. From
+0.7.1 the installer closed that by binding Prowlarr to localhost. That fixed the leak, but it
+broke first-run step 3 on every headless server, the most common way JellyFreedom is run:
+"open Prowlarr at `http://<server>:9696` and add an indexer" cannot be done from another
+machine, and with zero indexers nothing ever plays. A login closes the same leak without
+breaking reachability — verified against Prowlarr 2.7: `/initialize.json` redirects to
+`/login`, and the API returns 401 without a key.
+
+**Consequence:** the installer invents a credential, which the 0.7.1 design avoided on
+purpose. It is never printed or logged, only written to a root-only file the next steps point
+at. An operator who changes it in Prowlarr leaves the file stale, and the docs say so.
+
+**What would change my mind:** a Prowlarr release that stops accepting the change over its
+API. The fallback (localhost plus an SSH tunnel) still works then, and the installer says
+which path it took.

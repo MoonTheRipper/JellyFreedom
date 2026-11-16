@@ -9,6 +9,28 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **Prowlarr could not be opened from another machine after a fresh install.** Out of the
+  box Prowlarr has no login, so anyone on your network could read its API key. Since 0.7.1
+  the installer closed that by making Prowlarr answer only on the server itself — but the
+  next step it printed, adding an indexer in Prowlarr from your browser, then could not be
+  done on a server without a screen. With no indexers, every search returns nothing. The
+  installer now gives a login-less Prowlarr a login of its own, requires it for every
+  address, and leaves Prowlarr reachable on your network. Read the login with
+  `sudo cat /etc/jellyfreedom/prowlarr-login`. A Prowlarr login you set yourself is left
+  alone. If you are updating a box that 0.7.1–0.8.3 restricted to the server itself,
+  Prowlarr gets a login but stays restricted; the update tells you the one line to change
+  if you want it on your network.
+- **FlareSolverr was never connected to Prowlarr.** The installer is meant to add
+  FlareSolverr to Prowlarr as a proxy, behind a `flaresolverr` tag. Current Prowlarr spreads
+  its replies over several lines, and the installer could not read them: it created the
+  tag, could not read its number back, printed "could not create a Prowlarr tag for
+  FlareSolverr", and stopped. On a fresh install it also asked about a second before
+  Prowlarr had come back up from a restart. Both are fixed, and re-running the installer no
+  longer risks adding the proxy twice. `sudo jellyfreedom --update` adds the proxy if it is
+  missing. Cloudflare-protected indexers still need the `flaresolverr` tag added to them in
+  Prowlarr.
+
 ## [0.8.3] - 2026-11-16
 
 ### Fixed

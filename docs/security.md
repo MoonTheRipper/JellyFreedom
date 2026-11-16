@@ -196,12 +196,16 @@ It serves plain HTTP with no TLS anywhere, and several routes are deliberately
 unauthenticated. For remote access, use a private overlay network — Tailscale, WireGuard,
 ZeroTier — or an authenticating reverse proxy you control.
 
-**Reasonable on a trusted LAN:** port 1990 (media UI and dashboard) and port 8096 (Jellyfin).
+**Reasonable on a trusted LAN:** port 1990 (media UI and dashboard), port 8096 (Jellyfin), and
+port 9696 (Prowlarr) once it has a login. Stock Prowlarr has none, and then any host on the
+network can read its API key from `/initialize.json` — and with it every indexer's
+credentials. So the installer gives a login-less Prowlarr a login, requires it for every
+address, and saves it root-only to `/etc/jellyfreedom/prowlarr-login`. If that fails, it binds
+Prowlarr to `127.0.0.1` instead.
 
-**Keep on localhost:** Prowlarr (9696) and FlareSolverr (8191). The installer binds
-FlareSolverr to `127.0.0.1` for a concrete reason — it fetches arbitrary URLs with no
-authentication, so binding it to every interface publishes an open request proxy on your
-network.
+**Keep on localhost:** FlareSolverr (8191). The installer binds it to `127.0.0.1` for a
+concrete reason — it fetches arbitrary URLs with no authentication, so binding it to every
+interface publishes an open request proxy on your network.
 
 **Not reachable from the network at all:** TorrServer, which lives inside the VPN namespace
 and is only reachable across the host↔namespace link.
