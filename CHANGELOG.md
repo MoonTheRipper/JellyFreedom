@@ -34,6 +34,9 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
   watchdog restarted it two minutes later. JellyFreedom now writes the cache profile only when
   something in it has changed. Re-running the task, or restarting the orchestrator, no longer
   touches TorrServer.
+- **`jellyfreedom --update` on the nightly channel could install an older nightly.** When two
+  nightlies were published on the same day, the update took whichever GitHub listed first,
+  which was not always the newest. The CLI and `get.sh` now pick the nightly published last.
 
 ### Added
 - **Cancel a whole show or season from the queue.** Shows and seasons in the queue now have

@@ -28,16 +28,27 @@ while [ $# -gt 0 ]; do
 done
 case "$CHANNEL" in stable|nightly) ;; *) printf 'error: unknown channel %s (stable|nightly)\n' "$CHANNEL" >&2; exit 1 ;; esac
 
+# newest_nightly_tag reads a GitHub releases listing on stdin and prints the nightly tag
+# that was PUBLISHED last. The listing's own order is not newest-first: on 2026-11-23 two
+# nightlies cut 15 minutes apart came back older-first, and taking the first one installed
+# the build without the fix the user had just asked for. ISO timestamps sort as text.
+newest_nightly_tag() {
+  tr ',' '\n' | awk '
+    /"tag_name": *"/     { t = $0; sub(/.*"tag_name": *"/, "", t); sub(/".*/, "", t); next }
+    /"published_at": *"/ { p = $0; sub(/.*"published_at": *"/, "", p); sub(/".*/, "", p)
+                           if (t ~ /^nightly-/) print p, t; t = ""; next }
+  ' | sort -r | head -1 | cut -d' ' -f2
+}
+
 # The stable channel is GitHub's own "latest release", which by definition EXCLUDES
 # prereleases — so publishing a nightly can never move a stable install. Nightlies are
 # prereleases with immutable `nightly-<date>-<sha>` tags, so the newest one has to be
 # looked up rather than named.
 resolve_nightly_base() {
-  local api="https://api.github.com/repos/$REPO/releases?per_page=20"
   local tag
-  tag="$(curl -4 -fsSL -H 'Accept: application/vnd.github+json' "$api" 2>/dev/null \
-         | tr ',' '\n' | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' \
-         | grep '^nightly-' | head -1)" || true
+  tag="$(curl -4 -fsSL -H 'Accept: application/vnd.github+json' \
+           "https://api.github.com/repos/$REPO/releases?per_page=30" 2>/dev/null \
+         | newest_nightly_tag)" || true
   [ -n "$tag" ] || return 1
   printf 'https://github.com/%s/releases/download/%s' "$REPO" "$tag"
 }
