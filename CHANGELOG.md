@@ -17,6 +17,23 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
   everything still queued for it, including the episode being fetched at that moment. A
   removed series or season is no longer followed for new episodes, and the empty folders
   are deleted along with the files.
+- **Re-requesting an episode that kept buffering did nothing.** The episode panel says to
+  "re-request to refresh it", but the request was answered "already in library" and nothing
+  happened. A re-request now looks for a better release: other releases are tried first, and
+  the one you have is kept as the fallback. The current one keeps playing until the new one is
+  found. A request you make by hand now runs ahead of season requests already in the queue,
+  so it no longer waits behind dozens of episodes.
+- **Stopping and pressing play again after a stall started from nothing, or failed.** When
+  playback stopped, the torrent was dropped immediately, losing everything TorrServer had
+  buffered. If you pressed play quickly, the drop could land on the new attempt and cut it
+  off. Background work could also drop a torrent while it was playing: the queue checking a
+  release, a re-request, or cleanup. Nothing is dropped now while it is being played or for
+  two minutes after it was last read, so a retry keeps its buffer.
+- **The `apply-cache-profile` task could interrupt playback.** TorrServer applies any settings
+  write by dropping every torrent and reconnecting. Once it failed to reconnect until the
+  watchdog restarted it two minutes later. JellyFreedom now writes the cache profile only when
+  something in it has changed. Re-running the task, or restarting the orchestrator, no longer
+  touches TorrServer.
 
 ### Added
 - **Cancel a whole show or season from the queue.** Shows and seasons in the queue now have

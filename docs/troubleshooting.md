@@ -335,7 +335,7 @@ Connections**.
 |---|---|
 | `no playable release available right now` (502) | Nothing resolvable and connectable was found for that title. |
 | `could not find a playable release within the time limit` (504) | Candidates were tried but none connected in time. Often all the top candidates are "ghosts" — a healthy scrape count with no connectable peers. Retry; it may pick differently. |
-| Playback starts then stalls | Swarm speed, or the tunnel dropped mid-stream. |
+| Playback starts then stalls | Swarm speed, or the tunnel dropped mid-stream. Stopping and pressing play again within two minutes keeps what is already buffered. If it keeps stalling, **re-request** the episode: JellyFreedom looks for a better-connected release and tries it ahead of the one you have, and the current one keeps playing until a better one is found. |
 | "media is not supported by this client" | Jellyfin's playback policy. Enable **remuxing** and **audio transcoding**, keep **video transcoding off**. |
 
 ### Check the path yourself
@@ -357,6 +357,12 @@ journalctl -u jellyfreedom -n 100 --no-pager
 Symptom: `/echo` answers normally, but every attempt to add a torrent returns HTTP 500 and the
 log says `BT client not connected`. The watchdog detects this (two consecutive failures, and
 never while a stream is playing) and restarts the service by itself. By hand:
+
+One known trigger is changing TorrServer's settings. TorrServer applies a settings write by
+dropping every torrent and reconnecting its client, and the client does not always come back.
+JellyFreedom only writes when the cache profile actually changes, so running the
+`apply-cache-profile` task or restarting the orchestrator no longer interrupts playback. Saving
+a *changed* profile under Settings → Streaming & Cache still does.
 
 ```bash
 sudo systemctl restart torrserver-netns

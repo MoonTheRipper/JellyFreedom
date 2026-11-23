@@ -55,13 +55,16 @@ Unit dependencies worth knowing:
 
 The bounded cache is the entire reason TorrServer was chosen. The profile is seeded from
 `torrserver.cache.*` in the config and applied over TorrServer's `/settings` API at startup;
-the dashboard can change it live.
+the dashboard can change it live. A profile TorrServer already has is not written again:
+TorrServer applies every settings write by dropping all torrents and reconnecting its client,
+which cuts off playback and has left the client dead ("BT client not connected") until the
+watchdog restarted it.
 
 | Setting | Shipped value | Why |
 |---|---|---|
 | Cache size | 2048 MB | RAM ring buffer. Hard cap — it cannot be exceeded. |
 | Mode | `ram` | Nothing lingers on disk, nothing to seed, no flash wear. |
-| Disconnect timeout | 90 s | Idle torrents drop themselves — a belt for the webhook-driven drop. |
+| Disconnect timeout | 90 s | Idle torrents drop themselves. Since the webhook drop now waits for the torrent to stay idle, this is usually what frees it. |
 | Connections limit | 80 | Bounded, but enough to find seeders. |
 | Retrackers mode | 1 | Injects extra public trackers, which speeds up cold starts noticeably. |
 | Upload limit | 50 KB/s | Low but **nonzero** — zero gets you choked under tit-for-tat and stalls your own stream. |
@@ -291,6 +294,20 @@ may back several episodes), and drops the torrent only if nothing else needs it.
 reference count cannot be determined it **keeps** the torrent, because dropping one another
 episode is streaming would kill someone else's playback. The same goes for every other answer
 it cannot get — the item lookup, or who is still watching — and each says why in the log.
+
+**The drop waits about two minutes, and happens only if nothing read the torrent meanwhile.**
+Dropping on the spot cost real playback. A stall makes people stop and press play again, and
+the drop threw away everything TorrServer had buffered. In one case it also cut off the retry
+outright: Jellyfin does not list a session as playing while it is still starting, so the stop
+of one attempt dropped the torrent in the same second the next attempt began reading it. The
+orchestrator proxies every byte, so it knows which torrents are being read and when they last
+were (`cmd/orchestrator/streamuse.go`).
+
+The same rule covers every drop that is not the user's own decision: the queue worker after
+validating, a superseded release, a resolve candidate that fails a check, and the orphan
+cleaner. None of them drops a torrent that is being read or was within the last two minutes.
+TorrServer's disconnect timeout frees it afterwards. Removing a title from the library is the
+exception, and drops at once.
 
 Two Jellyfin details it depends on, both checked by `tests/jellyfin` on 10.11.11 and 12.4: by
 the time the webhook arrives, Jellyfin has already cleared the stopping session while still

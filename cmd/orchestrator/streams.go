@@ -89,6 +89,7 @@ func proxyTorrentStream(ts *torrserver.Client, w http.ResponseWriter, r *http.Re
 	}
 	w.WriteHeader(resp.StatusCode)
 	defer trackStream()()
+	defer useTorrent(hash)()
 	if _, err := io.Copy(w, resp.Body); err != nil {
 		// Almost always the player seeking or closing the connection; log at debug
 		// level so a normal seek does not look like an error.

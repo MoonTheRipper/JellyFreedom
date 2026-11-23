@@ -2,6 +2,7 @@ package main
 
 import (
 	"log/slog"
+	"time"
 
 	"jellyfreedom/internal/jellyfin"
 	"jellyfreedom/internal/store"
@@ -66,9 +67,31 @@ func dropAfterPlaybackStop(db *store.Store, jf *jellyfin.Client, ts *torrserver.
 			"title", item.Title, "remaining", n)
 		return
 	}
-	if err := ts.Drop(item.InfoHash); err != nil {
-		slog.Warn("webhook: could not drop torrent after playback stop", "title", item.Title, "err", err)
+	scheduleStopDrop(ts, item.InfoHash, item.Title)
+}
+
+// stopDropDelay is how long after PlaybackStop the torrent is dropped, if nothing has
+// read it since. Long enough for the stop-then-retry a stall provokes, so the retry
+// finds TorrServer's buffer still filled instead of starting from zero.
+//
+// It used to be zero, and that cost real playback. On the live box a stop at 08:26:53
+// dropped S01E01 in the same second the viewer's next attempt started reading it: the
+// webhook asks Jellyfin who is still watching, and a session that is still starting up
+// is not "now playing" yet. Waiting, then asking this process (which proxies every byte),
+// answers the question correctly.
+var stopDropDelay = inUseGrace + 5*time.Second
+
+func scheduleStopDrop(ts *torrserver.Client, hash, title string) {
+	drop := func() {
+		if dropIfIdle(ts, hash, "playback stopped") {
+			slog.Info("torrent dropped after playback stop", "title", title)
+		}
+	}
+	if stopDropDelay <= 0 {
+		drop()
 		return
 	}
-	slog.Info("torrent dropped after playback stop", "title", item.Title)
+	slog.Info("playback stopped; dropping the torrent if it stays idle", "title", title,
+		"after", stopDropDelay.String())
+	time.AfterFunc(stopDropDelay, drop)
 }

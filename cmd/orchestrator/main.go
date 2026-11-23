@@ -295,7 +295,7 @@ func main() {
 
 	registry.Register(
 		"apply-cache-profile",
-		"Push the configured cache profile (RAM/disk, size, connections, disconnect timeout) to TorrServer. Re-run after a TorrServer reset.",
+		"Push the configured cache profile (RAM/disk, size, connections, disconnect timeout) to TorrServer. Re-run after a TorrServer reset. Does nothing if TorrServer already has it; if it changes anything, TorrServer restarts its torrents and playback is interrupted.",
 		"system", "manual", 0,
 		func(ctx context.Context) error {
 			return applyTorrCache(tsClient, cfg)
@@ -1209,9 +1209,18 @@ func main() {
 				existing = nil
 			}
 		}
-		// A ready item short-circuits only for a bare re-request. With a magnet the user is
-		// deliberately swapping the release, so fall through and re-resolve.
-		if req.Magnet == "" && existing != nil && existing.Status == "ready" {
+		// A bare re-request of a ready item is a REFRESH: the worker re-resolves it and tries
+		// the alternatives to the release it has before that release (see lastResort). This
+		// used to answer "already in library" and do nothing, although the UI tells the user
+		// to "re-request to refresh it" — so re-requesting an episode that kept buffering
+		// changed nothing at all.
+		//
+		// The one case still answered "ready" is a release resolved moments ago: a refresh
+		// would only find it again, and a client that re-requests on every response (one
+		// once put 19,430 rows in this queue) gets at most one refresh per window.
+		const refreshWindow = 2 * time.Minute
+		refresh := req.Magnet == "" && existing != nil && existing.Status == "ready"
+		if refresh && time.Since(existing.Updated) < refreshWindow {
 			if err := db.ClearTerminalQueue(req.TMDBID, req.MediaType, req.Season, req.Episode); err != nil {
 				// Cosmetic only: a leftover terminal row shows a stale badge next to
 				// an item that is genuinely ready. Not worth failing the request.
@@ -1251,19 +1260,22 @@ func main() {
 			Season: req.Season, Episode: req.Episode,
 			LibraryName: libName, RequestedBy: requestedBy,
 			MagnetOverride: req.Magnet,
+			// One title asked for by hand goes ahead of season and subscription backlogs.
+			Priority: 1,
 		}
 		id, err := db.Enqueue(qItem)
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not queue that request", err)
 			return
 		}
-		slog.Info("enqueued request", "id", id, "title", title, "type", req.MediaType)
+		slog.Info("enqueued request", "id", id, "title", title, "type", req.MediaType, "refresh", refresh)
 		jsonOK(w, map[string]any{
 			"queue_id": id,
 			"status":   "pending",
 			"stage":    store.StageQueued,
 			"title":    title,
 			"year":     req.Year,
+			"refresh":  refresh,
 		})
 	})))
 
@@ -1551,6 +1563,10 @@ func main() {
 			if it == nil || !torrserver.ValidInfoHash(it.InfoHash) {
 				return false
 			}
+			// In use from the moment we start loading it, not only once bytes flow: the
+			// load-and-connect wait below can take most of a minute, and a background
+			// drop inside that window failed the play with nothing to show for it.
+			defer useTorrent(it.InfoHash)()
 			if !tsClient.EnsureLoaded(ctx, it.InfoHash, it.Magnet, it.Title, 12) {
 				return false
 			}
@@ -1642,7 +1658,7 @@ func main() {
 		if item != nil {
 			libName = item.LibraryName
 		}
-		res, err := worker.resolvePlayable(slowCtx, mediaType, libName, tmdbID, season, episode, "", nil)
+		res, err := worker.resolvePlayable(slowCtx, mediaType, libName, tmdbID, season, episode, "", "", nil)
 		if err != nil {
 			if slowCtx.Err() != nil && r.Context().Err() == nil {
 				slog.Warn("play: resolve hit the deadline", "provider", ref.provider, "id", ref.providerID, "s", season, "e", episode)
@@ -3475,8 +3491,22 @@ func (w *queueWorker) processNext(ctx context.Context) {
 		cancelJob()
 	}()
 
+	// A request for a title that already has a release in the library is a REFRESH: the
+	// user re-requested it, almost always because the release they have is stalling.
+	// Picking the same top-ranked release again would change nothing, so the resolver
+	// tries the alternatives first and keeps the current one as the last resort.
+	avoid := ""
+	if item.MagnetOverride == "" {
+		if cur, gerr := w.db.GetByProviderIdentity(item.Identity()); gerr != nil {
+			slog.Warn("queue: could not look up the current release; resolving without preference",
+				"id", item.ID, "err", gerr)
+		} else if cur != nil {
+			avoid = cur.InfoHash
+		}
+	}
+
 	res, err := w.resolvePlayable(jobCtx, item.MediaType, item.LibraryName,
-		item.TMDBID, item.Season, item.Episode, item.MagnetOverride,
+		item.TMDBID, item.Season, item.Episode, item.MagnetOverride, avoid,
 		func(stage, s string) { w.progress(item, stage, s) })
 	if err != nil {
 		if ctx.Err() != nil {
@@ -3547,9 +3577,7 @@ func (w *queueWorker) commitResolved(item *store.QueueItem, res *resolveResult, 
 		strmPath, err = library.WriteTVStrm(res.lib.Path, res.title, res.year, item.Season, item.Episode, streamURL)
 	}
 	if err != nil {
-		if derr := w.ts.Drop(res.hash); derr != nil {
-			slog.Warn("queue: could not drop torrent after a failed library write", "hash", res.hash, "err", derr)
-		}
+		w.dropQuietly(res.hash)
 		fail("Library write failed: "+err.Error(), "")
 		return false
 	}
@@ -3558,9 +3586,9 @@ func (w *queueWorker) commitResolved(item *store.QueueItem, res *resolveResult, 
 	if existing, gerr := w.db.GetByStrmPath(strmPath); gerr != nil {
 		slog.Error("queue: could not look up the existing library row", "path", strmPath, "err", gerr)
 	} else if existing != nil && existing.InfoHash != res.hash && existing.InfoHash != "" {
-		if derr := w.ts.Drop(existing.InfoHash); derr != nil {
-			slog.Warn("queue: could not drop the superseded torrent", "hash", existing.InfoHash, "err", derr)
-		}
+		// The superseded release is usually the one the viewer was watching when they
+		// asked for a better one; it stays loaded until they stop.
+		w.dropQuietly(existing.InfoHash)
 	}
 
 	// THE critical write. Discarding this error left the .strm on disk and the queue row
@@ -3581,9 +3609,7 @@ func (w *queueWorker) commitResolved(item *store.QueueItem, res *resolveResult, 
 			slog.Error("queue: could not roll back the .strm after a failed library write",
 				"path", strmPath, "err", rerr)
 		}
-		if derr := w.ts.Drop(res.hash); derr != nil {
-			slog.Warn("queue: could not drop torrent after a failed library write", "hash", res.hash, "err", derr)
-		}
+		w.dropQuietly(res.hash)
 		fail("Could not record the item in the library — see the server log", "")
 		slog.Error("queue: library upsert FAILED", "id", item.ID, "path", strmPath, "err", err)
 		return false
@@ -3591,9 +3617,7 @@ func (w *queueWorker) commitResolved(item *store.QueueItem, res *resolveResult, 
 	// Drop-after-validate: the .strm is written and the chosen hash is cached, so drop now.
 	// /play re-adds on demand (and re-resolves if this release later dies). Requesting a whole
 	// season therefore leaves ZERO background load.
-	if derr := w.ts.Drop(res.hash); derr != nil {
-		slog.Warn("queue: could not drop torrent after validating", "hash", res.hash, "err", derr)
-	}
+	w.dropQuietly(res.hash)
 
 	item.Status = "done"
 	item.Stage = store.StageDone
@@ -3626,8 +3650,9 @@ type resolveResult struct {
 // returns a playable (hash, fileIndex) WITHOUT writing a .strm or dropping the torrent on
 // success (the caller decides). Shared by the queue worker (request-time) and the /play
 // handler (play-time re-resolve when a cached release has decayed). magnetOverride forces a
-// specific release; progress (optional) reports stage strings for the queue UI.
-func (w *queueWorker) resolvePlayable(ctx context.Context, mediaType, libraryName string, tmdbID, season, episode int, magnetOverride string, progress func(stage, msg string)) (*resolveResult, error) {
+// specific release; avoidHash (optional) is tried only after the alternatives (see
+// lastResort); progress (optional) reports stage strings for the queue UI.
+func (w *queueWorker) resolvePlayable(ctx context.Context, mediaType, libraryName string, tmdbID, season, episode int, magnetOverride, avoidHash string, progress func(stage, msg string)) (*resolveResult, error) {
 	prog := func(stage, s string) {
 		if progress != nil {
 			progress(stage, s)
@@ -3723,6 +3748,9 @@ func (w *queueWorker) resolvePlayable(ctx context.Context, mediaType, libraryNam
 	}
 
 	const maxTry = 4
+	if avoidHash != "" && magnetOverride == "" {
+		candidates = lastResort(candidates, avoidHash, maxTry)
+	}
 	lastErr := fmt.Errorf("no candidates")
 	for n, cand := range candidates {
 		if n >= maxTry {
@@ -3819,6 +3847,33 @@ func (w *queueWorker) resolvePlayable(ctx context.Context, mediaType, libraryNam
 	return nil, fmt.Errorf("no streamable release found (last: %v)", lastErr)
 }
 
+// lastResort reorders ranked candidates so the release with hash avoid is tried only after
+// the alternatives, and still inside the max attempts the resolver makes, so that a refresh
+// with no working alternative falls back to the release the user already had instead of
+// failing. Rank order is otherwise preserved. A list without that release is returned as is.
+func lastResort(candidates []indexer.Release, avoid string, max int) []indexer.Release {
+	avoid = strings.ToLower(avoid)
+	var others, current []indexer.Release
+	for _, c := range candidates {
+		h := strings.ToLower(c.InfoHash)
+		if h == "" {
+			h, _ = magnetInfoHash(c.Magnet)
+		}
+		if h == avoid {
+			current = append(current, c)
+		} else {
+			others = append(others, c)
+		}
+	}
+	if len(current) == 0 {
+		return candidates
+	}
+	if max > 1 && len(others) > max-1 {
+		others = others[:max-1]
+	}
+	return append(others, current[0])
+}
+
 // cacheResolved persists a freshly-resolved release as the item's cached pointer so the next
 // /play hits the fast path. Called by /play after a re-resolve. The .strm path is stable, so
 // this only updates the existing row's hash/index/magnet/seeders.
@@ -3842,12 +3897,12 @@ func (w *queueWorker) cacheResolved(res *resolveResult, existing *store.Item, me
 	}
 }
 
-// dropQuietly drops a torrent, logging rather than ignoring a failure. A leaked
-// torrent keeps consuming the bounded TorrServer cache.
+// dropQuietly drops a torrent the worker added, unless somebody is playing it (see
+// dropIfIdle). The resolver adds candidates by hash, and a candidate can be the very
+// torrent a viewer is streaming: the same release picked again by a re-request, or a
+// season pack another episode is playing from. Dropping it there cut that viewer off.
 func (w *queueWorker) dropQuietly(hash string) {
-	if err := w.ts.Drop(hash); err != nil {
-		slog.Warn("could not drop torrent", "hash", hash, "err", err)
-	}
+	dropIfIdle(w.ts, hash, "queue worker")
 }
 
 // resolveFileIndex re-derives the correct 1-based TorrServer file index (and the file's byte
@@ -3963,7 +4018,7 @@ func (w *queueWorker) preWarmNext(tmdbID, season, episode int) {
 		}
 	}
 	if hash == "" {
-		res, err := w.resolvePlayable(ctx, "tv", next.LibraryName, tmdbID, ns, ne, "", nil)
+		res, err := w.resolvePlayable(ctx, "tv", next.LibraryName, tmdbID, ns, ne, "", "", nil)
 		if err != nil {
 			slog.Info("prewarm: next episode unavailable", "tmdb", tmdbID, "s", ns, "e", ne, "err", err)
 			return
@@ -3972,6 +4027,9 @@ func (w *queueWorker) preWarmNext(tmdbID, season, episode int) {
 		hash, idx = res.hash, res.fileIndex
 	}
 	slog.Info("prewarm: next episode hot", "tmdb", tmdbID, "s", ns, "e", ne, "hash", hash)
+	// A warmed torrent is one somebody is about to play; nothing in the background may
+	// drop it while the keep-warm loop holds it.
+	defer useTorrent(hash)()
 
 	w.touchTorrent(ctx, hash, idx) // initial pre-buffer of the opening
 	tick := time.NewTicker(60 * time.Second)
@@ -4110,7 +4168,7 @@ func applyTorrCacheOnce(tsClient *torrserver.Client, cfg *config.Config) error {
 		slog.Error("torrserver cache mode=disk requires a path; skipping cache apply")
 		return fmt.Errorf("%w: disk cache mode requires torrserver.cache.path", errCacheProfileConfig)
 	}
-	err := tsClient.ApplyCacheSettings(torrserver.CacheSettings{
+	changed, err := tsClient.ApplyCacheSettings(torrserver.CacheSettings{
 		Mode:               cc.Mode,
 		SizeMB:             cc.SizeMB,
 		Path:               cc.Path,
@@ -4122,7 +4180,12 @@ func applyTorrCacheOnce(tsClient *torrserver.Client, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	slog.Info("applied TorrServer cache profile",
+	if !changed {
+		slog.Info("TorrServer already has the configured cache profile; left it alone",
+			"mode", cc.Mode, "size_mb", cc.SizeMB, "disconnect_s", cc.DisconnectTimeoutS, "connections", cc.ConnectionsLimit)
+		return nil
+	}
+	slog.Info("applied TorrServer cache profile (TorrServer restarts its torrents to take it)",
 		"mode", cc.Mode, "size_mb", cc.SizeMB, "disconnect_s", cc.DisconnectTimeoutS, "connections", cc.ConnectionsLimit)
 	return nil
 }
@@ -4349,12 +4412,12 @@ func taskOrphanCleanup(ctx context.Context, db *store.Store, tsClient *torrserve
 			continue
 		}
 		if item == nil {
-			slog.Info("dropping orphan torrent", "hash", hash)
-			if derr := tsClient.Drop(hash); derr != nil {
-				slog.Warn("orphan cleanup: drop failed", "hash", hash, "err", derr)
-				continue
+			// A torrent with no library row can still be playing: /play re-resolves an
+			// identity whose row was removed while Jellyfin still lists it.
+			if dropIfIdle(tsClient, hash, "orphan cleanup") {
+				slog.Info("dropped orphan torrent", "hash", hash)
+				dropped++
 			}
-			dropped++
 		}
 	}
 	slog.Info("orphan cleanup complete", "torrents_checked", len(list), "dropped", dropped)

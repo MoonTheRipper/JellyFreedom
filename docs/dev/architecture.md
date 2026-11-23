@@ -92,7 +92,7 @@ User presses play → Jellyfin fetches the .strm URL → back into the ORCHESTRA
    and proxies the byte range from  <torrserver>/stream?index=<n>&link=<hash>&play
    │
    ▼
-Playback stops → Jellyfin webhook → drop the torrent, free the cache
+Playback stops → Jellyfin webhook → drop the torrent once it stays idle, free the cache
 ```
 
 ## 4. Resolve-at-Play
@@ -157,7 +157,8 @@ torrent to free the cache, and the item stays `ready`; `/play` re-adds it on dem
 
 - TorrServer holds a **capped cache window**. It cannot exceed the cap.
 - `.strm` files are a few hundred bytes.
-- Torrents are dropped after validation and again after playback.
+- Torrents are dropped after validation and again after playback, but never while they are
+  being streamed (a stop-and-retry keeps its buffer).
 
 Disk usage is essentially constant regardless of how much is watched.
 
@@ -214,10 +215,21 @@ worker processes one item at a time (`pending → processing → done|failed`) w
 string per stage. The queue is persisted, and rows interrupted by a restart are reset to
 pending.
 
-Both request paths are **idempotent**: a bare re-request for something already `ready` or
-in flight does not enqueue a duplicate, an explicit magnet override always re-resolves, and a
-fresh request supersedes stale terminal rows for the same identity so the queue never
-contradicts the library.
+Both request paths are **idempotent**: a request for something already in flight does not
+enqueue a duplicate, an explicit magnet override always re-resolves, and a fresh request
+supersedes stale terminal rows for the same identity so the queue never contradicts the
+library.
+
+A bare re-request of something already `ready` is a **refresh**. It is queued, and the worker
+tries the alternatives to the release the library has before that release, which stays in the
+list as the last resort (`lastResort`). People re-request because what they have is stalling,
+and the top-ranked release is usually the one they already have. A release resolved within the
+last two minutes is answered `ready` instead, so a client that re-requests in a loop gets at
+most one refresh per window.
+
+Requests made by hand for one title (`POST /request`) have priority over the bulk rows that a
+season request or a subscription enqueues (`queue.priority`). Otherwise a single re-request
+waited behind every queued episode.
 
 **Cancellation and removal.** A request can be cancelled while it is `pending` *or*
 `processing`: one row (`POST /api/queue/{id}/cancel`), or a whole show or season in one call

@@ -232,25 +232,28 @@ type QueueItem struct {
 	// Provider and ProviderID are the row's real identity — see the Identity block at
 	// the top of this file. The unique index that stops duplicate in-flight rows keys
 	// on these, not on tmdb_id.
-	Provider       string    `json:"provider"`
-	ProviderID     string    `json:"provider_id"`
-	MediaType      string    `json:"media_type"`
-	Title          string    `json:"title"`
-	Year           string    `json:"year"`
-	PosterURL      string    `json:"poster_url"`
-	Season         int       `json:"season"`
-	Episode        int       `json:"episode"`
-	LibraryName    string    `json:"library_name"`
-	RequestedBy    string    `json:"requested_by"`
-	MagnetOverride string    `json:"magnet_override"`
-	Status         string    `json:"status"` // pending|processing|done|failed|cancelled
-	Progress       string    `json:"progress"`
-	Stage          string    `json:"stage"`
-	ErrorMsg       string    `json:"error_msg"`
-	InfoHash       string    `json:"info_hash"`
-	StrmPath       string    `json:"strm_path"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	Provider       string `json:"provider"`
+	ProviderID     string `json:"provider_id"`
+	MediaType      string `json:"media_type"`
+	Title          string `json:"title"`
+	Year           string `json:"year"`
+	PosterURL      string `json:"poster_url"`
+	Season         int    `json:"season"`
+	Episode        int    `json:"episode"`
+	LibraryName    string `json:"library_name"`
+	RequestedBy    string `json:"requested_by"`
+	MagnetOverride string `json:"magnet_override"`
+	// Priority is written by Enqueue and only read by NextPending's ORDER BY; it is not
+	// scanned back. 1 = one title requested by hand, 0 = bulk (season, subscription).
+	Priority  int       `json:"-"`
+	Status    string    `json:"status"` // pending|processing|done|failed|cancelled
+	Progress  string    `json:"progress"`
+	Stage     string    `json:"stage"`
+	ErrorMsg  string    `json:"error_msg"`
+	InfoHash  string    `json:"info_hash"`
+	StrmPath  string    `json:"strm_path"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 
 	// Diagnosis is a JSON blob explaining a "no release found" failure. It is served
 	// only from GET /api/queue/{id}/diagnosis, never inline in the queue list.
@@ -768,6 +771,11 @@ func (s *Store) migrate() error {
 		`ALTER TABLE items    ADD COLUMN provider_id   TEXT     NOT NULL DEFAULT ''`,
 		`ALTER TABLE queue    ADD COLUMN provider      TEXT     NOT NULL DEFAULT 'tmdb'`,
 		`ALTER TABLE queue    ADD COLUMN provider_id   TEXT     NOT NULL DEFAULT ''`,
+		// priority orders the worker's queue: a request somebody made by hand for one
+		// title (1) runs before the bulk rows a season request or a subscription enqueues
+		// (0). Without it a single re-request waited behind every episode of every season
+		// still queued — on the live box, 140 rows.
+		`ALTER TABLE queue    ADD COLUMN priority      INTEGER  NOT NULL DEFAULT 0`,
 	}
 	for _, stmt := range adds {
 		if err := s.addColumn(stmt); err != nil {
@@ -1680,11 +1688,11 @@ func (s *Store) Enqueue(item *QueueItem) (int64, error) {
 		return 0, err
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO queue (tmdb_id,provider,provider_id,media_type,title,year,poster_url,season,episode,library_name,requested_by,magnet_override,stage)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO queue (tmdb_id,provider,provider_id,media_type,title,year,poster_url,season,episode,library_name,requested_by,magnet_override,stage,priority)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT DO NOTHING`,
 		item.TMDBID, item.Provider, item.ProviderID, item.MediaType, item.Title, item.Year, item.PosterURL,
-		item.Season, item.Episode, item.LibraryName, item.RequestedBy, item.MagnetOverride, StageQueued,
+		item.Season, item.Episode, item.LibraryName, item.RequestedBy, item.MagnetOverride, StageQueued, item.Priority,
 	)
 	if err != nil {
 		return 0, err
@@ -1715,10 +1723,11 @@ func (s *Store) RequeueWithMagnet(id int64, magnet string) error {
 	return err
 }
 
-// NextPending atomically claims the next pending queue item by marking it processing.
+// NextPending atomically claims the next pending queue item by marking it processing:
+// hand-made requests first (priority), then oldest first.
 func (s *Store) NextPending() (*QueueItem, error) {
 	item, err := scanQueueItem(s.db.QueryRow(
-		`SELECT ` + queueCols + ` FROM queue WHERE status='pending' ORDER BY created_at LIMIT 1`))
+		`SELECT ` + queueCols + ` FROM queue WHERE status='pending' ORDER BY priority DESC, created_at, id LIMIT 1`))
 	if err != nil || item == nil {
 		return nil, err
 	}

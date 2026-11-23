@@ -122,13 +122,25 @@ type CacheSettings struct {
 // ApplyCacheSettings reads TorrServer's current settings, overlays the managed
 // cache fields, and writes them back. Get-modify-set preserves every field we
 // don't touch (API keys, DHT toggles, etc.).
-func (c *Client) ApplyCacheSettings(s CacheSettings) error {
+//
+// It writes ONLY when something would change, and reports whether it did. A settings
+// write is not free: TorrServer answers it by dropping every torrent and reconnecting
+// its BitTorrent client, which cuts off whatever is playing. On the live box a re-apply
+// of an unchanged profile did exactly that mid-stream, and the client then failed to
+// come back ("BT client not connected") until the watchdog restarted TorrServer two
+// minutes later. Re-applying an unchanged profile at every start-up, or from the
+// dashboard task, is now a no-op.
+func (c *Client) ApplyCacheSettings(s CacheSettings) (changed bool, err error) {
 	var cur map[string]any
 	if err := c.post("/settings", map[string]any{"action": "get"}, &cur); err != nil {
-		return fmt.Errorf("get settings: %w", err)
+		return false, fmt.Errorf("get settings: %w", err)
 	}
 	if cur == nil {
-		return fmt.Errorf("torrserver returned empty settings")
+		return false, fmt.Errorf("torrserver returned empty settings")
+	}
+	before, err := json.Marshal(cur)
+	if err != nil {
+		return false, fmt.Errorf("encode current settings: %w", err)
 	}
 
 	switch s.Mode {
@@ -158,10 +170,19 @@ func (c *Client) ApplyCacheSettings(s CacheSettings) error {
 		cur["UploadRateLimit"] = s.UploadRateLimitKB * 1024
 	}
 
-	if err := c.post("/settings", map[string]any{"action": "set", "sets": cur}, nil); err != nil {
-		return fmt.Errorf("set settings: %w", err)
+	// Compared as JSON: the map decoded numbers as float64 and the overlay wrote ints,
+	// and both encode to the same text when the value is the same.
+	after, err := json.Marshal(cur)
+	if err != nil {
+		return false, fmt.Errorf("encode new settings: %w", err)
 	}
-	return nil
+	if bytes.Equal(before, after) {
+		return false, nil
+	}
+	if err := c.post("/settings", map[string]any{"action": "set", "sets": cur}, nil); err != nil {
+		return false, fmt.Errorf("set settings: %w", err)
+	}
+	return true, nil
 }
 
 type FileInfo struct {
