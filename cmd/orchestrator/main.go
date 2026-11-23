@@ -678,16 +678,93 @@ func main() {
 			return
 		}
 		user := api.UserFromContext(r)
+		// Under the commit lock, so a row the worker is about to write either commits
+		// first (and this reports "already finished") or is cancelled first (and the
+		// worker's pre-commit check sees it). Never both.
+		worker.commitMu.Lock()
 		n, err := db.CancelQueueItem(id, store.ViewerOf(user))
+		if err == nil && n > 0 {
+			worker.abort([]int64{id})
+		}
+		worker.commitMu.Unlock()
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not cancel that request", err)
 			return
 		}
 		if n == 0 {
-			jsonErr(w, "nothing to cancel — it is not yours, or it is no longer pending", http.StatusConflict)
+			jsonErr(w, "nothing to cancel — it is not yours, or it has already finished", http.StatusConflict)
 			return
 		}
 		jsonOK(w, map[string]string{"status": "cancelled"})
+	})))
+
+	// Cancel a whole title's queue, or one season of it, in one call — the "stop fetching
+	// this show" a season request needs, which used to take one press per episode and could
+	// not reach the episode already being resolved at all.
+	//
+	// Cancelling a show or a season also stops FOLLOWING it: a subscription re-enqueues
+	// every aired episode that is not in the library, so leaving it in place would undo the
+	// cancel on its next run. A single episode leaves the subscription alone; the
+	// subscription check skips episodes whose latest request was cancelled.
+	mux.Handle("POST /api/queue/cancel", api.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			TMDBID    int    `json:"tmdb_id"`
+			MediaType string `json:"media_type"`
+			Season    *int   `json:"season"`
+			Episode   *int   `json:"episode"`
+		}
+		if err := decodeBody(w, r, &req); err != nil || req.TMDBID <= 0 {
+			jsonErr(w, "tmdb_id required", http.StatusBadRequest)
+			return
+		}
+		if req.MediaType == "" {
+			req.MediaType = "tv"
+		}
+		if req.MediaType != "movie" && req.MediaType != "tv" {
+			jsonErr(w, "media_type must be movie or tv", http.StatusBadRequest)
+			return
+		}
+		if req.Episode != nil && req.Season == nil {
+			jsonErr(w, "episode needs a season", http.StatusBadRequest)
+			return
+		}
+		if (req.Season != nil && *req.Season < 0) || (req.Episode != nil && *req.Episode < 0) {
+			jsonErr(w, "season and episode must be non-negative", http.StatusBadRequest)
+			return
+		}
+		sc := store.ShowScope(req.TMDBID, req.MediaType)
+		subSeason := -1 // the whole show
+		switch {
+		case req.MediaType == "movie":
+			subSeason = keepSubscriptions
+		case req.Episode != nil:
+			sc = store.EpisodeScope(req.TMDBID, *req.Season, *req.Episode)
+			subSeason = keepSubscriptions
+		case req.Season != nil:
+			sc = store.SeasonScope(req.TMDBID, *req.Season)
+			subSeason = *req.Season
+		}
+		user := api.UserFromContext(r)
+		v := store.ViewerOf(user)
+
+		worker.commitMu.Lock()
+		ids, err := db.CancelQueueScope(v, sc)
+		if err == nil {
+			worker.abort(ids)
+		}
+		var unfollowed int64
+		if err == nil && subSeason != keepSubscriptions {
+			unfollowed, err = db.DeleteSubscriptionsFor(v, req.TMDBID, subSeason)
+		}
+		worker.commitMu.Unlock()
+		if err != nil {
+			httpFail(w, r, http.StatusInternalServerError, "could not cancel those requests", err)
+			return
+		}
+		slog.Info("cancelled queued requests", "tmdb", req.TMDBID, "type", req.MediaType,
+			"season", req.Season, "episode", req.Episode, "cancelled", len(ids), "unfollowed", unfollowed,
+			"by", v.Username)
+		jsonOK(w, map[string]any{"status": "cancelled", "cancelled": len(ids), "unfollowed": unfollowed})
 	})))
 
 	mux.Handle("DELETE /api/queue/{id}", api.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1795,6 +1872,8 @@ func main() {
 			}
 			if rerr := library.RemoveStrm(it.StrmPath); rerr != nil {
 				slog.Error("could not remove .strm file", "path", it.StrmPath, "err", rerr)
+			} else if lib := cfg.FindLibrary(it.LibraryName); lib != nil {
+				library.PruneEmptyParents(lib.Path, it.StrmPath)
 			}
 			if derr := db.DeleteItem(it.StrmPath); derr != nil {
 				// Leaving the row while the file is gone would show a permanently broken
@@ -1829,6 +1908,62 @@ func main() {
 		return len(done), skipped, nil
 	}
 
+	// removal is what a library removal reports beyond the rows it deleted: what it
+	// stopped from putting them back.
+	type removal struct {
+		removed, skipped int
+		cancelled        int   // in-flight queue rows for the same scope
+		unfollowed       int64 // subscriptions that would have re-enqueued it
+	}
+
+	// removeScoped removes library rows AND everything that would write them back.
+	//
+	// Deleting the rows alone was not a removal. The queue kept resolving whatever was
+	// still in it for the title and wrote each finished episode straight back into the
+	// library, and an airing show's subscription re-enqueued the rest on its next run —
+	// so a removed show reappeared in Jellyfin within minutes. The queue is now cancelled
+	// for the same scope FIRST (and the worker interrupted if it is on one of those rows),
+	// all under the worker's commit lock, so no resolve can land between the two steps.
+	//
+	// subSeason: -1 removes every subscription to the show, n >= 0 only season n's, and
+	// keepSubscriptions none — removing one episode is not a decision about the season.
+	removeScoped := func(user *store.User, sc store.QueueScope, subSeason int, items []*store.Item) (removal, error) {
+		worker.commitMu.Lock()
+		defer worker.commitMu.Unlock()
+		var out removal
+		v := store.ViewerOf(user)
+		ids, err := db.CancelQueueScope(v, sc)
+		if err != nil {
+			return out, fmt.Errorf("cancel the queued requests: %w", err)
+		}
+		worker.abort(ids)
+		out.cancelled = len(ids)
+		if subSeason != keepSubscriptions && sc.Identity.Provider == store.ProviderTMDB {
+			tmdbID, _ := strconv.Atoi(sc.Identity.ProviderID)
+			n, err := db.DeleteSubscriptionsFor(v, tmdbID, subSeason)
+			if err != nil {
+				return out, fmt.Errorf("remove the subscriptions: %w", err)
+			}
+			out.unfollowed = n
+		}
+		out.removed, out.skipped, err = removeItems(user, items)
+		if out.cancelled > 0 || out.unfollowed > 0 {
+			slog.Info("library removal also stopped what would have re-added it",
+				"provider", sc.Identity.Provider, "id", sc.Identity.ProviderID, "season", sc.Identity.Season,
+				"cancelled_queue_rows", out.cancelled, "unfollowed", out.unfollowed)
+		}
+		return out, err
+	}
+
+	// itemScope is the queue scope a single library row stands for: its episode for TV,
+	// the title for a movie.
+	itemScope := func(it *store.Item) store.QueueScope {
+		if it.MediaType == "tv" {
+			return store.QueueScope{Identity: it.Identity(), SeasonSet: true, EpisodeSet: true}
+		}
+		return store.QueueScope{Identity: it.Identity()}
+	}
+
 	mux.Handle("POST /api/library/{hash}/drop", api.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hash := strings.ToLower(strings.TrimSpace(r.PathValue("hash")))
 		if !torrserver.ValidInfoHash(hash) {
@@ -1856,12 +1991,13 @@ func main() {
 			jsonErr(w, "that item belongs to someone else", http.StatusForbidden)
 			return
 		}
-		n, _, err := removeItems(user, []*store.Item{item})
+		rm, err := removeScoped(user, itemScope(item), keepSubscriptions, []*store.Item{item})
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not remove that item", err)
 			return
 		}
-		jsonOK(w, map[string]any{"status": "removed", "hash": hash, "count": n})
+		jsonOK(w, map[string]any{"status": "removed", "hash": hash, "count": rm.removed,
+			"cancelled": rm.cancelled})
 	})))
 
 	// Remove an entire series.
@@ -1880,12 +2016,15 @@ func main() {
 			httpFail(w, r, http.StatusInternalServerError, "could not read the library", err)
 			return
 		}
-		n, skipped, err := removeItems(user, items)
+		// The queue scope is the whole show, not the rows found above: the episodes still
+		// in the queue are by definition the ones with no library row yet.
+		rm, err := removeScoped(user, store.ShowScope(id, "tv"), -1, items)
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not remove that series", err)
 			return
 		}
-		jsonOK(w, map[string]any{"status": "removed", "count": n, "skipped": skipped})
+		jsonOK(w, map[string]any{"status": "removed", "count": rm.removed, "skipped": rm.skipped,
+			"cancelled": rm.cancelled, "unfollowed": rm.unfollowed})
 	})))
 
 	// Remove all episodes of one season.
@@ -1910,12 +2049,13 @@ func main() {
 				inSeason = append(inSeason, it)
 			}
 		}
-		n, skipped, err := removeItems(user, inSeason)
+		rm, err := removeScoped(user, store.SeasonScope(req.TMDBID, req.Season), req.Season, inSeason)
 		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not remove that season", err)
 			return
 		}
-		jsonOK(w, map[string]any{"status": "removed", "count": n, "skipped": skipped})
+		jsonOK(w, map[string]any{"status": "removed", "count": rm.removed, "skipped": rm.skipped,
+			"cancelled": rm.cancelled, "unfollowed": rm.unfollowed})
 	})))
 
 	// Remove a single episode (by tmdb_id+season+episode — never by shared hash).
@@ -1950,11 +2090,12 @@ func main() {
 			jsonErr(w, "that item belongs to someone else", http.StatusForbidden)
 			return
 		}
-		if _, _, err := removeItems(user, []*store.Item{item}); err != nil {
+		rm, err := removeScoped(user, itemScope(item), keepSubscriptions, []*store.Item{item})
+		if err != nil {
 			httpFail(w, r, http.StatusInternalServerError, "could not remove that episode", err)
 			return
 		}
-		jsonOK(w, map[string]string{"status": "removed"})
+		jsonOK(w, map[string]any{"status": "removed", "cancelled": rm.cancelled})
 	})))
 
 	// ── Settings API (admin only) ─────────────────────────────────────────────
@@ -3220,6 +3361,10 @@ func buildProtectedMux(db *store.Store, cfg *config.Config, assets fs.FS, indexe
 	return mux
 }
 
+// keepSubscriptions, passed as the subscription season to a queue cancel or a library
+// removal, leaves subscriptions alone. -1 means every season of the show; n >= 0, season n.
+const keepSubscriptions = -2
+
 // queueWorker processes items from the queue one at a time.
 type queueWorker struct {
 	db      *store.Store
@@ -3234,6 +3379,37 @@ type queueWorker struct {
 	// hammering refresh cannot multiply a 90-second search.
 	resolves *resolveGroup
 	cooldown *resolveCooldown
+
+	// commitMu serialises the moment a resolved row becomes a library entry against the
+	// two operations that must be able to stop that from happening: cancelling queue rows
+	// and removing a title from the library. Without it there was a window between "the
+	// worker decided to write this episode" and "the episode is written" in which a
+	// removal could run to completion — and the worker then wrote the episode back.
+	commitMu sync.Mutex
+
+	// The job being resolved right now, so a cancel can interrupt a resolve that would
+	// otherwise run its full search-and-validate cycle (minutes) for a row nobody wants.
+	curMu     sync.Mutex
+	curID     int64
+	curCancel context.CancelFunc
+}
+
+// abort interrupts the current job if it is one of ids. The rows themselves have already
+// been marked cancelled by the caller; this only stops the work early. A job that is past
+// the point of interruption is still caught by the status check in processNext's commit.
+func (w *queueWorker) abort(ids []int64) {
+	w.curMu.Lock()
+	defer w.curMu.Unlock()
+	if w.curCancel == nil {
+		return
+	}
+	for _, id := range ids {
+		if id == w.curID {
+			slog.Info("queue: interrupting the request being resolved; it was cancelled", "id", id)
+			w.curCancel()
+			return
+		}
+	}
 }
 
 func (w *queueWorker) run(ctx context.Context) {
@@ -3284,12 +3460,31 @@ func (w *queueWorker) processNext(ctx context.Context) {
 		}
 	}
 
-	res, err := w.resolvePlayable(ctx, item.MediaType, item.LibraryName,
+	// jobCtx is cancelled by abort() when this row is cancelled mid-resolve, and by the
+	// root ctx on shutdown. The two are told apart below because they mean opposite
+	// things for the row: shutdown leaves it 'processing' for restart recovery, while a
+	// cancel has already marked it 'cancelled' and must not be touched again.
+	jobCtx, cancelJob := context.WithCancel(ctx)
+	w.curMu.Lock()
+	w.curID, w.curCancel = item.ID, cancelJob
+	w.curMu.Unlock()
+	defer func() {
+		w.curMu.Lock()
+		w.curID, w.curCancel = 0, nil
+		w.curMu.Unlock()
+		cancelJob()
+	}()
+
+	res, err := w.resolvePlayable(jobCtx, item.MediaType, item.LibraryName,
 		item.TMDBID, item.Season, item.Episode, item.MagnetOverride,
 		func(stage, s string) { w.progress(item, stage, s) })
 	if err != nil {
 		if ctx.Err() != nil {
 			return // shutting down — leave the row 'processing' for restart recovery
+		}
+		if jobCtx.Err() != nil {
+			slog.Info("queue: stopped a cancelled request", "id", item.ID, "title", item.Title)
+			return
 		}
 		var nr *noReleaseError
 		if errors.As(err, &nr) {
@@ -3300,6 +3495,39 @@ func (w *queueWorker) processNext(ctx context.Context) {
 		return
 	}
 
+	if !w.commitResolved(item, res, fail) {
+		return
+	}
+	notifyJellyfinScan(w.jf)
+	slog.Info("queue: done (torrent dropped; loads on play)", "id", item.ID, "title", res.displayTitle, "hash", res.hash)
+}
+
+// commitResolved turns a resolved row into a library entry: .strm on disk, library row,
+// queue row marked done. It runs under commitMu and starts by re-reading the row, so a
+// row cancelled (or removed with its title) while it was being resolved is dropped here
+// instead of being written into the library. Reports whether it committed.
+func (w *queueWorker) commitResolved(item *store.QueueItem, res *resolveResult, fail func(msg, diag string)) bool {
+	w.commitMu.Lock()
+	defer w.commitMu.Unlock()
+
+	st, err := w.db.QueueStatus(item.ID)
+	if err != nil {
+		w.dropQuietly(res.hash)
+		fail("Could not re-check the request before writing it — see the server log", "")
+		slog.Error("queue: could not re-read the row before committing", "id", item.ID, "err", err)
+		return false
+	}
+	if st != "processing" {
+		// 'cancelled': the user stopped it, or removed the title. 'pending': it was
+		// re-pointed at a different release while this resolve ran, and will be picked
+		// up again with that release. "": the row is gone. In every case, writing this
+		// result would contradict a newer decision.
+		w.dropQuietly(res.hash)
+		slog.Info("queue: request changed while it was being resolved; not writing it to the library",
+			"id", item.ID, "title", res.displayTitle, "status", st)
+		return false
+	}
+
 	w.progress(item, store.StageWriting, "Writing to library…")
 	// Resolve-at-Play: the .strm holds a STABLE identity URL, not the resolved hash. The
 	// /play handler picks the best live release each time, so the pointer never rots.
@@ -3308,8 +3536,9 @@ func (w *queueWorker) processNext(ctx context.Context) {
 		// playURLFor logged the identity it refused. A .strm containing an empty string
 		// is a library entry that fails at play time with nothing to explain it, so fail
 		// here where the queue can show the user a reason.
+		w.dropQuietly(res.hash)
 		fail("Could not build a play URL for this item's identity", "")
-		return
+		return false
 	}
 	var strmPath string
 	if item.MediaType == "movie" {
@@ -3322,7 +3551,7 @@ func (w *queueWorker) processNext(ctx context.Context) {
 			slog.Warn("queue: could not drop torrent after a failed library write", "hash", res.hash, "err", derr)
 		}
 		fail("Library write failed: "+err.Error(), "")
-		return
+		return false
 	}
 
 	// Drop the previously-cached torrent if this resolve picked a different release.
@@ -3357,7 +3586,7 @@ func (w *queueWorker) processNext(ctx context.Context) {
 		}
 		fail("Could not record the item in the library — see the server log", "")
 		slog.Error("queue: library upsert FAILED", "id", item.ID, "path", strmPath, "err", err)
-		return
+		return false
 	}
 	// Drop-after-validate: the .strm is written and the chosen hash is cached, so drop now.
 	// /play re-adds on demand (and re-resolves if this release later dies). Requesting a whole
@@ -3365,7 +3594,6 @@ func (w *queueWorker) processNext(ctx context.Context) {
 	if derr := w.ts.Drop(res.hash); derr != nil {
 		slog.Warn("queue: could not drop torrent after validating", "hash", res.hash, "err", derr)
 	}
-	notifyJellyfinScan(w.jf)
 
 	item.Status = "done"
 	item.Stage = store.StageDone
@@ -3377,7 +3605,7 @@ func (w *queueWorker) processNext(ctx context.Context) {
 	if err := w.db.UpdateQueue(item); err != nil {
 		slog.Error("queue: item completed but the row could not be marked done", "id", item.ID, "err", err)
 	}
-	slog.Info("queue: done (torrent dropped; loads on play)", "id", item.ID, "title", res.displayTitle, "hash", res.hash)
+	return true
 }
 
 // resolveResult is a playable release resolved at request- or play-time.
@@ -4208,7 +4436,7 @@ func taskSubscriptionCheck(ctx context.Context, db *store.Store, tmdbClient *tmd
 			}
 		}
 	}
-	skippedFailed := 0
+	skippedFailed, skippedCancelled := 0, 0
 	for _, sub := range subs {
 		select {
 		case <-ctx.Done():
@@ -4223,9 +4451,24 @@ func taskSubscriptionCheck(ctx context.Context, db *store.Store, tmdbClient *tmd
 		if err != nil {
 			continue
 		}
+		// An episode whose latest request was cancelled stays cancelled. A cancelled row is
+		// not "active", so without this the next run re-enqueued exactly what the user had
+		// just stopped. A fresh request clears the cancelled row and takes it back.
+		cancelled, cerr := db.CancelledEpisodes(sub.TMDBID, sub.Season)
+		if cerr != nil {
+			// Fail closed: re-enqueuing something the user cancelled is the bug this check
+			// exists to prevent, so skip the whole season this run rather than guess.
+			slog.Warn("subscription check: could not read cancelled episodes; skipping this season this run",
+				"tmdb", sub.TMDBID, "season", sub.Season, "err", cerr)
+			continue
+		}
 		for _, ep := range episodes {
 			// Only episodes that have actually aired (air_date <= today).
 			if ep.AirDate == "" || ep.AirDate > today {
+				continue
+			}
+			if cancelled[ep.Number] {
+				skippedCancelled++
 				continue
 			}
 			if recentlyFailed[fmt.Sprintf("%d:%d:%d", sub.TMDBID, sub.Season, ep.Number)] {
@@ -4271,7 +4514,7 @@ func taskSubscriptionCheck(ctx context.Context, db *store.Store, tmdbClient *tmd
 		}
 	}
 	slog.Info("subscription check complete", "subscriptions", len(subs), "enqueued", enqueued,
-		"retired", retired, "skipped_recently_failed", skippedFailed)
+		"retired", retired, "skipped_recently_failed", skippedFailed, "skipped_cancelled", skippedCancelled)
 	return nil
 }
 

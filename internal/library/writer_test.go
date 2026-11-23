@@ -266,3 +266,51 @@ func TestWriteStrmRoundTrip(t *testing.T) {
 		t.Fatal("RemoveStrm left the file behind")
 	}
 }
+
+func TestPruneEmptyParentsStopsAtTheRoot(t *testing.T) {
+	root := t.TempDir()
+	show := filepath.Join(root, "Show (2015)")
+	s1 := filepath.Join(show, "Season 01")
+	s2 := filepath.Join(show, "Season 02")
+	for _, d := range []string{s1, s2} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep := filepath.Join(s2, "Show (2015) S02E01.strm")
+	if err := os.WriteFile(keep, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Season 1 is empty: it goes, but the show stays because Season 2 still has a file.
+	PruneEmptyParents(root, filepath.Join(s1, "Show (2015) S01E01.strm"))
+	if _, err := os.Stat(s1); !os.IsNotExist(err) {
+		t.Fatalf("empty season folder survived: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("a populated season was touched: %v", err)
+	}
+
+	// Remove the last file: the season AND the show go, the library root never does.
+	if err := RemoveStrm(keep); err != nil {
+		t.Fatal(err)
+	}
+	PruneEmptyParents(root, keep)
+	if _, err := os.Stat(show); !os.IsNotExist(err) {
+		t.Fatalf("empty show folder survived: %v", err)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("the library root itself was removed: %v", err)
+	}
+
+	// A path outside the root is never pruned.
+	outside := t.TempDir()
+	stray := filepath.Join(outside, "empty")
+	if err := os.MkdirAll(stray, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	PruneEmptyParents(root, filepath.Join(stray, "x.strm"))
+	if _, err := os.Stat(stray); err != nil {
+		t.Fatalf("pruned a directory outside the library root: %v", err)
+	}
+}

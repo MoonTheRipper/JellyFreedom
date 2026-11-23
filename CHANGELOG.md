@@ -9,6 +9,22 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
 
 ## [Unreleased]
 
+### Fixed
+- **A show you removed from the library came back.** Removing a series, a season or an
+  episode deleted what was in the library, but left the queue running. Every episode still
+  waiting to be fetched was then written back into the library as it finished. An airing
+  show's subscription also queued the rest again later. Removing something now cancels
+  everything still queued for it, including the episode being fetched at that moment. A
+  removed series or season is no longer followed for new episodes, and the empty folders
+  are deleted along with the files.
+
+### Added
+- **Cancel a whole show or season from the queue.** Shows and seasons in the queue now have
+  a *Cancel all* / *Cancel season* button, so stopping a season request no longer takes one
+  click per episode. The episode being fetched can be cancelled too; before, only
+  episodes that had not started could be. Cancelling a show or season also stops following
+  it, and the six-hourly subscription check never re-queues an episode you cancelled.
+
 ## [0.8.4] - 2026-11-16
 
 ### Fixed

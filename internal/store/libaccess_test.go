@@ -347,6 +347,45 @@ type mutationPath struct {
 }
 
 var visibilityMutationPaths = []mutationPath{
+	{"CancelQueueScope", func(t *testing.T, f *libFixture, v Viewer, owner string) []string {
+		var out []string
+		for _, lib := range f.libraries() {
+			row, err := f.s.GetQueueItem(f.pendingQueue[owner][lib])
+			if err != nil || row == nil {
+				t.Fatalf("GetQueueItem: %v %v", row, err)
+			}
+			ids, err := f.s.CancelQueueScope(v, ShowScope(row.TMDBID, row.MediaType))
+			if err != nil {
+				t.Fatalf("CancelQueueScope: %v", err)
+			}
+			if len(ids) > 0 {
+				out = append(out, lib)
+			}
+		}
+		return normalise(out)
+	}},
+	{"DeleteSubscriptionsFor", func(t *testing.T, f *libFixture, v Viewer, owner string) []string {
+		all, err := f.s.ListSubscriptions(Viewer{IsAdmin: true})
+		if err != nil {
+			t.Fatalf("ListSubscriptions: %v", err)
+		}
+		var out []string
+		for _, lib := range f.libraries() {
+			for _, sub := range all {
+				if sub.ID != f.subs[owner][lib] {
+					continue
+				}
+				n, err := f.s.DeleteSubscriptionsFor(v, sub.TMDBID, -1)
+				if err != nil {
+					t.Fatalf("DeleteSubscriptionsFor: %v", err)
+				}
+				if n > 0 {
+					out = append(out, lib)
+				}
+			}
+		}
+		return normalise(out)
+	}},
 	{"CancelQueueItem", func(t *testing.T, f *libFixture, v Viewer, owner string) []string {
 		var out []string
 		for _, lib := range f.libraries() {

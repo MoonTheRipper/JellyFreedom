@@ -258,6 +258,31 @@ func RemoveStrm(path string) error {
 	return nil
 }
 
+// PruneEmptyParents removes the directories above a removed .strm that are now empty,
+// stopping at — and never removing — root. RemoveStrm only prunes the immediate parent,
+// so removing a whole series used to leave the show's folder behind, empty, and Jellyfin
+// can keep listing an empty series folder as a show with nothing in it.
+//
+// os.Remove on a directory is rmdir: it refuses a non-empty one, and that refusal is the
+// stop condition. Nothing here ever deletes a file.
+func PruneEmptyParents(root, path string) {
+	if root == "" || path == "" {
+		return
+	}
+	root = filepath.Clean(root)
+	dir := filepath.Dir(filepath.Clean(path))
+	for {
+		rel, err := filepath.Rel(root, dir)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return // reached the root, or the path was never under it
+		}
+		if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
+			return // not empty (or not ours to remove): stop climbing
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
 // ── Play URL shapes ───────────────────────────────────────────────────────────
 //
 // A .strm file holds exactly one line: the URL Jellyfin fetches when someone presses

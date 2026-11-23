@@ -219,6 +219,22 @@ in flight does not enqueue a duplicate, an explicit magnet override always re-re
 fresh request supersedes stale terminal rows for the same identity so the queue never
 contradicts the library.
 
+**Cancellation and removal.** A request can be cancelled while it is `pending` *or*
+`processing`: one row (`POST /api/queue/{id}/cancel`), or a whole show or season in one call
+(`POST /api/queue/cancel`). Cancelling a show or season also deletes its subscriptions,
+because a subscription re-enqueues every aired episode missing from the library. The
+subscription check also skips episodes whose latest row is `cancelled`. Removing a title from
+the library (`/api/library/.../drop`) first cancels the queue for the same scope (and, for a
+series or season, its subscriptions), then deletes the rows, the `.strm` files and any folders
+left empty.
+
+The worker cannot undo either of these. Cancellation interrupts the resolve in progress. The
+step that writes the `.strm` and the library row runs under a lock that cancellation and
+removal also take, and it re-reads the row's status first. A row that is no longer
+`processing` is dropped rather than written. `UpdateQueue` never overwrites a `cancelled`
+row. Without these guarantees, a series removed while its season request was still running
+reappeared in Jellyfin within minutes.
+
 ### Observable background tasks
 All recurring work is registered in a task registry (`internal/api/tasks.go`) rather than
 hidden in anonymous goroutines, so each task is named, status-tracked and runnable by hand
@@ -228,7 +244,7 @@ from the dashboard:
 |---|---|---|
 | `library-health-check` | 30 min | Re-checks resolvability via the indexer; marks stale and revives. Never touches TorrServer. |
 | `orphan-cleanup` | 1 hour | Drops TorrServer torrents with no matching library entry. |
-| `subscription-check` | 6 hours | Enqueues newly-aired episodes of subscribed seasons; retires ended shows. |
+| `subscription-check` | 6 hours | Enqueues newly-aired episodes of subscribed seasons, skipping any the user cancelled; retires ended shows. |
 | `indexer-warmup` | 20 min | A lightweight search to keep FlareSolverr and the indexers warm. |
 | `poster-backfill` | startup / manual | Fetches missing posters. |
 | `session-cleanup` | 1 hour | Purges expired sessions. |

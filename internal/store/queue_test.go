@@ -233,7 +233,10 @@ func TestQueueOwnership(t *testing.T) {
 		}
 	})
 
-	t.Run("cancelling a non-pending row affects nothing", func(t *testing.T) {
+	// A PROCESSING row is cancellable: refusing it is what let a cancelled request finish
+	// and write itself into the library anyway. A FINISHED row is not — a cancel must not
+	// rewrite what already happened.
+	t.Run("a processing row can be cancelled", func(t *testing.T) {
 		id := enqueue(t, s, "alice", 34, 1, 1)
 		it, _ := s.GetQueueItem(id)
 		it.Status = "processing"
@@ -244,8 +247,24 @@ func TestQueueOwnership(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if n != 1 {
+			t.Fatalf("cancel of a processing row affected %d rows, want 1", n)
+		}
+	})
+
+	t.Run("cancelling a finished row affects nothing", func(t *testing.T) {
+		id := enqueue(t, s, "alice", 36, 1, 1)
+		it, _ := s.GetQueueItem(id)
+		it.Status = "done"
+		if err := s.UpdateQueue(it); err != nil {
+			t.Fatal(err)
+		}
+		n, err := s.CancelQueueItem(id, vw("alice", false))
+		if err != nil {
+			t.Fatal(err)
+		}
 		if n != 0 {
-			t.Fatalf("cancelled an in-flight row (%d affected)", n)
+			t.Fatalf("cancelled a finished row (%d affected)", n)
 		}
 	})
 

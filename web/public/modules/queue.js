@@ -177,6 +177,8 @@ function onListClick(e) {
   if (act) {
     switch (act.dataset.qact) {
       case 'cancel':   cancelItem(num(act.dataset.id)); return;
+      case 'cancel-show':   cancelScope(num(act.dataset.tmdbId), act.dataset.mediaType, null, act.dataset.title); return;
+      case 'cancel-season': cancelScope(num(act.dataset.tmdbId), 'tv', num(act.dataset.season), act.dataset.title); return;
       case 'delete':   deleteItem(num(act.dataset.id)); return;
       case 'retry':    retryItem(num(act.dataset.id)); return;
       case 'diagnose': toggleDiagnosis(num(act.dataset.id)); return;
@@ -614,6 +616,21 @@ function jumpButton(e) {
     >${icon('activity')}<span>Jump to active</span></button>`;
 }
 
+/** cancelScopeButton stops a whole show (season === null) or one season.
+ *  Offered only while something is still queued or being fetched — there is
+ *  nothing to cancel once every row has finished. */
+function cancelScopeButton(e, season) {
+  if (!num(e.counts.active)) return '';
+  const what = season === null ? esc(e.title) : `${esc(e.title)} season ${num(season)}`;
+  const n = num(e.counts.active);
+  return `<button class="queue-action-btn danger show-cancel" type="button"
+    data-qact="${season === null ? 'cancel-show' : 'cancel-season'}"
+    data-tmdb-id="${num(e.tmdbId)}" data-media-type="${esc(e.mediaType || 'tv')}"
+    ${season === null ? '' : `data-season="${num(season)}"`} data-title="${esc(e.title)}"
+    aria-label="Cancel the ${n} queued request${n === 1 ? '' : 's'} for ${what}"
+    >${icon('x')}<span>${season === null ? 'Cancel all' : 'Cancel season'}</span></button>`;
+}
+
 /* ── Level 1: a show ─────────────────────────────────────────────────────── */
 
 function renderShowGroup(e) {
@@ -654,6 +671,7 @@ function renderShowGroup(e) {
         <span class="sg-chevron" aria-hidden="true">${icon('chevron-right')}</span>
       </div>
       ${jumpButton(e)}
+      ${cancelScopeButton(e, null)}
     </div>
     ${open ? `<div class="show-seasons">${body}</div>` : ''}
   </div>`;
@@ -775,7 +793,7 @@ function stepperHTML(item) {
 function rowActions(item) {
   const id = num(item.id);
   const btns = [];
-  if (item.status === 'pending') {
+  if (item.status === 'pending' || item.status === 'processing') {
     btns.push(`<button class="queue-action-btn danger" type="button" data-qact="cancel" data-id="${id}">${icon('x')} Cancel</button>`);
   }
   if (item.status === 'failed') {
@@ -894,15 +912,18 @@ function renderSeasonGroup(g) {
   const eps = g.body !== undefined ? g.body : seasonEpisodesHTML(g.eps);
 
   return `<div class="season-group${open ? ' open' : ''}">
-    <div class="season-group-head" role="button" tabindex="0" data-key="${esc(g.key)}"
-         aria-expanded="${open}"
-         aria-label="${esc(g.title)} season ${num(g.season)}, ${total} episode${total === 1 ? '' : 's'}, ${esc(ROLLUP[roll].label)}">
-      ${poster}
-      <div class="sg-summary">
-        <div class="sg-title">${title}</div>
-        <div class="sg-counts">${rollupChip(roll)}${countBits(g.counts)}</div>
+    <div class="season-row">
+      <div class="season-group-head" role="button" tabindex="0" data-key="${esc(g.key)}"
+           aria-expanded="${open}"
+           aria-label="${esc(g.title)} season ${num(g.season)}, ${total} episode${total === 1 ? '' : 's'}, ${esc(ROLLUP[roll].label)}">
+        ${poster}
+        <div class="sg-summary">
+          <div class="sg-title">${title}</div>
+          <div class="sg-counts">${rollupChip(roll)}${countBits(g.counts)}</div>
+        </div>
+        <span class="sg-chevron" aria-hidden="true">${icon('chevron-right')}</span>
       </div>
-      <span class="sg-chevron" aria-hidden="true">${icon('chevron-right')}</span>
+      ${cancelScopeButton(g, num(g.season))}
     </div>
     <div class="sg-episodes">${eps}</div>
   </div>`;
@@ -923,7 +944,9 @@ function seasonEpisodesHTML(eps) {
       : ep.status === 'failed' ? (ep.error_msg || 'Failed') : 'Cancelled';
     const id = num(ep.id);
     const act = [];
-    if (ep.status === 'pending') act.push(`<button class="queue-action-btn danger" type="button" data-qact="cancel" data-id="${id}">Cancel</button>`);
+    if (ep.status === 'pending' || ep.status === 'processing') {
+      act.push(`<button class="queue-action-btn danger" type="button" data-qact="cancel" data-id="${id}" aria-label="Cancel episode ${num(ep.episode)}">Cancel</button>`);
+    }
     if (ep.status === 'failed') {
       act.push(`<button class="queue-action-btn primary" type="button" data-qact="retry" data-id="${id}">Retry…</button>`);
       act.push(`<button class="queue-action-btn" type="button" data-qact="diagnose" data-id="${id}" aria-expanded="${openDiagnosis.has(id)}">Why?</button>`);
@@ -948,6 +971,38 @@ function cancelItem(id) { requireLogin(() => doCancel(id)); }
 async function doCancel(id) {
   try { await apiFetch(`/api/queue/${encodeURIComponent(id)}/cancel`, {method: 'POST'}); }
   catch (e) { toast(e.message, {ok: false}); return; }
+  await pollQueue();
+  render(true);
+}
+
+/** cancelScope stops every queued request for a show (season === null) or one
+ *  season, including the episode being fetched right now. It also stops
+ *  following the show/season: a subscription re-queues every aired episode
+ *  that is missing, which would quietly undo the cancel on its next run. */
+function cancelScope(tmdbId, mediaType, season, title) {
+  requireLogin(() => doCancelScope(tmdbId, mediaType, season, title));
+}
+
+async function doCancelScope(tmdbId, mediaType, season, title) {
+  const what = season === null ? `“${title}”` : `“${title}” season ${season}`;
+  const follow = mediaType === 'tv'
+    ? (season === null ? ' This also stops following the show for new episodes.'
+                       : ' This also stops following this season for new episodes.')
+    : '';
+  if (!confirm(`Cancel everything still queued for ${what}?${follow}\n\nEpisodes already in your library stay.`)) return;
+  const body = {tmdb_id: tmdbId, media_type: mediaType || 'tv'};
+  if (season !== null) body.season = season;
+  let d;
+  try {
+    d = await apiFetch('/api/queue/cancel', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+    });
+  } catch (e) { toast(e.message, {ok: false}); return; }
+  const n = num(d && d.cancelled);
+  const unf = num(d && d.unfollowed);
+  toast(n
+    ? `Cancelled ${n} request${n === 1 ? '' : 's'} for ${what}${unf ? ' and stopped following it' : ''}`
+    : `Nothing was still queued for ${what}${unf ? ' — stopped following it' : ''}`);
   await pollQueue();
   render(true);
 }

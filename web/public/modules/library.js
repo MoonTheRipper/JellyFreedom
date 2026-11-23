@@ -1101,6 +1101,19 @@ function lowest(list) {
    requireLogin's return value, because these must still hand back a promise —
    removeEpisode's result drives refreshEpisodeList() in modal.js. */
 
+/** stoppedNote reports what a removal stopped from re-adding the title: queued
+ *  requests that would have written it back, and a subscription that would
+ *  have re-queued it. Silence here is what made a removed show coming back
+ *  look like a bug in the removal rather than the queue. */
+function stoppedNote(d) {
+  const c = num(d && d.cancelled);
+  const u = num(d && d.unfollowed);
+  const bits = [];
+  if (c) bits.push(`cancelled ${c} queued request${c === 1 ? '' : 's'}`);
+  if (u) bits.push('stopped following it');
+  return bits.length ? ` — ${bits.join(' and ')}` : '';
+}
+
 export function removeLibItem(hash, title) {
   if (!state.user) { requireLogin(() => doRemoveLibItem(hash, title)); return Promise.resolve(false); }
   return doRemoveLibItem(hash, title);
@@ -1108,13 +1121,14 @@ export function removeLibItem(hash, title) {
 
 async function doRemoveLibItem(hash, title) {
   if (!confirm(`Remove “${title}” from your library?`)) return false;
+  let d;
   try {
-    await apiFetch(`/api/library/${encodeURIComponent(hash)}/drop`, {method: 'POST'});
+    d = await apiFetch(`/api/library/${encodeURIComponent(hash)}/drop`, {method: 'POST'});
   } catch (e) {
     if (e.status !== 401) toast(e.message, {ok: false});
     return false;
   }
-  toast(`Removed ${title}`);
+  toast(`Removed ${title}${stoppedNote(d)}`);
   await loadMyLibrary();
   emit('library-changed', {kind: 'item', hash});
   if (pageActive()) paint(true);
@@ -1127,7 +1141,7 @@ export function removeSeries(tmdbId, title) {
 }
 
 async function doRemoveSeries(tmdbId, title) {
-  if (!confirm(`Remove the entire series “${title}” from your library? You can re-request it afterward.`)) return false;
+  if (!confirm(`Remove the entire series “${title}” from your library?\n\nAnything still queued for it is cancelled and the show is no longer followed. You can re-request it afterward.`)) return false;
   let d;
   try {
     d = await apiFetch(`/api/library/series/${encodeURIComponent(tmdbId)}/drop`, {method: 'POST'});
@@ -1136,8 +1150,9 @@ async function doRemoveSeries(tmdbId, title) {
     return false;
   }
   const count = (d && d.count) || 0;
-  toast(`Removed ${title} (${count} episode${count === 1 ? '' : 's'})`);
+  toast(`Removed ${title} (${count} episode${count === 1 ? '' : 's'})${stoppedNote(d)}`);
   openShows.delete(num(tmdbId));
+  await pollQueue();
   await loadMyLibrary();
   emit('library-changed', {kind: 'series', tmdbId});
   if (pageActive()) paint(true);
@@ -1150,7 +1165,7 @@ export function removeSeason(tmdbId, season) {
 }
 
 async function doRemoveSeason(tmdbId, season) {
-  if (!confirm(`Remove all of Season ${season} from your library?`)) return false;
+  if (!confirm(`Remove all of Season ${season} from your library?\n\nAnything still queued for this season is cancelled too.`)) return false;
   let d;
   try {
     d = await apiFetch('/api/library/season/drop', {
@@ -1162,7 +1177,7 @@ async function doRemoveSeason(tmdbId, season) {
     return false;
   }
   const count = (d && d.count) || 0;
-  toast(`Removed Season ${season} (${count} episode${count === 1 ? '' : 's'})`);
+  toast(`Removed Season ${season} (${count} episode${count === 1 ? '' : 's'})${stoppedNote(d)}`);
   await pollQueue();
   await loadMyLibrary();
   emit('library-changed', {kind: 'season', tmdbId, season});
@@ -1178,8 +1193,9 @@ export function removeEpisode(tmdbId, season, episode) {
 async function doRemoveEpisode(tmdbId, season, episode) {
   const lbl = `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
   if (!confirm(`Remove ${lbl} from your library?`)) return false;
+  let d;
   try {
-    await apiFetch('/api/library/episode/drop', {
+    d = await apiFetch('/api/library/episode/drop', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({tmdb_id: tmdbId, season, episode}),
     });
@@ -1187,7 +1203,7 @@ async function doRemoveEpisode(tmdbId, season, episode) {
     if (e.status !== 401) toast(e.message, {ok: false});
     return false;
   }
-  toast(`Removed ${lbl}`);
+  toast(`Removed ${lbl}${stoppedNote(d)}`);
   await pollQueue();
   await loadMyLibrary();
   emit('library-changed', {kind: 'episode', tmdbId, season, episode});
