@@ -109,8 +109,14 @@ func libraryWith(t *testing.T, paths ...string) *store.Store {
 	return db
 }
 
+// runStop runs the handler with the post-stop delay switched off, so the drop decision
+// (which these tests are about) happens before it returns. The delay itself is covered
+// by the tests in streamuse_test.go.
 func runStop(t *testing.T, db *store.Store, jf *fakeJellyfin) []string {
 	t.Helper()
+	old := stopDropDelay
+	stopDropDelay = 0
+	t.Cleanup(func() { stopDropDelay = old })
 	ts := &fakeTorrServer{}
 	dropAfterPlaybackStop(db, jellyfin.New(jf.serve(t).URL, "key"), torrserver.New(ts.serve(t).URL), stoppedID)
 	return ts.drops()

@@ -532,7 +532,7 @@ func applyTorrCacheSettings(ts *torrserver.Client, cc config.TorrCacheConfig) er
 	if cc.Mode == "disk" && cc.Path == "" {
 		return fmt.Errorf("%w: disk cache mode requires torrserver.cache.path", errCacheProfileConfig)
 	}
-	return ts.ApplyCacheSettings(torrserver.CacheSettings{
+	_, err := ts.ApplyCacheSettings(torrserver.CacheSettings{
 		Mode:               cc.Mode,
 		SizeMB:             cc.SizeMB,
 		Path:               cc.Path,
@@ -541,6 +541,7 @@ func applyTorrCacheSettings(ts *torrserver.Client, cc config.TorrCacheConfig) er
 		RetrackersMode:     cc.RetrackersMode,
 		UploadRateLimitKB:  cc.UploadRateLimitKB,
 	})
+	return err
 }
 
 // sweepOrphanStrmTokens re-signs .strm files that no library row points at.

@@ -186,3 +186,27 @@ func TestDeleteSubscriptionsFor(t *testing.T) {
 		t.Fatalf("remaining subscriptions = %+v, %v; want only the other show", left, err)
 	}
 }
+
+// A re-request made by hand must not wait behind a season backlog.
+func TestNextPendingTakesHandMadeRequestsFirst(t *testing.T) {
+	s := newTestStore(t)
+	for ep := 1; ep <= 3; ep++ {
+		enqueue(t, s, "alice", 100, 2, ep) // a season request: bulk, priority 0
+	}
+	byHand, err := s.Enqueue(&QueueItem{TMDBID: 100, MediaType: "tv", Title: "Show", Season: 1, Episode: 1,
+		RequestedBy: "alice", Priority: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.NextPending()
+	if err != nil || next == nil || next.ID != byHand {
+		t.Fatalf("NextPending = %+v, %v; want the hand-made request %d first", next, err, byHand)
+	}
+	// Then the backlog, in the order it was queued.
+	for ep := 1; ep <= 3; ep++ {
+		next, err = s.NextPending()
+		if err != nil || next == nil || next.Episode != ep {
+			t.Fatalf("backlog claim %d = %+v, %v; want episode %d", ep, next, err, ep)
+		}
+	}
+}

@@ -272,3 +272,36 @@ func TestPlayURLAndToken(t *testing.T) {
 		}
 	})
 }
+
+func TestLastResortTriesAlternativesFirst(t *testing.T) {
+	const cur = "77e12d2a7441ecc1b4502e696af923064ad195f2"
+	rel := func(name, hash string) indexer.Release {
+		return indexer.Release{Title: name, Magnet: "magnet:?xt=urn:btih:" + hash}
+	}
+	ranked := []indexer.Release{
+		rel("current", strings.ToUpper(cur)), // magnets carry upper-case hashes
+		rel("b", "1111111111111111111111111111111111111111"),
+		rel("c", "2222222222222222222222222222222222222222"),
+		rel("d", "3333333333333333333333333333333333333333"),
+		rel("e", "4444444444444444444444444444444444444444"),
+	}
+	got := lastResort(ranked, cur, 4)
+	var names []string
+	for _, r := range got {
+		names = append(names, r.Title)
+	}
+	// Three alternatives in rank order, then the current release — still inside the
+	// four attempts, so a refresh with nothing better keeps what the user had.
+	if strings.Join(names, ",") != "b,c,d,current" {
+		t.Fatalf("order = %v, want b,c,d,current", names)
+	}
+
+	if got := lastResort(ranked[1:], cur, 4); len(got) != 4 || got[0].Title != "b" {
+		t.Fatalf("a list without the current release must come back unchanged, got %v", got)
+	}
+
+	withHash := []indexer.Release{{Title: "current", InfoHash: cur}, {Title: "b", InfoHash: "1111111111111111111111111111111111111111"}}
+	if got := lastResort(withHash, cur, 4); got[0].Title != "b" || got[1].Title != "current" {
+		t.Fatalf("the indexer's InfoHash field was not used: %v", got)
+	}
+}

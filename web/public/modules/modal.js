@@ -806,8 +806,11 @@ async function doRequestIt() {
     state.libraryStatus[ctx.item.tmdb_id] = {status: 'ready', title: data.title};
   } else {
     const already = data && data.already;
-    btn.textContent = already ? 'Already queued' : 'Added to queue';
-    toast(`“${(data && data.title) || 'Item'}” ${already ? 'is already queued' : 'added to queue'}`, {
+    const refresh = data && data.refresh;
+    btn.textContent = already ? 'Already queued' : refresh ? 'Refreshing…' : 'Added to queue';
+    toast(refresh
+      ? `Looking for a better release of “${(data && data.title) || 'this'}”. It keeps playing the current one until a new one is found.`
+      : `“${(data && data.title) || 'Item'}” ${already ? 'is already queued' : 'added to queue'}`, {
       action: {label: 'View queue', onClick: () => { closeModalRoute(); location.hash = 'queue'; }},
     });
     state.libraryStatus[ctx.item.tmdb_id] = {status: (data && data.status) || 'pending', title: data && data.title};
