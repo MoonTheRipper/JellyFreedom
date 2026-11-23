@@ -364,6 +364,28 @@ var visibilityMutationPaths = []mutationPath{
 		}
 		return normalise(out)
 	}},
+	{"ForgetQueueScope", func(t *testing.T, f *libFixture, v Viewer, owner string) []string {
+		var out []string
+		for _, lib := range f.libraries() {
+			id := f.pendingQueue[owner][lib]
+			row, err := f.s.GetQueueItem(id)
+			if err != nil || row == nil {
+				t.Fatalf("GetQueueItem: %v %v", row, err)
+			}
+			// It clears FINISHED rows, so finish this one first, as nobody in particular.
+			if _, err := f.s.db.Exec(`UPDATE queue SET status='done' WHERE id=?`, id); err != nil {
+				t.Fatal(err)
+			}
+			n, err := f.s.ForgetQueueScope(v, ShowScope(row.TMDBID, row.MediaType), false)
+			if err != nil {
+				t.Fatalf("ForgetQueueScope: %v", err)
+			}
+			if n > 0 {
+				out = append(out, lib)
+			}
+		}
+		return normalise(out)
+	}},
 	{"DeleteSubscriptionsFor", func(t *testing.T, f *libFixture, v Viewer, owner string) []string {
 		all, err := f.s.ListSubscriptions(Viewer{IsAdmin: true})
 		if err != nil {

@@ -182,3 +182,40 @@ func (s *Store) DeleteSubscriptionsFor(v Viewer, tmdbID, season int) (int64, err
 	}
 	return res.RowsAffected()
 }
+
+// ForgetQueueScope clears a title's finished queue rows (done, failed and cancelled) once
+// the title has been removed from the library. Removal used to leave them, so a show the
+// user had removed season by season still sat in the queue page with every episode it
+// had ever fetched. Run it after CancelQueueScope, which turns the in-flight rows into
+// cancelled ones; together they leave nothing of the title in the queue.
+//
+// tombstone keeps one thing the queue must remember. A subscription re-enqueues every
+// aired episode missing from the library, except those whose newest row is cancelled
+// (CancelledEpisodes). Removing ONE episode of a season that is still followed must
+// therefore leave a cancelled row behind, or the next subscription check fetches it
+// again. With tombstone set, the rows are marked cancelled instead of deleted.
+//
+// Ownership matches CancelQueueScope. Returns the number of rows deleted or marked.
+func (s *Store) ForgetQueueScope(v Viewer, sc QueueScope, tombstone bool) (int64, error) {
+	if !v.IsAdmin && v.Username == "" {
+		return 0, nil
+	}
+	pred, args := sc.where()
+	q := `DELETE FROM queue WHERE status IN ('done','failed','cancelled') AND ` + pred
+	if tombstone {
+		q = `UPDATE queue SET status='cancelled', stage=?, progress='', updated_at=CURRENT_TIMESTAMP
+		     WHERE status IN ('done','failed') AND ` + pred
+		args = append([]any{StageCancelled}, args...)
+	}
+	if !v.IsAdmin {
+		scope, scopeArgs := v.libraryScope()
+		q += ` AND requested_by=? AND ` + scope
+		args = append(args, v.Username)
+		args = append(args, scopeArgs...)
+	}
+	res, err := s.db.Exec(q, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

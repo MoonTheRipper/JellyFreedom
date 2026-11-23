@@ -16,7 +16,9 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
   show's subscription also queued the rest again later. Removing something now cancels
   everything still queued for it, including the episode being fetched at that moment. A
   removed series or season is no longer followed for new episodes, and the empty folders
-  are deleted along with the files.
+  are deleted along with the files. The queue page no longer lists what you removed: its
+  finished requests are cleared too. Removing one episode of a season you follow leaves it
+  listed as cancelled, so the season's subscription does not fetch it again.
 - **Re-requesting an episode that kept buffering did nothing.** The episode panel says to
   "re-request to refresh it", but the request was answered "already in library" and nothing
   happened. A re-request now looks for a better release: other releases are tried first, and
