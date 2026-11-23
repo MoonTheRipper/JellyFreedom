@@ -336,6 +336,7 @@ Connections**.
 | `no playable release available right now` (502) | Nothing resolvable and connectable was found for that title. |
 | `could not find a playable release within the time limit` (504) | Candidates were tried but none connected in time. Often all the top candidates are "ghosts" — a healthy scrape count with no connectable peers. Retry; it may pick differently. |
 | Playback starts then stalls | Swarm speed, or the tunnel dropped mid-stream. Stopping and pressing play again within two minutes keeps what is already buffered. If it keeps stalling, **re-request** the episode: JellyFreedom looks for a better-connected release and tries it ahead of the one you have, and the current one keeps playing until a better one is found. |
+| Play does nothing, or scrubbing shows frames but it never plays | Usually a release whose swarm is too small to keep up: an indexer can list 84 seeders for a torrent that connects to 2. JellyFreedom now counts the seeders it actually reaches and passes over weak releases (`journalctl -u jellyfreedom` shows `release has a weak swarm`). Re-request the title, or pick a release with many seeders from its release list. If the log shows the film being read and it still will not start, restart Jellyfin. On one box this cleared at the same time a third-party Jellyfin plugin (Skin Manager) was removed. |
 | "media is not supported by this client" | Jellyfin's playback policy. Enable **remuxing** and **audio transcoding**, keep **video transcoding off**. |
 
 ### Check the path yourself

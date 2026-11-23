@@ -87,7 +87,10 @@ succeeds and no bytes arrive. `index` is the file's `id` from `file_stats`, whic
 - **A scrape is not a connection.** The seeder count from an indexer is a tracker scrape and can
   be a stale ghost: metadata resolves, peers are discovered, and nothing ever connects.
   Resolve-at-Play therefore requires a proven *connected* peer before committing a release, and
-  re-resolves if a cached choice has since become a ghost.
+  re-resolves if a cached choice has since become a ghost. It then counts live seeders and prefers
+  a release that reaches 10: a listed count of 84 has been seen to connect to 2. The log line
+  `resolve: release has a weak swarm; trying the next one` shows each release it passed over,
+  with both counts.
 
 ### The BT client can crash
 

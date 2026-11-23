@@ -76,7 +76,8 @@ ORCHESTRATOR
    2. Prowlarr   → candidate releases (hashes, seeders, size, codecs)
    3. Pick       → seeders dominate; codec/audio/container are tie-breakers; CAM rejected
    4. TorrServer → add, wait for the file list, match the episode, validate, confirm a
-                   connectable peer, then DROP the torrent again
+                   connectable peer, count its live seeders (want 10; else try the
+                   next release, keeping the strongest), then DROP the torrent again
    5. Write      → /srv/jellyfreedom/movies/Some Movie (2024)/Some Movie (2024).strm
                    containing  http://<public_url>/play/movie/<tmdb>?t=<token>
    6. Ask Jellyfin to scan
@@ -278,6 +279,15 @@ from the dashboard:
 - **Connectability.** A ranked candidate is only committed once a *connected* peer is proven.
   An indexer's seeder count is a tracker scrape and can be a ghost: metadata resolves, peers are
   discovered, and nothing ever connects.
+- **Live swarm.** One connected peer proves a release is not a ghost, not that it can stream.
+  After a candidate connects, the resolver counts the seeders TorrServer actually reaches over
+  up to 20 seconds, and stops early at 10. Below 10 it moves on to the next candidate. If no
+  candidate gets there, it uses the strongest swarm it saw, so nothing that resolved before
+  stops resolving. A release the user picked by hand is not checked. Readings are cached per
+  info hash (30 minutes when strong, 5 when weak), so a season of episodes on one pack does not
+  pay the wait each time. Measured on the live box: releases listed with 109, 84 and 31
+  seeders connected to 6, 2 and 1, and streamed at 0–240 KB/s; a release with 35 connected
+  seeders streamed at 2.5 MB/s. See `cmd/orchestrator/swarmgate.go`.
 
 ### Storage
 SQLite (`internal/store`), a single file: `settings`, `sessions`, `users`, `items`, `queue`,

@@ -36,6 +36,13 @@ Entries for 0.1.0 – 0.2.1 are backfilled from the published GitHub release not
   watchdog restarted it two minutes later. JellyFreedom now writes the cache profile only when
   something in it has changed. Re-running the task, or restarting the orchestrator, no longer
   touches TorrServer.
+- **Films that showed their first frames and never played.** A release was accepted as soon as
+  one peer answered, and the seeder count the indexer reported decided the rest. Those counts
+  can be far off: releases listed with 109, 84 and 31 seeders connected to 6, 2 and 1, and
+  streamed too slowly to play. JellyFreedom now counts the seeders it actually connects to and
+  moves on to the next release when there are fewer than 10. If none reaches 10, it uses the
+  strongest one it found, so nothing that played before stops resolving. A release you pick by
+  hand is used as is.
 - **`jellyfreedom --update` on the nightly channel could install an older nightly.** When two
   nightlies were published on the same day, the update took whichever GitHub listed first,
   which was not always the newest. The CLI and `get.sh` now pick the nightly published last.

@@ -51,7 +51,9 @@ Levers worth exploring:
 There is also a known slow path: when an item's top candidates are all ghosts — a healthy scrape
 count with no connectable peers, common for old episodes — resolution walks the candidate list
 serially and can take tens of seconds before failing. Failing is correct, but it is slow and the
-UI does not explain what is happening.
+UI does not explain what is happening. The live-seeder check adds up to 20 seconds per weak
+candidate to the same walk; it ends in the strongest weak release rather than a failure, but the
+UI still only says "Checking the swarm…".
 
 ---
 
