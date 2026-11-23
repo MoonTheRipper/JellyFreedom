@@ -237,8 +237,11 @@ waited behind every queued episode.
 because a subscription re-enqueues every aired episode missing from the library. The
 subscription check also skips episodes whose latest row is `cancelled`. Removing a title from
 the library (`/api/library/.../drop`) first cancels the queue for the same scope (and, for a
-series or season, its subscriptions), then deletes the rows, the `.strm` files and any folders
-left empty.
+series or season, its subscriptions). It then deletes that scope's queue rows, the library rows,
+the `.strm` files and any folders left empty, so a removed title no longer appears in the queue
+either. One exception: removing a single episode of a season that is still followed marks its
+queue rows `cancelled` instead of deleting them. That cancelled row is what stops the
+subscription check from fetching the episode again.
 
 The worker cannot undo either of these. Cancellation interrupts the resolve in progress. The
 step that writes the `.strm` and the library row runs under a lock that cancellation and

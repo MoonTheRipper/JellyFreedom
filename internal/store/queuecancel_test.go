@@ -210,3 +210,84 @@ func TestNextPendingTakesHandMadeRequestsFirst(t *testing.T) {
 		}
 	}
 }
+
+// A show removed season by season used to stay in the queue page with every episode it
+// had fetched. Removal now clears the finished rows of exactly the removed scope.
+func TestForgetQueueScopeClearsOnlyTheScopesFinishedRows(t *testing.T) {
+	s := newTestStore(t)
+	s1done := enqueue(t, s, "alice", 100, 1, 1)
+	s1failed := enqueue(t, s, "alice", 100, 1, 2)
+	s1cancelled := enqueue(t, s, "alice", 100, 1, 3)
+	s1pending := enqueue(t, s, "alice", 100, 1, 4)
+	s2done := enqueue(t, s, "alice", 100, 2, 1)
+	otherDone := enqueue(t, s, "alice", 200, 1, 1)
+	setQueueStatus(t, s, s1done, "done")
+	setQueueStatus(t, s, s1failed, "failed")
+	setQueueStatus(t, s, s1cancelled, "cancelled")
+	setQueueStatus(t, s, s2done, "done")
+	setQueueStatus(t, s, otherDone, "done")
+
+	n, err := s.ForgetQueueScope(vw("alice", false), SeasonScope(100, 1), false)
+	if err != nil || n != 3 {
+		t.Fatalf("season forget = %d, %v; want the 3 finished season-1 rows", n, err)
+	}
+	for _, id := range []int64{s1done, s1failed, s1cancelled} {
+		if st := statusOf(t, s, id); st != "" {
+			t.Errorf("row %d still in the queue as %q after its season was removed", id, st)
+		}
+	}
+	// In flight is CancelQueueScope's job, not this one's: it is never deleted from
+	// under the worker here.
+	if st := statusOf(t, s, s1pending); st != "pending" {
+		t.Errorf("in-flight row = %q, want it left pending", st)
+	}
+	if statusOf(t, s, s2done) != "done" || statusOf(t, s, otherDone) != "done" {
+		t.Fatal("a season forget reached another season or another show")
+	}
+
+	if n, err := s.ForgetQueueScope(vw("alice", false), ShowScope(100, "tv"), false); err != nil || n != 1 {
+		t.Fatalf("show forget = %d, %v; want season 2's finished row", n, err)
+	}
+	if statusOf(t, s, otherDone) != "done" {
+		t.Fatal("a show forget reached another show")
+	}
+}
+
+// Removing one episode of a season a subscription still follows must leave a cancelled
+// row, or the next subscription check fetches the episode straight back.
+func TestForgetQueueScopeTombstoneKeepsTheEpisodeCancelled(t *testing.T) {
+	s := newTestStore(t)
+	ep := enqueue(t, s, "alice", 100, 1, 5)
+	setQueueStatus(t, s, ep, "done")
+	if n, err := s.ForgetQueueScope(vw("alice", false), EpisodeScope(100, 1, 5), true); err != nil || n != 1 {
+		t.Fatalf("tombstone = %d, %v; want 1", n, err)
+	}
+	if st := statusOf(t, s, ep); st != "cancelled" {
+		t.Fatalf("tombstoned row = %q, want cancelled", st)
+	}
+	got, err := s.CancelledEpisodes(100, 1)
+	if err != nil || !got[5] {
+		t.Fatalf("CancelledEpisodes = %v, %v; the subscription check would re-fetch episode 5", got, err)
+	}
+}
+
+func TestForgetQueueScopeOwnership(t *testing.T) {
+	s := newTestStore(t)
+	mine := enqueue(t, s, "alice", 100, 1, 1)
+	theirs := enqueue(t, s, "bob", 100, 1, 2)
+	setQueueStatus(t, s, mine, "done")
+	setQueueStatus(t, s, theirs, "done")
+
+	if n, err := s.ForgetQueueScope(Viewer{}, ShowScope(100, "tv"), false); err != nil || n != 0 {
+		t.Fatalf("anonymous forget = %d, %v; want nothing", n, err)
+	}
+	if n, err := s.ForgetQueueScope(vw("alice", false), ShowScope(100, "tv"), false); err != nil || n != 1 {
+		t.Fatalf("alice's forget = %d, %v; want only her own row", n, err)
+	}
+	if statusOf(t, s, theirs) != "done" {
+		t.Fatal("a non-admin cleared somebody else's queue history")
+	}
+	if n, err := s.ForgetQueueScope(vw("root", true), ShowScope(100, "tv"), false); err != nil || n != 1 {
+		t.Fatalf("admin forget = %d, %v; want bob's row", n, err)
+	}
+}

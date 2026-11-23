@@ -1930,6 +1930,7 @@ func main() {
 		removed, skipped int
 		cancelled        int   // in-flight queue rows for the same scope
 		unfollowed       int64 // subscriptions that would have re-enqueued it
+		cleared          int64 // finished queue rows deleted (or, see tombstone, marked cancelled)
 	}
 
 	// removeScoped removes library rows AND everything that would write them back.
@@ -1954,19 +1955,39 @@ func main() {
 		}
 		worker.abort(ids)
 		out.cancelled = len(ids)
-		if subSeason != keepSubscriptions && sc.Identity.Provider == store.ProviderTMDB {
-			tmdbID, _ := strconv.Atoi(sc.Identity.ProviderID)
+		tmdbID := 0
+		if sc.Identity.Provider == store.ProviderTMDB {
+			tmdbID, _ = strconv.Atoi(sc.Identity.ProviderID)
+		}
+		if subSeason != keepSubscriptions && tmdbID != 0 {
 			n, err := db.DeleteSubscriptionsFor(v, tmdbID, subSeason)
 			if err != nil {
 				return out, fmt.Errorf("remove the subscriptions: %w", err)
 			}
 			out.unfollowed = n
 		}
+		// Then the title's queue history, so a removed show does not stay listed in the
+		// queue with every episode it ever fetched. One episode of a season that is still
+		// followed keeps a cancelled row instead: it is what stops the subscription check
+		// from fetching that episode again (see store.ForgetQueueScope).
+		tombstone := false
+		if sc.EpisodeSet && tmdbID != 0 {
+			followed, err := db.SubscriptionExists(tmdbID, sc.Identity.Season)
+			if err != nil {
+				return out, fmt.Errorf("check the season's subscription: %w", err)
+			}
+			tombstone = followed
+		}
+		out.cleared, err = db.ForgetQueueScope(v, sc, tombstone)
+		if err != nil {
+			return out, fmt.Errorf("clear the queue history: %w", err)
+		}
 		out.removed, out.skipped, err = removeItems(user, items)
-		if out.cancelled > 0 || out.unfollowed > 0 {
-			slog.Info("library removal also stopped what would have re-added it",
+		if out.cancelled > 0 || out.unfollowed > 0 || out.cleared > 0 {
+			slog.Info("library removal also cleared the title's queue",
 				"provider", sc.Identity.Provider, "id", sc.Identity.ProviderID, "season", sc.Identity.Season,
-				"cancelled_queue_rows", out.cancelled, "unfollowed", out.unfollowed)
+				"cancelled_queue_rows", out.cancelled, "cleared_queue_rows", out.cleared,
+				"kept_as_cancelled", tombstone, "unfollowed", out.unfollowed)
 		}
 		return out, err
 	}
@@ -2013,7 +2034,7 @@ func main() {
 			return
 		}
 		jsonOK(w, map[string]any{"status": "removed", "hash": hash, "count": rm.removed,
-			"cancelled": rm.cancelled})
+			"cancelled": rm.cancelled, "cleared": rm.cleared})
 	})))
 
 	// Remove an entire series.
@@ -2040,7 +2061,7 @@ func main() {
 			return
 		}
 		jsonOK(w, map[string]any{"status": "removed", "count": rm.removed, "skipped": rm.skipped,
-			"cancelled": rm.cancelled, "unfollowed": rm.unfollowed})
+			"cancelled": rm.cancelled, "unfollowed": rm.unfollowed, "cleared": rm.cleared})
 	})))
 
 	// Remove all episodes of one season.
@@ -2071,7 +2092,7 @@ func main() {
 			return
 		}
 		jsonOK(w, map[string]any{"status": "removed", "count": rm.removed, "skipped": rm.skipped,
-			"cancelled": rm.cancelled, "unfollowed": rm.unfollowed})
+			"cancelled": rm.cancelled, "unfollowed": rm.unfollowed, "cleared": rm.cleared})
 	})))
 
 	// Remove a single episode (by tmdb_id+season+episode — never by shared hash).
@@ -2111,7 +2132,7 @@ func main() {
 			httpFail(w, r, http.StatusInternalServerError, "could not remove that episode", err)
 			return
 		}
-		jsonOK(w, map[string]any{"status": "removed", "cancelled": rm.cancelled})
+		jsonOK(w, map[string]any{"status": "removed", "cancelled": rm.cancelled, "cleared": rm.cleared})
 	})))
 
 	// ── Settings API (admin only) ─────────────────────────────────────────────

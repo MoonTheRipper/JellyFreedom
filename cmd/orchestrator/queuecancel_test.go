@@ -95,6 +95,28 @@ func TestCommitResolvedRefusesACancelledRow(t *testing.T) {
 	}
 }
 
+// Removal now deletes the title's queue rows outright, the one the worker is resolving
+// included. A row that no longer exists must be refused like a cancelled one.
+func TestCommitResolvedRefusesARowRemovedWithItsTitle(t *testing.T) {
+	w, db, ts, item, res := commitFixture(t)
+	admin := store.Viewer{IsAdmin: true}
+	if _, err := db.CancelQueueScope(admin, store.ShowScope(61923, "tv")); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := db.ForgetQueueScope(admin, store.ShowScope(61923, "tv"), false); err != nil || n != 1 {
+		t.Fatalf("ForgetQueueScope = %d, %v; want the in-flight row gone", n, err)
+	}
+	if w.commitResolved(item, res, noFail(t)) {
+		t.Fatal("commitResolved wrote a row that had been removed with its title")
+	}
+	if got, _ := db.GetEpisode(61923, 3, 7); got != nil {
+		t.Fatalf("a removed title has a library row again: %+v", got)
+	}
+	if d := ts.drops(); len(d) != 1 || d[0] != commitHash {
+		t.Fatalf("drops = %v, want the resolved torrent released", d)
+	}
+}
+
 // A re-pick (RequeueWithMagnet) while the old release was still resolving resets the row
 // to pending. Committing the old result would mark it done and lose the user's choice.
 func TestCommitResolvedYieldsToARepick(t *testing.T) {
