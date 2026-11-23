@@ -219,6 +219,31 @@ func (c *Client) WaitConnectable(ctx context.Context, hash string, secs int) boo
 	return false
 }
 
+// LiveSeeders watches how many seeders a loaded torrent actually connects to, for up to
+// window, and returns the most it saw. It returns as soon as want is reached, so a healthy
+// swarm costs a second or two. Only a weak one costs the whole window.
+//
+// This is the number to judge a release by, not the indexer's. On the live box on
+// 2026-11-23, a release the indexer listed with 84 seeders connected to 2 and streamed at
+// 0 KB/s. Another listed with 31 connected to 6 or 7 and managed 100–240 KB/s against the
+// 600 KB/s its bitrate needed. A release with 35 connected seeders streamed at 2.5 MB/s.
+// Only peer connections are made, so measuring costs no download bandwidth.
+func (c *Client) LiveSeeders(ctx context.Context, hash string, want int, window, every time.Duration) int {
+	best := 0
+	deadline := time.Now().Add(window)
+	for {
+		if info, err := c.Stat(hash); err == nil && info.ConnectedSeeders > best {
+			best = info.ConnectedSeeders
+		}
+		if best >= want || !time.Now().Before(deadline) {
+			return best
+		}
+		if !sleepCtx(ctx, every) {
+			return best
+		}
+	}
+}
+
 // Add adds a magnet to TorrServer and returns its info hash.
 func (c *Client) Add(magnet, title string) (string, error) {
 	payload := map[string]any{

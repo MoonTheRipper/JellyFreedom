@@ -3773,13 +3773,34 @@ func (w *queueWorker) resolvePlayable(ctx context.Context, mediaType, libraryNam
 		candidates = lastResort(candidates, avoidHash, maxTry)
 	}
 	lastErr := fmt.Errorf("no candidates")
+	// gate keeps the strongest weak release seen so far, in case none is strong enough (see
+	// swarmgate.go). Whatever it still holds when this function returns without it is dropped.
+	gate := swarmGate{want: liveSeedersWanted}
+	defer func() {
+		if held, _ := gate.take(); held != nil {
+			w.dropQuietly(held.hash)
+		}
+	}()
+	// stop ends the search on a context error. A /play that ran out of time still gets the
+	// strongest release found so far; a cancelled request gets nothing.
+	stop := func(err error) (*resolveResult, error) {
+		if errors.Is(err, context.DeadlineExceeded) {
+			if fb, live := gate.take(); fb != nil {
+				slog.Info("resolve: out of time; using the strongest release found",
+					"release", fb.releaseTitle, "live_seeders", live)
+				return fb, nil
+			}
+		}
+		return nil, err
+	}
+	judged := map[string]bool{}
 	for n, cand := range candidates {
 		if n >= maxTry {
 			break
 		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return stop(ctx.Err())
 		default:
 		}
 		if len(candidates) > 1 {
@@ -3790,9 +3811,24 @@ func (w *queueWorker) resolvePlayable(ctx context.Context, mediaType, libraryNam
 		hash, err := w.ts.Add(cand.Magnet, details.Title)
 		if err != nil {
 			// A failing add (e.g. TorrServer 500 = crashed BT client) won't differ between
-			// candidates, so don't burn the rest — surface it.
+			// candidates, so don't burn the rest — surface it, unless a weaker release is
+			// already loaded and can be used.
+			if fb, live := gate.take(); fb != nil {
+				slog.Warn("resolve: TorrServer add failed; using the strongest release found",
+					"release", fb.releaseTitle, "live_seeders", live, "err", err)
+				return fb, nil
+			}
 			return nil, fmt.Errorf("TorrServer add failed: %w", err)
 		}
+		if judged[hash] {
+			// The same torrent listed again, by another indexer or under another title.
+			// It has been judged already, and the gate may be holding it.
+			if !gate.holds(hash) {
+				w.dropQuietly(hash)
+			}
+			continue
+		}
+		judged[hash] = true
 
 		prog(store.StageVerifying, "Waiting for file list…")
 		var fileIndex int
@@ -3802,7 +3838,7 @@ func (w *queueWorker) resolvePlayable(ctx context.Context, mediaType, libraryNam
 		for i := 0; i < 10; i++ {
 			if ctx.Err() != nil {
 				w.dropQuietly(hash)
-				return nil, ctx.Err()
+				return stop(ctx.Err())
 			}
 			info, statErr := w.ts.Stat(hash)
 			if statErr == nil && len(info.Files) > 0 {
@@ -3849,7 +3885,7 @@ func (w *queueWorker) resolvePlayable(ctx context.Context, mediaType, libraryNam
 		if !w.ts.WaitConnectable(ctx, hash, 15) {
 			w.dropQuietly(hash)
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return stop(ctx.Err())
 			}
 			lastErr = fmt.Errorf("no connectable peers (ghost release)")
 			continue
@@ -3859,11 +3895,37 @@ func (w *queueWorker) resolvePlayable(ctx context.Context, mediaType, libraryNam
 		if chosenFile != nil {
 			length = chosenFile.Length
 		}
-		return &resolveResult{
+		res := &resolveResult{
 			hash: hash, fileIndex: fileIndex, magnet: cand.Magnet, releaseTitle: cand.Title,
 			seeders: cand.Seeders, title: details.Title, displayTitle: displayTitle,
 			year: details.Year, lengthBytes: length, lib: lib,
-		}, nil
+		}
+		if magnetOverride != "" {
+			return res, nil // a release the user picked by hand is not second-guessed
+		}
+
+		// One connected peer proves the release is not a ghost, not that it can stream.
+		// Judge it by the seeders TorrServer actually reaches; see swarmgate.go.
+		prog(store.StageVerifying, "Checking the swarm…")
+		live := measureSwarm(ctx, w.ts, hash)
+		accept, release := gate.offer(res, live)
+		for _, h := range release {
+			w.dropQuietly(h)
+		}
+		if accept != nil {
+			return accept, nil
+		}
+		if ctx.Err() != nil {
+			return stop(ctx.Err())
+		}
+		slog.Info("resolve: release has a weak swarm; trying the next one",
+			"release", cand.Title, "live_seeders", live, "listed_seeders", cand.Seeders, "want", liveSeedersWanted)
+		lastErr = fmt.Errorf("weak swarm: %d live seeders", live)
+	}
+	if fb, live := gate.take(); fb != nil {
+		slog.Info("resolve: no release reached the live-seeder bar; using the strongest one found",
+			"release", fb.releaseTitle, "live_seeders", live, "want", liveSeedersWanted)
+		return fb, nil
 	}
 	return nil, fmt.Errorf("no streamable release found (last: %v)", lastErr)
 }
