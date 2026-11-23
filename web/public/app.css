@@ -394,6 +394,10 @@ header.transparent input[type=search]#q{background:rgba(12,13,16,.55);border-col
   margin-bottom:8px;overflow:hidden}
 .season-group-head{display:flex;align-items:center;gap:12px;padding:12px 14px;cursor:pointer}
 .season-group-head:hover{background:var(--surface2)}
+/* The head is role=button, so actions sit BESIDE it in this row, never inside it. */
+.season-row{display:flex;align-items:center;gap:8px}
+.season-row .season-group-head{flex:1;min-width:0}
+.season-row > .queue-action-btn{margin-right:12px}
 .sg-summary{flex:1;min-width:0}
 .sg-title{font-size:14px;font-weight:600}
 .sg-counts{font-size:11px;color:var(--muted);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap}
@@ -820,9 +824,10 @@ select.lib-picker{flex:1}
 .show-seasons .season-group-head{padding:9px 12px}
 .show-hidden{display:flex;align-items:center;gap:7px;padding:8px 4px 2px;
   color:var(--muted);font-size:12px}
-.show-jump{flex-shrink:0}
+.show-jump,.show-cancel{flex-shrink:0}
 @media (max-width:620px){
-  .show-jump span{display:none}
+  .show-jump span,.show-cancel span{display:none}
+  .season-row > .queue-action-btn{margin-right:8px}
   .show-row{padding-right:8px}
 }
 

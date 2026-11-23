@@ -1734,10 +1734,15 @@ func (s *Store) NextPending() (*QueueItem, error) {
 	return item, nil
 }
 
+// UpdateQueue writes the worker's view of a row back — EXCEPT onto a row that has been
+// cancelled. The worker holds its own copy of the row for the minutes a resolve takes, and
+// writing that copy back unconditionally turned a cancelled row into 'processing' again on
+// the next progress tick, and into 'done' at the end. Cancellation is a decision a person
+// made; nothing the worker learns afterwards outranks it.
 func (s *Store) UpdateQueue(item *QueueItem) error {
 	_, err := s.db.Exec(
 		`UPDATE queue SET status=?,progress=?,stage=?,error_msg=?,info_hash=?,strm_path=?,diagnosis=?,
-		 updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		 updated_at=CURRENT_TIMESTAMP WHERE id=? AND status<>'cancelled'`,
 		item.Status, item.Progress, item.Stage, item.ErrorMsg, item.InfoHash, item.StrmPath,
 		item.Diagnosis, item.ID,
 	)
@@ -2141,9 +2146,10 @@ func parseSQLiteTimestamp(s string) time.Time {
 	return time.Time{}
 }
 
-// CancelQueueItem cancels a pending row. Returns the number of rows affected so the
-// handler can distinguish "cancelled" from "not yours / not pending / gone" instead of
-// reporting success on an unchanged row.
+// CancelQueueItem cancels an in-flight (pending or processing) row. Returns the number of
+// rows affected so the handler can distinguish "cancelled" from "not yours / already
+// finished / gone" instead of reporting success on an unchanged row. A processing row is
+// cancellable: the worker re-checks the status before it commits (see UpdateQueue).
 //
 // The library gate applies to the mutation as well as to the read, and the reason is the
 // rows-affected count: it is a one-bit oracle. A row in a hidden library that answered
@@ -2153,7 +2159,7 @@ func parseSQLiteTimestamp(s string) time.Time {
 func (s *Store) CancelQueueItem(id int64, v Viewer) (int64, error) {
 	if v.IsAdmin {
 		res, err := s.db.Exec(
-			`UPDATE queue SET status='cancelled', stage=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'`,
+			`UPDATE queue SET status='cancelled', stage=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('pending','processing')`,
 			StageCancelled, id)
 		if err != nil {
 			return 0, err
@@ -2167,7 +2173,7 @@ func (s *Store) CancelQueueItem(id int64, v Viewer) (int64, error) {
 	args := append([]any{StageCancelled, id, v.Username}, scopeArgs...)
 	res, err := s.db.Exec(
 		`UPDATE queue SET status='cancelled', stage=?, updated_at=CURRENT_TIMESTAMP
-			 WHERE id=? AND status='pending' AND requested_by=? AND `+scope, args...)
+			 WHERE id=? AND status IN ('pending','processing') AND requested_by=? AND `+scope, args...)
 	if err != nil {
 		return 0, err
 	}
